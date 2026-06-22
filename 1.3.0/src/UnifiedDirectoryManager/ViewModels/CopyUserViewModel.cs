@@ -57,7 +57,7 @@ public partial class CopyUserViewModel : ObservableObject
     [ObservableProperty] private string _password = string.Empty;
     [ObservableProperty] private string _generatedPassword = string.Empty;
     [ObservableProperty] private bool _enabled = true;
-    [ObservableProperty] private bool _mustChangePassword = true;
+    [ObservableProperty] private bool _mustChangePassword;
     [ObservableProperty] private string _managerDisplay = "(none)";
     private string? _managerDn;
 

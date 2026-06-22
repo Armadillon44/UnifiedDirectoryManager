@@ -35,7 +35,7 @@ public partial class TemplateEditorViewModel : ObservableObject
     [ObservableProperty] private string _targetOu = string.Empty;
     [ObservableProperty] private string _upnSuffix = string.Empty;
     [ObservableProperty] private bool _enabledByDefault = true;
-    [ObservableProperty] private bool _mustChangePassword = true;
+    [ObservableProperty] private bool _mustChangePassword;
     [ObservableProperty] private string _status = string.Empty;
     [ObservableProperty] private string _managerDisplay = "(none)";
     private string? _managerDn; // template default manager DN (null = none)
@@ -159,7 +159,7 @@ public partial class TemplateEditorViewModel : ObservableObject
         TargetOu = string.Empty;
         UpnSuffix = string.Empty;
         EnabledByDefault = true;
-        MustChangePassword = true;
+        MustChangePassword = false;
         AttributeRows.Clear();
         AttributeRows.Add(new TemplateAttributeRow { LdapName = "sAMAccountName", Value = "{first}.{last}" });
         AttributeRows.Add(new TemplateAttributeRow { LdapName = "displayName", Value = "{first} {last}" });

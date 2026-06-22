@@ -46,6 +46,9 @@
                         ToolTip="Opens the standard New User form to configure a user, then adds them to the batch" />
                 <Button Content="Import CSV…" Command="{Binding ImportCsvCommand}" Margin="0,0,6,0" />
                 <Button Content="Clear all" Command="{Binding ClearRowsCommand}" />
+                <CheckBox Content="Require password change at next logon" IsChecked="{Binding RequirePasswordChange}"
+                          VerticalAlignment="Center" Margin="16,0,0,0"
+                          ToolTip="When on, every account created in this batch must change its generated password at next logon." />
             </WrapPanel>
         </Grid>
 

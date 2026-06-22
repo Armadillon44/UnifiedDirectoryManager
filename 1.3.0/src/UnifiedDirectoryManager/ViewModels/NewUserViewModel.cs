@@ -53,7 +53,7 @@ public partial class NewUserViewModel : ObservableObject
     private string _lastUpnSuggestion = string.Empty;
     private string _lastProxySuggestion = string.Empty;
     [ObservableProperty] private bool _enabled = true;
-    [ObservableProperty] private bool _mustChangePassword = true;
+    [ObservableProperty] private bool _mustChangePassword;
     [ObservableProperty] private string _status = string.Empty;
     [ObservableProperty] private bool _isBusy;
 

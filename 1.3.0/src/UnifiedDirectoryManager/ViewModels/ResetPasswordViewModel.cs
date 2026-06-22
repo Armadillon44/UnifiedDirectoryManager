@@ -29,7 +29,7 @@ public partial class ResetPasswordViewModel : ObservableObject
     [RelayCommand]
     private void GeneratePassword()
     {
-        var pwd = PasswordGenerator.Generate(12, 15);
+        var pwd = PassphraseGenerator.Generate();
         Password = pwd;
         ConfirmPassword = pwd;
         GeneratedPassword = pwd;          // shown read-only so the admin can copy/relay it

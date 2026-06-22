@@ -34,6 +34,6 @@ public sealed class UserTemplate
     /// <summary>Default account state at creation.</summary>
     public bool EnabledByDefault { get; set; } = true;
 
-    /// <summary>Force password change at next logon.</summary>
-    public bool MustChangePasswordAtNextLogon { get; set; } = true;
+    /// <summary>Force password change at next logon. Off by default; still selectable per template.</summary>
+    public bool MustChangePasswordAtNextLogon { get; set; }
 }

@@ -52,7 +52,7 @@ public sealed class BulkUserCreator
             {
                 var created = await _directory.CreateUserAsync(
                     req.TargetOu, req.Attributes, req.OnPremGroupDns,
-                    passphrase, req.Enabled, mustChangePassword: false, req.Proxies, ct);
+                    passphrase, req.Enabled, mustChangePassword: req.MustChangePassword, req.Proxies, ct);
                 res.Success = true;
                 res.DistinguishedName = created.DistinguishedName;
                 res.PasswordSet = created.PasswordSet;

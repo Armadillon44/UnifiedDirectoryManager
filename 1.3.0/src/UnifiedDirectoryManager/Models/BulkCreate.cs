@@ -57,6 +57,9 @@ public sealed class BulkCreateRequest
     public bool TapOneTimeUse { get; init; }
     public bool Enabled { get; init; } = true;
 
+    /// <summary>Force a password change at next logon for the created account (set batch-wide; off by default).</summary>
+    public bool MustChangePassword { get; init; }
+
     /// <summary>The routable UPN used to correlate the synced user in Entra (for cloud groups / TAP).</summary>
     public string? Upn { get; init; }
 

@@ -3,40 +3,34 @@ using System.Security.Cryptography;
 namespace UnifiedDirectoryManager.Services;
 
 /// <summary>
-/// Generates human-readable passphrases for bulk user creation: 3–4 random words, each Title-cased,
-/// joined by a random per-gap separator from <c>-</c> / <c>_</c>, padded to at least
-/// <see cref="MinLength"/> characters. Mixed case plus the symbol separator gives three of the four AD
-/// complexity categories (upper, lower, symbol), so no digit is needed to satisfy default domain
-/// complexity. Uses <see cref="RandomNumberGenerator"/> for all randomness.
+/// The single password generator shared by every credential-issuing flow (New User, Copy User, Bulk
+/// Create, Reset Password). Produces 3 random Title-cased words joined by a random per-gap separator
+/// (<c>-</c> / <c>_</c>), then a final separator followed by 5 random unambiguous alphanumeric characters
+/// — e.g. <c>Brave-Tiger_Maple-7kR2m</c>. Title-cased words plus a symbol separator already cover three of
+/// the four AD complexity categories (upper, lower, symbol); the suffix adds entropy (and usually a digit).
+/// Uses <see cref="RandomNumberGenerator"/> for all randomness.
 /// </summary>
 public static class PassphraseGenerator
 {
-    private const int MinLength = 12;
+    private const int WordCount = 3;
+    private const int SuffixLength = 5;
     private static readonly char[] Separators = { '-', '_' };
 
-    /// <summary>Returns a fresh passphrase, e.g. <c>Brave-Tiger_Maple-River</c>.</summary>
+    // Unambiguous suffix alphabet: lower (no l/o), upper (no I/O), digits (no 0/1) — same exclusions used elsewhere.
+    private const string SuffixChars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+    /// <summary>Returns a fresh password, e.g. <c>Brave-Tiger_Maple-7kR2m</c>.</summary>
     public static string Generate()
     {
-        // Build 3 words, then keep appending words until we clear the minimum length (still readable).
-        var words = new List<string>(5);
-        for (var i = 0; i < 3; i++) words.Add(Pick(Words));
-
-        string Join() => Assemble(words);
-        while (Join().Length < MinLength && words.Count < 6)
-            words.Add(Pick(Words));
-
-        return Join();
-    }
-
-    /// <summary>Title-cases each word and stitches them with a random separator chosen independently per gap.</summary>
-    private static string Assemble(IReadOnlyList<string> words)
-    {
         var sb = new System.Text.StringBuilder();
-        for (var i = 0; i < words.Count; i++)
+        for (var i = 0; i < WordCount; i++)
         {
             if (i > 0) sb.Append(Pick(Separators));
-            sb.Append(TitleCase(words[i]));
+            sb.Append(TitleCase(Pick(Words)));
         }
+        sb.Append(Pick(Separators)); // separator before the random suffix
+        for (var i = 0; i < SuffixLength; i++)
+            sb.Append(SuffixChars[RandomNumberGenerator.GetInt32(SuffixChars.Length)]);
         return sb.ToString();
     }
 

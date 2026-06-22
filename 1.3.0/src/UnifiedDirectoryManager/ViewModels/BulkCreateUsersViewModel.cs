@@ -30,6 +30,9 @@ public partial class BulkCreateUsersViewModel : ObservableObject
     [ObservableProperty] private string _targetOu = string.Empty;
     [ObservableProperty] private string _upnSuffix = string.Empty;
 
+    /// <summary>Batch-wide: force a password change at next logon for every created user (off by default).</summary>
+    [ObservableProperty] private bool _requirePasswordChange;
+
     // Batch-wide Entra Connect sync (used only when at least one row needs cloud).
     [ObservableProperty] private string _entraConnectServer = string.Empty;
     [ObservableProperty] private bool _syncSpecifyCredentials;
@@ -219,6 +222,7 @@ public partial class BulkCreateUsersViewModel : ObservableObject
                 TapLifetimeMinutes = row.TapLifetimeMinutes,
                 TapOneTimeUse = row.TapOneTimeUse,
                 Enabled = row.Enabled,
+                MustChangePassword = RequirePasswordChange,
                 Upn = upn,
             }));
         }
@@ -243,7 +247,8 @@ public partial class BulkCreateUsersViewModel : ObservableObject
             lines.Add($"Then run ONE Entra Connect delta sync on {EntraConnectServer}, wait for the users to appear in Entra, and apply per-row cloud groups / Temporary Access Passes.");
         }
         lines.Add(string.Empty);
-        lines.Add("A unique passphrase is generated per user (shown in the post-run report). Users are NOT forced to change it at next logon.");
+        lines.Add("A unique password is generated per user (shown in the post-run report). "
+            + (RequirePasswordChange ? "Users must change it at next logon." : "Users are NOT forced to change it at next logon."));
         if (!_dialogs.Confirm("Bulk create users", $"Create {built.Count} user(s)?", lines)) return;
 
         _lastRequests = built.Select(x => x.Request).ToList();
