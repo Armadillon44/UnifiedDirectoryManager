@@ -3,6 +3,11 @@
 [Oo]bj/
 dist/
 
+# WPF markup-compile temp projects (created and deleted during a build;
+# can linger if a build is interrupted)
+*_wpftmp.csproj
+*_wpftmp.*
+
 # OS / editor cruft
 .DS_Store
 .vs/
