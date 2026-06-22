@@ -37,6 +37,9 @@ public sealed partial class GroupMembership : ObservableObject
 /// <summary>An object that is a member of the selected group: its display <see cref="Name"/> and on-prem DN.</summary>
 public sealed record GroupMemberRow(string Name, string Dn);
 
+/// <summary>A user who reports to the selected user (their <c>manager</c> points at it): display <see cref="Name"/> and DN.</summary>
+public sealed record DirectReportRow(string Name, string Dn);
+
 /// <summary>
 /// The editable attribute pane. Shows friendly-labelled fields (logic uses lDAPDisplayName),
 /// resolves DN-valued attributes to names, and commits writes only after user confirmation.
@@ -75,6 +78,8 @@ public partial class EditPaneViewModel : ObservableObject
     [ObservableProperty] private bool _isBusy;
     /// <summary>The objects that are members of the selected group (display name + DN; sortable in the UI).</summary>
     public ObservableCollection<GroupMemberRow> Members { get; } = new();
+    /// <summary>Users who report to the selected user (the <c>directReports</c> back-link of <c>manager</c>).</summary>
+    public ObservableCollection<DirectReportRow> DirectReports { get; } = new();
     [ObservableProperty] private string _managerDisplay = "(none)";
 
     /// <summary>The object's parent container/OU DN (shown in the General tab; changed via Move…).</summary>
@@ -126,6 +131,7 @@ public partial class EditPaneViewModel : ObservableObject
         ProxyAddresses.Clear();
         MemberOf.Clear();
         Members.Clear();
+        DirectReports.Clear();
         AllAttributes.Clear();
         _editableFields.Clear();
         _pendingManagerDn = null;
@@ -151,7 +157,7 @@ public partial class EditPaneViewModel : ObservableObject
                            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
             General.Clear(); Account.Clear(); Address.Clear(); Organization.Clear(); Email.Clear();
-            ProxyAddresses.Clear(); MemberOf.Clear(); Members.Clear(); AllAttributes.Clear();
+            ProxyAddresses.Clear(); MemberOf.Clear(); Members.Clear(); DirectReports.Clear(); AllAttributes.Clear();
             _editableFields.Clear(); _pendingManagerDn = null;
 
             var (general, account, address, org, email) = FieldLayout(type);
@@ -176,6 +182,14 @@ public partial class EditPaneViewModel : ObservableObject
             // Manager (DN-valued, edited via picker)
             ManagerDisplay = map.TryGetValue("manager", out var mgr) && mgr.DisplayValues.Count > 0
                 ? mgr.DisplayValues[0] : "(none)";
+
+            // Direct reports (the read-only directReports back-link; add/remove writes the report's manager)
+            if (map.TryGetValue("directReports", out var reports))
+                for (int i = 0; i < reports.DisplayValues.Count; i++)
+                {
+                    var dn = i < reports.RawValues.Count ? reports.RawValues[i] : reports.DisplayValues[i];
+                    DirectReports.Add(new DirectReportRow(reports.DisplayValues[i], dn));
+                }
 
             // Proxy addresses (display only here; full editing via Attribute Editor)
             if (map.TryGetValue("proxyAddresses", out var proxies))
@@ -593,6 +607,79 @@ public partial class EditPaneViewModel : ObservableObject
     {
         _pendingManagerDn = string.Empty;
         ManagerDisplay = "(none — pending save)";
+    }
+
+    /// <summary>Adds direct reports by setting each picked user's <c>manager</c> to this user. Applied immediately
+    /// (it writes other objects, not the pane's pending edits), then reloads to refresh the directReports list.</summary>
+    [RelayCommand]
+    private async Task AddDirectReportsAsync()
+    {
+        if (_dn is null || !IsUser) return;
+        var picked = _dialogs.PickObjects("Add direct reports", AdObjectType.User, multiSelect: true);
+        if (picked is null || picked.Count == 0) return;
+
+        // Can't be your own manager; skip any selection that resolves to this user.
+        var targets = picked.Where(p => !string.Equals(p.DistinguishedName, _dn, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (targets.Count == 0) { _dialogs.Alert("Add direct reports", "A user can't be their own direct report."); return; }
+
+        if (!_dialogs.Confirm("Confirm",
+                $"Set “{Title}” as the manager of {targets.Count} user(s)?", targets.Select(p => p.Name)))
+            return;
+
+        IsBusy = true;
+        try
+        {
+            var errors = new List<string>();
+            foreach (var t in targets)
+            {
+                try
+                {
+                    var change = new PendingChange { Op = ChangeOp.Set, LdapName = "manager", FriendlyName = "Manager", Values = { _dn! } };
+                    await _directory.ApplyChangesAsync(t.DistinguishedName, new[] { change });
+                }
+                catch (Exception ex) { errors.Add($"{t.Name}: {DirectoryService.Friendly(ex)}"); }
+            }
+            await ReloadAsync();
+            ObjectChanged?.Invoke();
+            if (errors.Count > 0) _onError("Some direct reports couldn't be set:\n" + string.Join("\n", errors));
+        }
+        catch (Exception ex) { _onError(DirectoryService.Friendly(ex)); }
+        finally { IsBusy = false; }
+    }
+
+    /// <summary>Removes the selected direct reports by clearing each one's <c>manager</c> (they had this user as manager).</summary>
+    [RelayCommand]
+    private async Task RemoveDirectReportsAsync(System.Collections.IList? selected)
+    {
+        if (_dn is null || !IsUser) return;
+        var rows = selected?.Cast<DirectReportRow>().ToList() ?? new List<DirectReportRow>();
+        if (rows.Count == 0) return;
+
+        var heading = rows.Count == 1
+            ? $"Remove this direct report of “{Title}”? Their manager will be cleared."
+            : $"Remove these {rows.Count} direct reports of “{Title}”? Their manager will be cleared.";
+        if (!_dialogs.Confirm("Confirm", heading, rows.Select(r => r.Name)))
+            return;
+
+        IsBusy = true;
+        try
+        {
+            var errors = new List<string>();
+            foreach (var r in rows)
+            {
+                try
+                {
+                    var change = new PendingChange { Op = ChangeOp.Clear, LdapName = "manager", FriendlyName = "Manager" };
+                    await _directory.ApplyChangesAsync(r.Dn, new[] { change });
+                }
+                catch (Exception ex) { errors.Add($"{r.Name}: {DirectoryService.Friendly(ex)}"); }
+            }
+            await ReloadAsync();
+            ObjectChanged?.Invoke();
+            if (errors.Count > 0) _onError("Some direct reports couldn't be removed:\n" + string.Join("\n", errors));
+        }
+        catch (Exception ex) { _onError(DirectoryService.Friendly(ex)); }
+        finally { IsBusy = false; }
     }
 
     [RelayCommand]

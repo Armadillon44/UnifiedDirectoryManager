@@ -22,6 +22,79 @@ public sealed class BulkUserCsvImporter
 
     private enum Field { First, Middle, Last, Initials, Sam, Upn, Email, Manager, CloudGroups, IssueTap, Attribute, Unknown }
 
+    /// <summary>Outcome of a pre-import format check: <see cref="Errors"/> block the import; <see cref="Warnings"/> are advisory.</summary>
+    public sealed record CsvFormatCheck(IReadOnlyList<string> Errors, IReadOnlyList<string> Warnings)
+    {
+        public bool IsImportable => Errors.Count == 0;
+    }
+
+    /// <summary>
+    /// A ready-to-edit sample CSV showing the recognized columns and how to fill them. Encoded with the shared
+    /// (formula-injection-safe) <see cref="CsvText"/>. Offered to the operator so an import is structured correctly.
+    /// </summary>
+    public static string TemplateCsv()
+    {
+        var headers = new[]
+        {
+            "First name", "Last name", "Logon name (sAMAccountName)", "User logon name (UPN)",
+            "Email", "Manager", "Department", "Job title", "Cloud groups", "Issue TAP",
+        };
+        var rows = new[]
+        {
+            new[] { "Ada", "Lovelace", "ada.lovelace", "ada.lovelace@contoso.com",
+                    "ada.lovelace@contoso.com", "grace.hopper", "Engineering", "Software Engineer",
+                    "All Staff; Engineering Team", "yes" },
+            new[] { "Alan", "Turing", "alan.turing", "alan.turing@contoso.com",
+                    "alan.turing@contoso.com", "CN=Grace Hopper,OU=Users,DC=contoso,DC=com", "Research", "Researcher",
+                    "All Staff", "no" },
+        };
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine(CsvText.Row(headers));
+        foreach (var r in rows) sb.AppendLine(CsvText.Row(r));
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Pre-import format check: confirms the text parses as CSV, has a header row with at least one column that
+    /// yields a name/logon, and has data rows. Unrecognized columns and ragged rows become warnings (not errors).
+    /// </summary>
+    public static CsvFormatCheck ValidateFormat(string csvText)
+    {
+        var errors = new List<string>();
+        var warnings = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(csvText))
+        {
+            errors.Add("The file is empty.");
+            return new CsvFormatCheck(errors, warnings);
+        }
+
+        var (headers, rows) = CsvReader.Parse(csvText);
+        if (headers.Count == 0)
+        {
+            errors.Add("No header row found. The first row must name the columns (see the template).");
+            return new CsvFormatCheck(errors, warnings);
+        }
+
+        var map = headers.Select(Classify).ToArray();
+
+        if (!map.Any(m => m.Field is Field.First or Field.Last or Field.Sam))
+            errors.Add("No name column found. Include at least one of: First name, Last name, or Logon name (sAMAccountName).");
+
+        if (rows.Count == 0)
+            errors.Add("The file has a header row but no data rows.");
+
+        var unknown = headers.Where((_, i) => map[i].Field == Field.Unknown).Select(h => $"“{h}”").ToList();
+        if (unknown.Count > 0)
+            warnings.Add("These columns aren’t recognized and will be ignored: " + string.Join(", ", unknown) + ".");
+
+        var ragged = rows.Count(r => r.Count > headers.Count);
+        if (ragged > 0)
+            warnings.Add($"{ragged} row(s) have more values than columns — check for unquoted commas. Extra values are ignored.");
+
+        return new CsvFormatCheck(errors, warnings);
+    }
+
     public async Task<IReadOnlyList<ImportedUserRow>> ImportAsync(string csvText, CancellationToken ct = default)
     {
         var (headers, rows) = CsvReader.Parse(csvText);

@@ -347,6 +347,26 @@ public partial class NewUserViewModel : ObservableObject
             return;
         }
 
+        // Reject a duplicate logon name up front (AD would also reject it, but with a cryptic error).
+        var sam = attributes["sAMAccountName"];
+        Status = "Checking logon name…";
+        try
+        {
+            if ((await _directory.FindExistingSamAccountNamesAsync(new[] { sam })).Contains(sam))
+            {
+                Status = $"The logon name “{sam}” already exists — choose a different one.";
+                _dialogs.Alert("Logon name already exists",
+                    $"A user or object with the logon name (sAMAccountName) “{sam}” already exists in the directory.\n\n" +
+                    "Change the logon name and try again.");
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            // Couldn't verify (transient/search error) — let AD enforce uniqueness on create rather than blocking.
+            AppLog.Instance.Warn($"Could not pre-check logon-name uniqueness for '{sam}': {DirectoryService.Friendly(ex)}");
+        }
+
         // Validate the chosen groups still exist; missing ones are reported and skipped (not a hard failure).
         Status = "Checking groups…";
         var (onPremGroups, missingOnPrem) = await PartitionExistingOnPremGroupsAsync(selectedOnPremDns);

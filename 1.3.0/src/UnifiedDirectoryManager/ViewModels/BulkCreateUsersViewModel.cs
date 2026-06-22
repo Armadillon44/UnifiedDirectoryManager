@@ -142,8 +142,20 @@ public partial class BulkCreateUsersViewModel : ObservableObject
         try
         {
             var text = await File.ReadAllTextAsync(path);
+
+            // Check the CSV is well-formed before importing anything.
+            var check = BulkUserCsvImporter.ValidateFormat(text);
+            if (!check.IsImportable)
+            {
+                _dialogs.Alert("CSV can’t be imported",
+                    "This CSV has formatting problems:\n\n• " + string.Join("\n• ", check.Errors)
+                    + "\n\nUse “Download CSV template” for the expected layout.");
+                Status = "Import cancelled — CSV format problem.";
+                return;
+            }
+
             var imported = await _importer.ImportAsync(text);
-            var warnings = new List<string>();
+            var warnings = new List<string>(check.Warnings);
             var n = 0;
             var defaultOu = string.IsNullOrWhiteSpace(TargetOu) ? DefaultOu : TargetOu;
             foreach (var src in imported)
@@ -158,6 +170,20 @@ public partial class BulkCreateUsersViewModel : ObservableObject
         }
         catch (Exception ex) { _dialogs.Alert("Import failed", DirectoryService.Friendly(ex)); Status = "Import failed."; }
         finally { IsBusy = false; }
+    }
+
+    /// <summary>Saves a sample CSV showing the expected columns/format, so the operator can fill it in and re-import.</summary>
+    [RelayCommand]
+    private void DownloadTemplate()
+    {
+        var path = _dialogs.PromptSaveFile("CSV files (*.csv)|*.csv|All files (*.*)|*.*", "bulk-create-users-template.csv");
+        if (path is null) return;
+        try
+        {
+            File.WriteAllText(path, BulkUserCsvImporter.TemplateCsv());
+            Status = $"Template saved to {path}.";
+        }
+        catch (Exception ex) { _dialogs.Alert("Couldn’t save template", DirectoryService.Friendly(ex)); }
     }
 
     [RelayCommand]
@@ -229,6 +255,24 @@ public partial class BulkCreateUsersViewModel : ObservableObject
 
         foreach (var dup in samSeen.Where(kv => kv.Value > 1))
             problems.Add($"Duplicate logon name “{dup.Key}” on {dup.Value} rows — each must be unique.");
+
+        // Verify every logon name against the directory before proceeding (none may already exist).
+        if (built.Count > 0)
+        {
+            Status = "Checking logon names…";
+            try
+            {
+                var existing = await _directory.FindExistingSamAccountNamesAsync(
+                    built.Select(x => x.Request.Attributes["sAMAccountName"]));
+                foreach (var s in built.Select(x => x.Request.Attributes["sAMAccountName"]).Where(existing.Contains).Distinct(StringComparer.OrdinalIgnoreCase))
+                    problems.Add($"Logon name “{s}” already exists in the directory — choose another.");
+            }
+            catch (Exception ex)
+            {
+                problems.Add("Couldn't verify logon names against the directory: " + DirectoryService.Friendly(ex)
+                    + ". Fix the connection and try again.");
+            }
+        }
 
         if (anyCloud)
         {

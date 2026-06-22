@@ -60,6 +60,11 @@ public interface IDirectoryService
     /// <summary>True if an object with the given DN currently exists (used to validate template group DNs before use).</summary>
     Task<bool> ExistsAsync(string distinguishedName, CancellationToken cancellationToken = default);
 
+    /// <summary>Returns the subset of the given sAMAccountNames that already exist in the directory (matched
+    /// case-insensitively, across any object type since the logon-name namespace is domain-wide), so callers
+    /// can reject duplicate logon names before attempting to create. Runs as one chunked query.</summary>
+    Task<IReadOnlySet<string>> FindExistingSamAccountNamesAsync(IEnumerable<string> samAccountNames, CancellationToken cancellationToken = default);
+
     /// <summary>Resolves a set of group DNs to a friendly classification (e.g. "Security · Global",
     /// "Distribution · Universal") read from each group's <c>groupType</c> bitmask. Returns a DN→kind map;
     /// DNs that aren't found / aren't groups are simply absent. Used for the Member Of "Type" column.</summary>

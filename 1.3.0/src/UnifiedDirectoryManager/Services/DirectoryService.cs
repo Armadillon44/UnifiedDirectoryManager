@@ -685,6 +685,45 @@ public sealed class DirectoryService : IDirectoryService
             catch { return false; }
         }, cancellationToken);
 
+    public Task<IReadOnlySet<string>> FindExistingSamAccountNamesAsync(
+        IEnumerable<string> samAccountNames, CancellationToken cancellationToken = default)
+    {
+        return Task.Run<IReadOnlySet<string>>(() =>
+        {
+            var wanted = samAccountNames
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .Select(s => s.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (wanted.Count == 0) return found;
+
+            // sAMAccountName is unique across all security principals (users, computers, groups), so we don't
+            // restrict by objectClass. Chunk the OR clause so a large batch can't blow past the filter-size limit.
+            foreach (var chunk in wanted.Chunk(100))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var clauses = string.Concat(chunk.Select(s => $"(sAMAccountName={LdapFilter.EscapeValue(s)})"));
+                using var root = Required.CreateEntry();
+                using var searcher = new DirectorySearcher(root)
+                {
+                    SearchScope = SearchScope.Subtree,
+                    Filter = $"(|{clauses})",
+                    PageSize = 500,
+                };
+                searcher.PropertiesToLoad.Add("sAMAccountName");
+
+                using var results = searcher.FindAll();
+                foreach (SearchResult r in results)
+                {
+                    var sam = GetString(r, "sAMAccountName");
+                    if (!string.IsNullOrEmpty(sam)) found.Add(sam);
+                }
+            }
+            return found;
+        }, cancellationToken);
+    }
+
     public Task<IReadOnlyDictionary<string, string>> GetGroupTypesAsync(
         IReadOnlyList<string> distinguishedNames, CancellationToken cancellationToken = default)
     {

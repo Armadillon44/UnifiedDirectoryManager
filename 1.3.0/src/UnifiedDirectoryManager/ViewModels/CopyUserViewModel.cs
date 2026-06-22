@@ -302,6 +302,26 @@ public partial class CopyUserViewModel : ObservableObject
         if (doSync && string.IsNullOrWhiteSpace(EntraConnectServer)) { Status = "Enter the Entra Connect server to run the post-create sync."; return; }
         if (doSync && SyncSpecifyCredentials && string.IsNullOrWhiteSpace(SyncUsername)) { Status = "Enter the sync-account username, or clear “Use a specific account”."; return; }
 
+        // Reject a duplicate logon name before creating (AD would reject it too, but cryptically).
+        var sam = attributes.TryGetValue("sAMAccountName", out var samValue) && !string.IsNullOrWhiteSpace(samValue)
+            ? samValue : SamAccountName.Trim();
+        Status = "Checking logon name…";
+        try
+        {
+            if ((await _directory.FindExistingSamAccountNamesAsync(new[] { sam })).Contains(sam))
+            {
+                Status = $"The logon name “{sam}” already exists — choose a different one.";
+                _dialogs.Alert("Logon name already exists",
+                    $"A user or object with the logon name (sAMAccountName) “{sam}” already exists in the directory.\n\n" +
+                    "Change the logon name and try again.");
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Instance.Warn($"Could not pre-check logon-name uniqueness for '{sam}': {DirectoryService.Friendly(ex)}");
+        }
+
         var lines = new List<string> { $"Create user in: {TargetOu}" };
         lines.AddRange(attributes.OrderBy(kv => kv.Key).Select(kv => $"{AttributeCatalog.Friendly(kv.Key)}: {kv.Value}"));
         if (groupDns.Count > 0) lines.Add($"Add to {groupDns.Count} on-prem group(s)");

@@ -45,6 +45,8 @@
                 <Button Content="Add user…" Command="{Binding AddUserCommand}" Margin="0,0,6,0"
                         ToolTip="Opens the standard New User form to configure a user, then adds them to the batch" />
                 <Button Content="Import CSV…" Command="{Binding ImportCsvCommand}" Margin="0,0,6,0" />
+                <Button Content="Download CSV template" Command="{Binding DownloadTemplateCommand}" Margin="0,0,6,0"
+                        ToolTip="Saves a sample CSV showing the columns and format expected by Import CSV." />
                 <Button Content="Clear all" Command="{Binding ClearRowsCommand}" />
                 <CheckBox Content="Require password change at next logon" IsChecked="{Binding RequirePasswordChange}"
                           VerticalAlignment="Center" Margin="16,0,0,0"
