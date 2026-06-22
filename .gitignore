@@ -1,0 +1,10 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+dist/
+
+# OS / editor cruft
+.DS_Store
+.vs/
+*.user
+*.suo

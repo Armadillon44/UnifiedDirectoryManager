@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "PowerShell|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "$j=[Console]::In.ReadToEnd(); if($j -match 'publish\\.ps1'){'{\"systemMessage\":\"Version check: assess whether a semver bump is needed (new feature -> minor, fix -> patch, breaking -> major) and confirm the new version with the user BEFORE publishing.\",\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"About to run publish.ps1. Per the version-bump-workflow memory: classify changes since the last published version and ASK the user to confirm the version before publishing the executables.\"}}'}"
+          }
+        ]
+      }
+    ]
+  }
+}

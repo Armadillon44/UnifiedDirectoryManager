@@ -1,0 +1,221 @@
+<Window x:Class="UnifiedDirectoryManager.Views.Dialogs.NewUserWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="New User" Height="715" Width="830"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Grid Margin="14">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="340" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Inputs -->
+        <ScrollViewer Grid.Row="0" Grid.Column="0" VerticalScrollBarVisibility="Auto" Margin="0,0,12,0">
+            <StackPanel>
+                <TextBlock Text="Template" Style="{StaticResource FieldLabel}" />
+                <DockPanel>
+                    <Button DockPanel.Dock="Right" Content="Manage…" Command="{Binding ManageTemplatesCommand}" Margin="6,0,0,0" />
+                    <ComboBox ItemsSource="{Binding Templates}" DisplayMemberPath="Name" SelectedItem="{Binding SelectedTemplate}" />
+                </DockPanel>
+
+                <TextBlock Text="First name" Style="{StaticResource FieldLabel}" Margin="0,8,0,2" />
+                <TextBox Text="{Binding FirstName, UpdateSourceTrigger=PropertyChanged}" />
+                <TextBlock Text="Middle name" Style="{StaticResource FieldLabel}" />
+                <TextBox Text="{Binding MiddleName, UpdateSourceTrigger=PropertyChanged}" />
+                <TextBlock Text="Last name" Style="{StaticResource FieldLabel}" />
+                <TextBox Text="{Binding LastName, UpdateSourceTrigger=PropertyChanged}" />
+                <TextBlock Text="Initials" Style="{StaticResource FieldLabel}" />
+                <TextBox Text="{Binding Initials, UpdateSourceTrigger=PropertyChanged}" />
+                <TextBlock Text="Logon name override (sAMAccountName)" Style="{StaticResource FieldLabel}" />
+                <TextBox Text="{Binding SamOverride, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="Leave blank to use the template pattern" />
+                <TextBlock Text="UPN suffix (used to suggest UPN)" Style="{StaticResource FieldLabel}" />
+                <TextBox Text="{Binding UpnSuffix, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="e.g. lacrossefootwear.com or danner.com (routable domain for Entra sync)" />
+                <TextBlock Text="Email (mail)" Style="{StaticResource FieldLabel}" />
+                <TextBox Text="{Binding Email, UpdateSourceTrigger=PropertyChanged}" />
+                <TextBlock Text="User logon name (UPN)" Style="{StaticResource FieldLabel}" />
+                <TextBox Text="{Binding Upn, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="Syncs to Entra; use a routable domain such as lacrossefootwear.com or danner.com" />
+                <TextBlock Text="Proxy addresses (one per line)" Style="{StaticResource FieldLabel}" />
+                <TextBox Text="{Binding ProxyAddressesText, UpdateSourceTrigger=PropertyChanged}"
+                         AcceptsReturn="True" TextWrapping="NoWrap" Height="56" VerticalScrollBarVisibility="Auto"
+                         FontFamily="Consolas"
+                         ToolTip="e.g. SMTP:user@lacrossefootwear.com (primary, uppercase), smtp:user@danner.com (alias)" />
+                <TextBlock Text="Manager" Style="{StaticResource FieldLabel}" />
+                <DockPanel>
+                    <Button DockPanel.Dock="Right" Content="Clear" Command="{Binding ClearManagerCommand}" Margin="6,2,0,2" />
+                    <Button DockPanel.Dock="Right" Content="Pick…" Command="{Binding PickManagerCommand}" Margin="6,2,0,2" />
+                    <TextBox Text="{Binding ManagerDisplay, Mode=OneWay}" IsReadOnly="True" />
+                </DockPanel>
+
+                <TextBlock Text="Target OU" Style="{StaticResource FieldLabel}" />
+                <DockPanel>
+                    <Button DockPanel.Dock="Right" Content="Browse…" Command="{Binding BrowseOuCommand}" Margin="6,2,0,2" />
+                    <TextBox Text="{Binding TargetOu, UpdateSourceTrigger=PropertyChanged}" />
+                </DockPanel>
+                <TextBlock Text="Initial password" Style="{StaticResource FieldLabel}" />
+                <DockPanel>
+                    <Button DockPanel.Dock="Right" Content="Generate" Command="{Binding GeneratePasswordCommand}" Margin="6,2,0,2" />
+                    <PasswordBox x:Name="PasswordBox" Margin="0,2" Padding="3,2" />
+                </DockPanel>
+                <DockPanel Margin="0,2,0,0" Visibility="{Binding GeneratedPassword, Converter={StaticResource NonEmptyToVis}}">
+                    <Button DockPanel.Dock="Right" Content="Copy" Click="OnCopyPassword" Margin="6,0,0,0" />
+                    <TextBox Text="{Binding GeneratedPassword, Mode=OneWay}" IsReadOnly="True" FontFamily="Consolas"
+                             Foreground="#0A7" BorderThickness="0" Background="Transparent" VerticalContentAlignment="Center"
+                             ToolTip="Select to copy, or use the Copy button" />
+                </DockPanel>
+
+                <CheckBox Content="Account enabled" IsChecked="{Binding Enabled}" Margin="0,8,0,0" />
+                <CheckBox Content="User must change password at next logon" IsChecked="{Binding MustChangePassword}" Margin="0,4,0,0" />
+
+                <TextBlock Text="Entra Connect sync" Style="{StaticResource FieldLabel}" Margin="0,12,0,2" />
+                <CheckBox Content="Run a delta sync after creating" IsChecked="{Binding RunEntraSync}"
+                          IsEnabled="{Binding SyncCheckboxEnabled}" />
+                <TextBlock Foreground="#B8860B" FontSize="11" Margin="20,1,0,0" TextWrapping="Wrap"
+                           Text="Required: cloud groups or a Temporary Access Pass are selected — the user must sync to Entra ID first."
+                           Visibility="{Binding SyncMandatory, Converter={StaticResource BoolToVis}}" />
+                <TextBlock Text="Entra Connect server" Style="{StaticResource FieldLabel}" Margin="0,6,0,2" />
+                <TextBox Text="{Binding EntraConnectServer, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="Server running Entra Connect; a delta sync runs there via WinRM." />
+                <CheckBox Content="Use a specific account for the sync" IsChecked="{Binding SyncSpecifyCredentials}" Margin="0,6,0,0"
+                          ToolTip="When unticked, the sync uses the account saved in Settings ▸ Entra Connect (if any), otherwise your current Windows user. Tick this to override with a different account for the WinRM connection." />
+                <Grid Margin="0,2,0,0" IsEnabled="{Binding SyncSpecifyCredentials}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="90" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Username" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" />
+                    <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding SyncUsername, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="DOMAIN\user or user@domain" />
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Password" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" />
+                    <PasswordBox Grid.Row="1" Grid.Column="1" x:Name="SyncPasswordBox" Margin="0,2" Padding="3,2" />
+                </Grid>
+
+                <TextBlock Text="Temporary Access Pass (Entra ID)" Style="{StaticResource FieldLabel}" Margin="0,12,0,2" />
+                <CheckBox Content="Issue a Temporary Access Pass after the user syncs" IsChecked="{Binding IssueTap}"
+                          ToolTip="A time-limited passcode for passwordless onboarding (register Authenticator / Windows Hello). Forces a post-create Entra Connect sync, and requires TAP to be enabled in your tenant's Authentication Methods policy." />
+                <Grid Margin="0,4,0,0" IsEnabled="{Binding IssueTap}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="120" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Lifetime (minutes)" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" />
+                    <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding TapLifetimeMinutes, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="10–43200 (up to 30 days). 1440 = 24 hours." />
+                    <CheckBox Grid.Row="1" Grid.Column="1" Content="One-time use only" IsChecked="{Binding TapOneTimeUse}" Margin="0,4,0,0"
+                              ToolTip="If unticked, the pass can be used repeatedly within its lifetime (multi-use must be enabled in tenant policy)." />
+                </Grid>
+                <DockPanel Margin="0,4,0,0" Visibility="{Binding TapCode, Converter={StaticResource NonEmptyToVis}}">
+                    <Button DockPanel.Dock="Right" Content="Copy" Click="OnCopyTap" Margin="6,0,0,0" />
+                    <TextBox Text="{Binding TapCode, Mode=OneWay}" IsReadOnly="True" FontFamily="Consolas"
+                             Foreground="#0A7" BorderThickness="0" Background="Transparent" VerticalContentAlignment="Center"
+                             ToolTip="Temporary Access Pass — copy it now; it can't be shown again." />
+                </DockPanel>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- Preview + editable groups + live progress -->
+        <Grid Grid.Row="0" Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <DockPanel Grid.Row="0">
+                <TextBlock DockPanel.Dock="Top" Text="Preview (resolved attributes)" FontWeight="SemiBold" Margin="0,0,0,4" />
+                <ListView ItemsSource="{Binding Preview}">
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn Header="Attribute" Width="150" DisplayMemberBinding="{Binding Friendly}" />
+                            <GridViewColumn Header="Value" Width="160" DisplayMemberBinding="{Binding Value}" />
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+            </DockPanel>
+
+            <!-- Groups: auto-filled from the template, then editable (check/uncheck, add, remove). -->
+            <DockPanel Grid.Row="1" Margin="0,8,0,0">
+                <TextBlock DockPanel.Dock="Top" Text="Groups (from template — editable)" FontWeight="SemiBold" Margin="0,0,0,4" />
+                <WrapPanel DockPanel.Dock="Bottom" Margin="0,4,0,0">
+                    <Button Content="Add groups…" Command="{Binding AddGroupsCommand}" Margin="0,0,6,0" />
+                    <Button Content="Add cloud groups…" Command="{Binding AddCloudGroupsCommand}" />
+                </WrapPanel>
+                <Border BorderBrush="#DDD" BorderThickness="1" MaxHeight="150">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="4">
+                            <ItemsControl ItemsSource="{Binding OnPremGroups}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <DockPanel Margin="0,1">
+                                            <Button DockPanel.Dock="Right" Content="✕" Width="22" MinWidth="22" Padding="0"
+                                                    Command="{Binding DataContext.RemoveGroupCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                    CommandParameter="{Binding}" />
+                                            <CheckBox IsChecked="{Binding Include}" Content="{Binding Name}" VerticalAlignment="Center" />
+                                        </DockPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <TextBlock Text="Cloud (Entra ID) groups" Foreground="#888" FontSize="11" Margin="0,6,0,2"
+                                       Visibility="{Binding SyncMandatory, Converter={StaticResource BoolToVis}}" />
+                            <ItemsControl ItemsSource="{Binding CloudGroups}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <DockPanel Margin="0,1">
+                                            <Button DockPanel.Dock="Right" Content="✕" Width="22" MinWidth="22" Padding="0"
+                                                    Command="{Binding DataContext.RemoveCloudGroupCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                    CommandParameter="{Binding}" />
+                                            <CheckBox IsChecked="{Binding Include}" Content="{Binding Name}" VerticalAlignment="Center" />
+                                        </DockPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Border>
+            </DockPanel>
+
+            <DockPanel Grid.Row="2" Margin="0,8,0,0"
+                       Visibility="{Binding ShowProgress, Converter={StaticResource BoolToVis}}">
+                <TextBlock DockPanel.Dock="Top" Text="Progress" FontWeight="SemiBold" Margin="0,0,0,4" />
+                <Border BorderBrush="#DDD" BorderThickness="1" MaxHeight="220">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding ProgressSteps}" Margin="4">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,1" FontSize="12" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Border>
+            </DockPanel>
+        </Grid>
+
+        <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding Status}" Foreground="#666" Margin="0,10,0,0" TextWrapping="Wrap" />
+
+        <StackPanel Grid.Row="2" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Create" IsDefault="True" Click="OnCreate"
+                    Visibility="{Binding CanCreate, Converter={StaticResource BoolToVis}}"
+                    IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" MinWidth="90" />
+            <Button Content="Retry sync" Click="OnRetrySync"
+                    Visibility="{Binding CanRetrySync, Converter={StaticResource BoolToVis}}"
+                    IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" MinWidth="90" />
+            <Button Content="Close" IsCancel="True" Click="OnClose" MinWidth="90" />
+        </StackPanel>
+    </Grid>
+</Window>

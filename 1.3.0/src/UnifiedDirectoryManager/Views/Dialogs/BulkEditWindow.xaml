@@ -1,0 +1,77 @@
+<Window x:Class="UnifiedDirectoryManager.Views.Dialogs.BulkEditWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Bulk Edit" Height="560" Width="660"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Margin="0,0,0,8" FontWeight="SemiBold">
+            <Run Text="Apply changes to " /><Run Text="{Binding TargetCount, Mode=OneWay}" /><Run Text=" selected object(s)." />
+        </TextBlock>
+
+        <!-- Build changes -->
+        <Border Grid.Row="1" BorderBrush="#DDD" BorderThickness="1" Padding="8" Margin="0,0,0,8">
+            <StackPanel>
+                <WrapPanel>
+                    <TextBlock Text="Set attribute:" VerticalAlignment="Center" Margin="0,0,6,0" />
+                    <ComboBox Width="200" ItemsSource="{Binding Attributes}" DisplayMemberPath="Friendly"
+                              SelectedItem="{Binding SelectedAttribute}" Margin="0,0,6,0" />
+                    <TextBox Width="180" Text="{Binding AttributeValue, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,6,0"
+                             ToolTip="Leave blank to clear the attribute" />
+                    <Button Content="Add change" Command="{Binding AddSetChangeCommand}" />
+                </WrapPanel>
+                <WrapPanel Margin="0,8,0,0">
+                    <Button Content="Enable accounts" Command="{Binding AddEnableCommand}" />
+                    <Button Content="Disable accounts" Command="{Binding AddDisableCommand}" />
+                    <Button Content="Add to groups…" Command="{Binding AddGroupsCommand}" />
+                    <Button Content="Remove from groups…" Command="{Binding RemoveGroupsCommand}" />
+                </WrapPanel>
+            </StackPanel>
+        </Border>
+
+        <DockPanel Grid.Row="2">
+            <TextBlock DockPanel.Dock="Top" Text="Queued changes" FontWeight="SemiBold" Margin="0,0,0,4" />
+            <ListView ItemsSource="{Binding Changes}">
+                <ListView.View>
+                    <GridView>
+                        <GridViewColumn Header="Change" Width="520">
+                            <GridViewColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Description}" />
+                                </DataTemplate>
+                            </GridViewColumn.CellTemplate>
+                        </GridViewColumn>
+                        <GridViewColumn Header="" Width="80">
+                            <GridViewColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Button Content="Remove" Padding="4,0"
+                                            Command="{Binding DataContext.RemoveChangeCommand, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                            CommandParameter="{Binding}" />
+                                </DataTemplate>
+                            </GridViewColumn.CellTemplate>
+                        </GridViewColumn>
+                    </GridView>
+                </ListView.View>
+            </ListView>
+        </DockPanel>
+
+        <ProgressBar Grid.Row="3" Height="14" Margin="0,8" Minimum="0" Maximum="{Binding TargetCount}"
+                     Value="{Binding Progress}" />
+
+        <DockPanel Grid.Row="4">
+            <TextBlock Text="{Binding Status}" Foreground="#666" VerticalAlignment="Center" />
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="Apply" Command="{Binding ApplyCommand}"
+                        IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" MinWidth="90" />
+                <Button Content="Close" IsCancel="True" MinWidth="90" />
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>

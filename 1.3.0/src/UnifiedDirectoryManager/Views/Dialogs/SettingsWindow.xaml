@@ -1,0 +1,136 @@
+<Window x:Class="UnifiedDirectoryManager.Views.Dialogs.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:UnifiedDirectoryManager.Views.Controls"
+        Title="Settings" Height="600" Width="600"
+        WindowStartupLocation="CenterOwner">
+    <DockPanel Margin="14">
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Close" IsCancel="True" Click="OnClose" MinWidth="90" />
+        </StackPanel>
+
+        <TabControl SelectionChanged="OnTabChanged">
+            <!-- On-prem Active Directory connection (embedded form + live reconnect) -->
+            <TabItem Header="On-prem AD (LDAP)">
+                <DockPanel Margin="12">
+                    <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,10"
+                               Text="Edit the directory connection and click Reconnect to rebind to a (possibly different) domain controller without restarting. The current connection is shown below." />
+                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+                        <Button Content="Reconnect" Command="{Binding Connection.ConnectCommand}"
+                                IsEnabled="{Binding Connection.IsBusy, Converter={StaticResource InverseBool}}" MinWidth="100" />
+                    </StackPanel>
+                    <controls:ConnectionFormView DataContext="{Binding Connection}" VerticalAlignment="Top" />
+                </DockPanel>
+            </TabItem>
+
+            <!-- Cloud (Entra ID / Microsoft Graph) sign-in -->
+            <TabItem Header="Cloud (Entra ID)">
+                <DockPanel Margin="12" DataContext="{Binding Cloud}">
+                    <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,12"
+                               Text="Sign in to Microsoft Graph to read cloud identity, licensing and groups. Requires an Entra app registration (Mobile &amp; desktop platform, redirect URI http://localhost) with delegated permissions User.Read.All, Organization.Read.All and Group.Read.All. No client secret is used." />
+
+                    <Grid DockPanel.Dock="Top">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Tenant ID" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" />
+                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding TenantId, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="Directory (tenant) ID GUID, or the tenant domain (e.g. contoso.onmicrosoft.com)" />
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Client ID" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" Margin="0,6,0,0" />
+                        <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" Text="{Binding ClientId, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="Application (client) ID GUID from the app registration" />
+                    </Grid>
+
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,12,0,0">
+                        <Button Content="Sign in…" Command="{Binding SignInCommand}"
+                                IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" MinWidth="110" />
+                        <Button Content="Sign out" Command="{Binding SignOutCommand}"
+                                IsEnabled="{Binding IsSignedIn}" MinWidth="90" />
+                    </StackPanel>
+
+                    <TextBox DockPanel.Dock="Top" Text="{Binding Status, Mode=OneWay}" IsReadOnly="True" Margin="0,12,0,0"
+                             FontFamily="Consolas" FontSize="12" TextWrapping="Wrap" MinHeight="60"
+                             VerticalScrollBarVisibility="Auto" Background="#FAFAFA" />
+
+                    <Border /><!-- filler so the fields stay top-aligned -->
+                </DockPanel>
+            </TabItem>
+
+            <!-- Entra Connect (directory sync) server + optional saved sync account -->
+            <TabItem Header="Entra Connect">
+                <DockPanel Margin="12">
+                    <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,12"
+                               Text="Configure the Entra Connect (Azure AD Connect) server that runs a delta sync (Start-ADSyncSyncCycle over WinRM) after creating or copying a user. By default the sync runs as the current Windows user; to run it as a specific account, save one below — it is stored in Windows Credential Manager and reused everywhere a sync runs." />
+
+                    <TextBlock DockPanel.Dock="Top" Text="Entra Connect server" Style="{StaticResource FieldLabel}" />
+                    <TextBox DockPanel.Dock="Top" Text="{Binding SyncServer, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="Hostname of the Entra Connect / Azure AD Connect server (e.g. PDXAADPROD.contoso.net)" />
+
+                    <CheckBox DockPanel.Dock="Top" Margin="0,12,0,0" IsChecked="{Binding SyncUseSavedAccount}"
+                              Content="Use a saved account for the sync (otherwise the current Windows user runs it)" />
+
+                    <Grid DockPanel.Dock="Top" Margin="0,8,0,0" IsEnabled="{Binding SyncUseSavedAccount}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Username" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" />
+                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding SyncUsername, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="DOMAIN\user or user@domain — an account with rights to run the sync on the Entra Connect server" />
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Password" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" Margin="0,6,0,0" />
+                        <PasswordBox Grid.Row="1" Grid.Column="1" x:Name="SyncPasswordBox" Margin="0,6,0,0"
+                                     PasswordChanged="OnSyncPasswordChanged" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,4,0,0" Foreground="#999" FontSize="11" TextWrapping="Wrap"
+                                   Visibility="{Binding SyncHasSavedPassword, Converter={StaticResource BoolToVis}}"
+                                   Text="A password is already saved — leave blank to keep it." />
+                    </Grid>
+
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,12,0,0">
+                        <Button Content="Save" Command="{Binding SaveSyncSettingsCommand}" MinWidth="90" />
+                        <Button Content="Clear saved account" Command="{Binding ClearSyncCredentialCommand}" MinWidth="140" Margin="8,0,0,0" />
+                    </StackPanel>
+
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding SyncStatus}" Foreground="#0A7" Margin="0,10,0,0" TextWrapping="Wrap" />
+
+                    <Border /><!-- filler so the fields stay top-aligned -->
+                </DockPanel>
+            </TabItem>
+
+            <!-- Operation logs (where scenario-run logs and other operation logs are saved) -->
+            <TabItem Header="Logs">
+                <DockPanel Margin="12">
+                    <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,12"
+                               Text="Choose where operation logs are saved — for example, the plain-text record a scenario can write of every step taken and change made (such as the groups removed by a Terminate-User scenario). Leave blank to use the default folder below." />
+
+                    <TextBlock DockPanel.Dock="Top" Text="Operation log folder" Style="{StaticResource FieldLabel}" />
+                    <DockPanel DockPanel.Dock="Top">
+                        <Button DockPanel.Dock="Right" Content="Browse…" Click="OnBrowseLogFolder" Margin="6,2,0,2" />
+                        <TextBox Text="{Binding OperationLogDirectory, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="Folder for operation logs. Leave blank to use the default." />
+                    </DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Margin="0,4,0,0" Foreground="#999" FontSize="11" TextWrapping="Wrap"
+                               Text="{Binding DefaultLogDirectory, StringFormat=Default (when blank): {0}}" />
+
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,12,0,0">
+                        <Button Content="Save" Command="{Binding SaveLogSettingsCommand}" MinWidth="90" />
+                        <Button Content="Use default" Command="{Binding ResetLogDirectoryCommand}" MinWidth="90" />
+                    </StackPanel>
+
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding LogStatus}" Foreground="#0A7" Margin="0,10,0,0" TextWrapping="Wrap" />
+
+                    <Border /><!-- filler so the fields stay top-aligned -->
+                </DockPanel>
+            </TabItem>
+        </TabControl>
+    </DockPanel>
+</Window>

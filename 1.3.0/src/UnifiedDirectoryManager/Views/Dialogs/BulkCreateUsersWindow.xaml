@@ -1,0 +1,148 @@
+<Window x:Class="UnifiedDirectoryManager.Views.Dialogs.BulkCreateUsersWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Bulk Create Users" Height="720" Width="1160"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Batch settings + toolbar -->
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="220" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="170" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="Template" VerticalAlignment="Center" Margin="0,0,6,0" />
+            <ComboBox Grid.Row="0" Grid.Column="1" ItemsSource="{Binding Templates}" DisplayMemberPath="Name"
+                      SelectedItem="{Binding SelectedTemplate}" VerticalAlignment="Center" />
+
+            <TextBlock Grid.Row="0" Grid.Column="2" Text="Target OU" VerticalAlignment="Center" Margin="14,0,6,0" />
+            <DockPanel Grid.Row="0" Grid.Column="3">
+                <Button DockPanel.Dock="Right" Content="Browse…" Command="{Binding BrowseOuCommand}" Margin="6,0,0,0" />
+                <TextBox Text="{Binding TargetOu, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center" />
+            </DockPanel>
+
+            <TextBlock Grid.Row="0" Grid.Column="4" Text="UPN suffix" VerticalAlignment="Center" Margin="14,0,6,0" />
+            <TextBox Grid.Row="0" Grid.Column="5" Text="{Binding UpnSuffix, UpdateSourceTrigger=PropertyChanged}"
+                     VerticalAlignment="Center" ToolTip="Routable domain used to suggest UPN/email (e.g. lacrossefootwear.com)" />
+
+            <WrapPanel Grid.Row="1" Grid.ColumnSpan="6" Margin="0,8,0,0">
+                <Button Content="Add user…" Command="{Binding AddUserCommand}" Margin="0,0,6,0"
+                        ToolTip="Opens the standard New User form to configure a user, then adds them to the batch" />
+                <Button Content="Import CSV…" Command="{Binding ImportCsvCommand}" Margin="0,0,6,0" />
+                <Button Content="Clear all" Command="{Binding ClearRowsCommand}" />
+            </WrapPanel>
+        </Grid>
+
+        <!-- Batch list (read-only). Configure users via the New User form: Add user…, double-click or Edit. -->
+        <DataGrid Grid.Row="1" ItemsSource="{Binding Rows}" AutoGenerateColumns="False" IsReadOnly="True"
+                  CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Single"
+                  HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                  MouseDoubleClick="OnRowDoubleClick">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Name" Width="160" Binding="{Binding DisplayName}" />
+                <DataGridTextColumn Header="Logon (sAM)" Width="120" Binding="{Binding Sam}" />
+                <DataGridTextColumn Header="UPN" Width="180" Binding="{Binding Upn}" />
+                <DataGridTextColumn Header="Email" Width="170" Binding="{Binding Email}" />
+                <DataGridTextColumn Header="OU" Width="120" Binding="{Binding OuRdn}" />
+                <DataGridTextColumn Header="Manager" Width="120" Binding="{Binding ManagerDisplay}" />
+                <DataGridTextColumn Header="Groups" Width="80" Binding="{Binding OnPremGroupsSummary}" />
+                <DataGridTextColumn Header="Cloud groups" Width="140" Binding="{Binding CloudGroupsSummary}" />
+                <DataGridTextColumn Header="TAP" Width="64" Binding="{Binding TapText}" />
+                <DataGridTextColumn Header="Status" Width="200" Binding="{Binding Status}" />
+
+                <DataGridTemplateColumn Header="" Width="86">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="Edit" MinWidth="36" Padding="6,0" Margin="0,0,4,0" ToolTip="Edit in the New User form"
+                                        Command="{Binding DataContext.EditRowCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                        CommandParameter="{Binding}" />
+                                <Button Content="✕" Width="24" MinWidth="24" Padding="0" ToolTip="Remove from batch"
+                                        Command="{Binding DataContext.RemoveRowCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                        CommandParameter="{Binding}" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <!-- Cloud sync settings (left) + live progress (right) -->
+        <Grid Grid.Row="2" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Expander Grid.Column="0" Header="Entra Connect sync (only used when rows need cloud groups / a TAP)"
+                      Margin="0,0,8,0">
+                <StackPanel Margin="6,6,6,0">
+                    <TextBlock Text="Entra Connect server" Margin="0,0,0,2" />
+                    <TextBox Text="{Binding EntraConnectServer, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="Server running Entra Connect; ONE delta sync runs there via WinRM after creating the batch." />
+                    <CheckBox Content="Use a specific account for the sync" IsChecked="{Binding SyncSpecifyCredentials}" Margin="0,6,0,0" />
+                    <Grid Margin="0,4,0,0" IsEnabled="{Binding SyncSpecifyCredentials}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="80" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Username" VerticalAlignment="Center" />
+                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding SyncUsername, UpdateSourceTrigger=PropertyChanged}"
+                                 Margin="0,2" ToolTip="DOMAIN\user or user@domain" />
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Password" VerticalAlignment="Center" />
+                        <PasswordBox Grid.Row="1" Grid.Column="1" x:Name="SyncPasswordBox" Margin="0,2" Padding="3,2" />
+                    </Grid>
+                </StackPanel>
+            </Expander>
+
+            <DockPanel Grid.Column="1" Visibility="{Binding ShowProgress, Converter={StaticResource BoolToVis}}">
+                <DockPanel DockPanel.Dock="Top" Margin="0,0,0,4">
+                    <TextBlock Text="Progress" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding ProgressText}" Foreground="#666" Margin="10,0,0,0" />
+                </DockPanel>
+                <Border BorderBrush="#DDD" BorderThickness="1" MaxHeight="170">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding ProgressSteps}" Margin="4">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,1" FontSize="12" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Border>
+            </DockPanel>
+        </Grid>
+
+        <TextBlock Grid.Row="3" Text="{Binding Status}" Foreground="#666" Margin="0,10,0,0" TextWrapping="Wrap" />
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Create users" IsDefault="True" Click="OnRun" MinWidth="110"
+                    IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" />
+            <Button Content="Retry cloud" Click="OnRetryCloud" Margin="8,0,0,0" MinWidth="90"
+                    Visibility="{Binding CanRetryCloud, Converter={StaticResource BoolToVis}}"
+                    IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" />
+            <Button Content="Close" IsCancel="True" Click="OnClose" Margin="8,0,0,0" MinWidth="90" />
+        </StackPanel>
+    </Grid>
+</Window>

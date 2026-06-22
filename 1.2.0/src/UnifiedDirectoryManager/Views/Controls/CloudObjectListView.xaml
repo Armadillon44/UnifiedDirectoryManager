@@ -1,0 +1,87 @@
+<UserControl x:Class="UnifiedDirectoryManager.Views.Controls.CloudObjectListView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <!-- Per-row selection checkbox (cell DataContext is a CloudObjectRow). -->
+        <DataTemplate x:Key="CheckCell">
+            <CheckBox IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                      HorizontalAlignment="Center" />
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <DockPanel>
+        <!-- Header -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource HeaderBrush}" Padding="8">
+            <TextBlock Text="{Binding Header}" FontWeight="SemiBold" FontSize="14" Foreground="White" VerticalAlignment="Center" />
+        </Border>
+
+        <!-- Filter bar -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource AccentLight}" Padding="6" BorderBrush="#CFE0F0" BorderThickness="0,0,0,1">
+            <WrapPanel>
+                <TextBlock Text="Search:" VerticalAlignment="Center" Margin="0,0,6,0" />
+                <TextBox Width="170" VerticalAlignment="Center" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="Server-side name search. Press Enter or click Search.">
+                    <TextBox.InputBindings>
+                        <KeyBinding Key="Return" Command="{Binding SearchCommand}" />
+                    </TextBox.InputBindings>
+                </TextBox>
+                <Button Content="Search" Command="{Binding SearchCommand}" Margin="6,0,0,0" Padding="8,2" />
+                <TextBlock Text="Show:" VerticalAlignment="Center" Margin="14,0,6,0" />
+                <ComboBox Width="150" VerticalAlignment="Center" ItemsSource="{Binding FilterOptions}"
+                          SelectedItem="{Binding SelectedFilter}" DisplayMemberPath="Name" />
+                <TextBlock Text="Filter:" VerticalAlignment="Center" Margin="14,0,6,0" />
+                <TextBox Width="150" VerticalAlignment="Center" Text="{Binding QuickFilter, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="Client-side quick filter over loaded rows." />
+                <ToggleButton x:Name="ColumnsToggle" Content="Columns ▾" Margin="10,0,0,0" Padding="8,2" />
+                <Popup IsOpen="{Binding IsChecked, ElementName=ColumnsToggle}" StaysOpen="False"
+                       PlacementTarget="{Binding ElementName=ColumnsToggle}" Placement="Bottom" AllowsTransparency="True">
+                    <Border Background="White" BorderBrush="#BBB" BorderThickness="1" Padding="8">
+                        <ItemsControl ItemsSource="{Binding Columns}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <CheckBox Content="{Binding Header}" IsChecked="{Binding IsVisible}" Margin="0,2" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </Border>
+                </Popup>
+                <Button Content="Export loaded…" Command="{Binding ExportCsvCommand}" Margin="10,0,0,0" Padding="8,2"
+                        ToolTip="Export only the rows currently loaded into the list (respects the active filter)." />
+                <Button Content="Export all…" Command="{Binding ExportAllCsvCommand}" Margin="6,0,0,0" Padding="8,2"
+                        ToolTip="Fetch every object from Entra ID across all pages and export them (respects the active filter)." />
+            </WrapPanel>
+        </Border>
+
+        <!-- Selection + (disabled) bulk actions -->
+        <Border DockPanel.Dock="Top" Padding="6,4" Background="#F7F7F7" BorderBrush="#E0E0E0" BorderThickness="0,0,0,1">
+            <WrapPanel>
+                <TextBlock VerticalAlignment="Center" Margin="0,0,12,0">
+                    <Run Text="{Binding CheckedCount, Mode=OneWay}" /><Run Text=" selected" />
+                </TextBlock>
+                <Button Content="Enable" Command="{Binding EnableCheckedCommand}" Padding="8,2" Margin="0,0,6,0"
+                        Visibility="{Binding ShowUserActions, Converter={StaticResource BoolToVis}}"
+                        ToolTip="Enable the checked cloud users" />
+                <Button Content="Disable" Command="{Binding DisableCheckedCommand}" Padding="8,2" Margin="0,0,6,0"
+                        Visibility="{Binding ShowUserActions, Converter={StaticResource BoolToVis}}"
+                        ToolTip="Disable the checked cloud users" />
+                <Button Content="Revoke sessions" Command="{Binding RevokeCheckedCommand}" Padding="8,2"
+                        Visibility="{Binding ShowUserActions, Converter={StaticResource BoolToVis}}"
+                        ToolTip="Revoke sign-in sessions for the checked cloud users" />
+                <Button Content="Load more" Command="{Binding LoadMoreCommand}" Margin="16,0,0,0" Padding="8,2"
+                        Visibility="{Binding HasMore, Converter={StaticResource BoolToVis}}" />
+            </WrapPanel>
+        </Border>
+
+        <TextBlock DockPanel.Dock="Bottom" Text="{Binding Status}" Foreground="#666" Margin="6,3" TextWrapping="Wrap" />
+
+        <ListView x:Name="List" ItemsSource="{Binding RowsView}" SelectionMode="Single"
+                  SelectionChanged="OnSelectionChanged" MouseDoubleClick="OnRowDoubleClick"
+                  GridViewColumnHeader.Click="OnHeaderClick"
+                  ScrollViewer.IsDeferredScrollingEnabled="True"
+                  VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
+            <ListView.View>
+                <GridView x:Name="Grid" />
+            </ListView.View>
+        </ListView>
+    </DockPanel>
+</UserControl>

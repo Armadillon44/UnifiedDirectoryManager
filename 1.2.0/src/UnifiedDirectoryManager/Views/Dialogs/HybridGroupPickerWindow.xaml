@@ -1,0 +1,78 @@
+<Window x:Class="UnifiedDirectoryManager.Views.Dialogs.HybridGroupPickerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Add to groups (on-prem + cloud)" Height="540" Width="680"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Foreground="#666" Margin="0,0,0,8" TextWrapping="Wrap"
+                   Text="Search Active Directory and Entra ID groups, then add the object to any mix of both." />
+
+        <DockPanel Grid.Row="1" Margin="0,0,0,8">
+            <Button DockPanel.Dock="Right" Content="Search" Command="{Binding SearchCommand}" Margin="6,0,0,0" />
+            <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}">
+                <TextBox.InputBindings>
+                    <KeyBinding Key="Return" Command="{Binding SearchCommand}" />
+                </TextBox.InputBindings>
+            </TextBox>
+        </DockPanel>
+
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="240" />
+            </Grid.ColumnDefinitions>
+
+            <!-- IsVirtualizing=False: same lazy-paint workaround the on-prem picker uses for dynamic rows. -->
+            <ListView Grid.Column="0" x:Name="ResultsList" ItemsSource="{Binding Results}"
+                      SelectedItem="{Binding SelectedResult}" SelectionMode="Extended"
+                      VirtualizingStackPanel.IsVirtualizing="False"
+                      MouseDoubleClick="OnResultDoubleClick">
+                <ListView.View>
+                    <GridView>
+                        <GridViewColumn Header="Group" Width="190" DisplayMemberBinding="{Binding Name}" />
+                        <GridViewColumn Header="Source" Width="80" DisplayMemberBinding="{Binding OriginLabel}" />
+                        <GridViewColumn Header="Detail" Width="180" DisplayMemberBinding="{Binding Detail}" />
+                    </GridView>
+                </ListView.View>
+            </ListView>
+
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="6,0">
+                <Button Content="Add →" Command="{Binding AddToBasketCommand}"
+                        CommandParameter="{Binding SelectedItems, ElementName=ResultsList}" Margin="0,0,0,6" />
+                <TextBlock Text="Ctrl/Shift-click to select several" Foreground="#999" FontSize="10"
+                           TextWrapping="Wrap" TextAlignment="Center" MaxWidth="74" />
+            </StackPanel>
+
+            <DockPanel Grid.Column="2">
+                <TextBlock DockPanel.Dock="Top" Text="Selected groups" FontWeight="SemiBold" Margin="0,0,0,4" />
+                <ListBox x:Name="Basket" ItemsSource="{Binding Basket}"
+                         VirtualizingStackPanel.IsVirtualizing="False"
+                         MouseDoubleClick="OnBasketDoubleClick">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock>
+                                <Run Text="{Binding Name, Mode=OneWay}" /><Run Text=" (" /><Run Text="{Binding OriginLabel, Mode=OneWay}" /><Run Text=")" />
+                            </TextBlock>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </DockPanel>
+        </Grid>
+
+        <DockPanel Grid.Row="3" Margin="0,10,0,0">
+            <TextBlock Text="{Binding Status}" Foreground="#666" VerticalAlignment="Center" TextWrapping="Wrap" />
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="OK" IsDefault="True" Click="OnOk" MinWidth="90" />
+                <Button Content="Cancel" IsCancel="True" MinWidth="90" />
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>

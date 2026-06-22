@@ -1,0 +1,305 @@
+<UserControl x:Class="UnifiedDirectoryManager.Views.Controls.EditPaneView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ctrl="clr-namespace:UnifiedDirectoryManager.Views.Controls">
+    <UserControl.Resources>
+        <!-- Read-only attribute value: looks like static grayed text (no border/fill) but is a real
+             TextBox, so the value stays selectable and copyable (drag-select, Ctrl+C, right-click Copy). -->
+        <Style x:Key="ReadOnlyValueBox" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="IsReadOnly" Value="True" />
+            <Setter Property="IsReadOnlyCaretVisible" Value="False" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#999" />
+            <Setter Property="Padding" Value="2,0" />
+            <Setter Property="Cursor" Value="IBeam" />
+        </Style>
+
+        <!-- One attribute row: friendly label + value. Editable attributes get a text box; read-only
+             attributes are shown as static, grayed-out (but selectable/copyable) text, not an editable field. -->
+        <DataTemplate x:Key="FieldRow">
+            <Grid Margin="0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="160" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding FriendlyName}" Style="{StaticResource FieldLabel}"
+                           VerticalAlignment="Center" />
+                <Grid Grid.Column="1">
+                    <TextBox Text="{Binding EditText, UpdateSourceTrigger=PropertyChanged}"
+                             Visibility="{Binding IsEditable, Converter={StaticResource BoolToVis}}" />
+                    <TextBox Text="{Binding EditText}" Style="{StaticResource ReadOnlyValueBox}"
+                             ToolTip="{Binding EditText}"
+                             Visibility="{Binding IsReadOnly, Converter={StaticResource BoolToVis}}" />
+                </Grid>
+            </Grid>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <Grid>
+        <!-- Empty state -->
+        <TextBlock Text="Select an object to view and edit its attributes."
+                   Foreground="#999" HorizontalAlignment="Center" VerticalAlignment="Center"
+                   Visibility="{Binding HasObject, Converter={StaticResource BoolToVis}}" />
+
+        <DockPanel Visibility="{Binding HasObject, Converter={StaticResource BoolToVis}}">
+            <!-- Header -->
+            <Border DockPanel.Dock="Top" Background="{StaticResource HeaderBrush}" Padding="8">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal">
+                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" FontSize="14" Foreground="White" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <WrapPanel Margin="0,6,0,0">
+                        <Button Content="Save" Command="{Binding SaveCommand}" />
+                        <Button Content="Reload" Command="{Binding ReloadCommand}" />
+                        <Button Content="Enable" Command="{Binding EnableCommand}"
+                                Visibility="{Binding IsUser, Converter={StaticResource BoolToVis}}" />
+                        <Button Content="Disable" Command="{Binding DisableCommand}"
+                                Visibility="{Binding IsUser, Converter={StaticResource BoolToVis}}" />
+                        <Button Content="Reset Password…" Command="{Binding ResetPasswordCommand}"
+                                Visibility="{Binding IsUser, Converter={StaticResource BoolToVis}}" />
+                        <Button Content="Unlock" Command="{Binding UnlockCommand}"
+                                Visibility="{Binding IsUser, Converter={StaticResource BoolToVis}}" />
+                    </WrapPanel>
+                </DockPanel>
+            </Border>
+
+            <TabControl Margin="6">
+                <TabItem Header="General">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="6">
+                            <ItemsControl ItemsSource="{Binding General}" ItemTemplate="{StaticResource FieldRow}" />
+                            <Grid Margin="0,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="160" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Location (OU)" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" />
+                                <TextBox Grid.Column="1" Text="{Binding Location}" IsReadOnly="True" Background="#F3F3F3" Foreground="#666"
+                                         ToolTip="The container the object lives in. Use Move… to relocate it." />
+                                <Button Grid.Column="2" Content="Move…" Margin="6,0,0,0" Command="{Binding MoveCommand}" />
+                            </Grid>
+                            <Border BorderBrush="#E0E0E0" BorderThickness="0,1,0,0" Margin="0,10,0,0" Padding="0,8,0,0">
+                                <StackPanel>
+                                    <CheckBox Content="Protect object from accidental deletion"
+                                              IsChecked="{Binding IsProtectedFromDeletion}"
+                                              ToolTip="Adds (or removes) a Deny-Everyone Delete / Delete-subtree ACE, the same as the ADUC checkbox." />
+                                    <TextBlock Text="Click Save (top of pane) to apply." Foreground="#999" FontSize="11" Margin="22,2,0,0" />
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <TabItem Header="Account" Visibility="{Binding IsUser, Converter={StaticResource BoolToVis}}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="6">
+                            <ItemsControl ItemsSource="{Binding Account}" ItemTemplate="{StaticResource FieldRow}" />
+                            <Grid Margin="0,4,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="160" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Lockout status" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" />
+                                <TextBlock Grid.Column="1" Text="{Binding LockoutStatus}" VerticalAlignment="Center">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="#666" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsLockedOut}" Value="True">
+                                                    <Setter Property="Foreground" Value="#B00020" />
+                                                    <Setter Property="FontWeight" Value="SemiBold" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+                            <Border BorderBrush="#E0E0E0" BorderThickness="0,1,0,0" Margin="0,8,0,0" Padding="0,8,0,0">
+                                <StackPanel>
+                                    <TextBlock Text="Account expiration" FontWeight="SemiBold" Margin="0,0,0,4" />
+                                    <CheckBox Content="Never expires" IsChecked="{Binding AccountNeverExpires}" />
+                                    <Grid Margin="0,6,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="160" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="Expires on (date / time)" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" />
+                                        <DatePicker Grid.Column="1" SelectedDate="{Binding AccountExpiresDate}"
+                                                    IsEnabled="{Binding AccountNeverExpires, Converter={StaticResource InverseBool}}" />
+                                        <TextBox Grid.Column="2" Width="64" Margin="6,0,0,0" Text="{Binding AccountExpiresTime, UpdateSourceTrigger=PropertyChanged}"
+                                                 IsEnabled="{Binding AccountNeverExpires, Converter={StaticResource InverseBool}}"
+                                                 ToolTip="24-hour time, e.g. 17:30" />
+                                    </Grid>
+                                    <TextBlock Text="Click Save (top of pane) to apply expiration and other changes."
+                                               Foreground="#999" FontSize="11" Margin="0,4,0,0" />
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <TabItem Header="Address" Visibility="{Binding IsUser, Converter={StaticResource BoolToVis}}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="6">
+                            <ItemsControl ItemsSource="{Binding Address}" ItemTemplate="{StaticResource FieldRow}" />
+                            <Grid Margin="0,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="160" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Country/region" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" />
+                                <ComboBox Grid.Column="1" ItemsSource="{Binding Countries}" DisplayMemberPath="Display"
+                                          SelectedItem="{Binding SelectedCountry}" IsEditable="True" IsTextSearchEnabled="True"
+                                          MaxDropDownHeight="320"
+                                          ToolTip="Sets co (name), c (two-letter code) and countryCode (numeric) together." />
+                            </Grid>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <TabItem Header="Organization" Visibility="{Binding IsUser, Converter={StaticResource BoolToVis}}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="6">
+                            <Grid Margin="0,2,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="160" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Manager" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" />
+                                <TextBox  Grid.Column="1" Text="{Binding ManagerDisplay, Mode=OneWay}" IsReadOnly="True" />
+                                <StackPanel Grid.Column="2" Orientation="Horizontal">
+                                    <Button Content="Pick…" Command="{Binding PickManagerCommand}" />
+                                    <Button Content="Clear" Command="{Binding ClearManagerCommand}" />
+                                </StackPanel>
+                            </Grid>
+                            <ItemsControl ItemsSource="{Binding Organization}" ItemTemplate="{StaticResource FieldRow}" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <TabItem Header="Email" Visibility="{Binding IsUser, Converter={StaticResource BoolToVis}}">
+                    <DockPanel Margin="6">
+                        <ItemsControl DockPanel.Dock="Top" ItemsSource="{Binding Email}" ItemTemplate="{StaticResource FieldRow}" />
+                        <TextBlock DockPanel.Dock="Top" Text="Proxy addresses" Style="{StaticResource FieldLabel}" Margin="0,10,0,2" />
+                        <TextBlock DockPanel.Dock="Top" Foreground="#999" FontSize="11"
+                                   Text="(edit individual values in the Attribute Editor tab)" Margin="0,0,0,4" />
+                        <ListBox ItemsSource="{Binding ProxyAddresses}" />
+                    </DockPanel>
+                </TabItem>
+
+                <TabItem Header="Cloud" Visibility="{Binding ShowCloudTab, Converter={StaticResource BoolToVis}}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="6" DataContext="{Binding Cloud}">
+                            <!-- Header: cloud connection + signed-in account (sign-in is configured in File ▸ Settings) -->
+                            <Border BorderBrush="#E0E0E0" BorderThickness="0,0,0,1" Padding="0,0,0,8" Margin="0,0,0,8">
+                                <StackPanel>
+                                    <TextBlock Text="Entra ID (synced object)" FontWeight="SemiBold" />
+                                    <TextBlock Foreground="#666" FontSize="11" Margin="0,2,0,0"
+                                               Text="{Binding SignedInAccount, TargetNullValue='Signed in as: (not signed in)', StringFormat='Signed in as: {0}'}" />
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Lookup action + status line -->
+                            <WrapPanel>
+                                <Button Content="Look up in Entra ID" Command="{Binding LookUpCommand}" />
+                            </WrapPanel>
+                            <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" Foreground="#666" Margin="0,6,0,2" />
+
+                            <!-- Resolved cloud object: the SAME comprehensive detail (and cloud user actions)
+                                 as the standalone cloud section, for tight on-prem/cloud unification. -->
+                            <ctrl:CloudDetailView DataContext="{Binding Detail}" MinHeight="320"
+                                                  Visibility="{Binding HasResult, Converter={StaticResource BoolToVis}}" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <TabItem Header="Members" Visibility="{Binding IsGroup, Converter={StaticResource BoolToVis}}">
+                    <DockPanel Margin="6">
+                        <TextBlock DockPanel.Dock="Top" Text="Objects that belong to this group (click a column header to sort; Ctrl/Shift-click to select several)" Foreground="#666" Margin="0,0,0,4" TextWrapping="Wrap" />
+                        <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                            <Button Content="Add members…" Command="{Binding AddMembersCommand}" />
+                            <Button Content="Remove selected" Command="{Binding RemoveMemberCommand}"
+                                    CommandParameter="{Binding SelectedItems, ElementName=MembersList}" />
+                        </WrapPanel>
+                        <ListView x:Name="MembersList" ItemsSource="{Binding Members}"
+                                  SelectionMode="Extended" VirtualizingStackPanel.IsVirtualizing="False"
+                                  GridViewColumnHeader.Click="OnMembersHeaderClick">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Name" Width="320" DisplayMemberBinding="{Binding Name}" />
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+                    </DockPanel>
+                </TabItem>
+
+                <TabItem Header="Member Of">
+                    <DockPanel Margin="6">
+                        <TextBlock DockPanel.Dock="Top" Foreground="#666" Margin="0,0,0,4" TextWrapping="Wrap"
+                                   Text="Groups this object belongs to — on-prem AD and Entra ID together (Ctrl/Shift-click to select several). Membership of a group synced from on-prem AD is mastered on-prem." />
+                        <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                            <Button Content="Add to groups…" Command="{Binding AddToGroupsCommand}" />
+                            <Button Content="Remove selected" Command="{Binding RemoveFromGroupCommand}"
+                                    CommandParameter="{Binding SelectedItems, ElementName=MemberOfList}" />
+                        </WrapPanel>
+                        <ListView x:Name="MemberOfList" ItemsSource="{Binding MemberOf}"
+                                  SelectionMode="Extended" VirtualizingStackPanel.IsVirtualizing="False"
+                                  GridViewColumnHeader.Click="OnMemberOfHeaderClick">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Group" Width="240" DisplayMemberBinding="{Binding Name}" />
+                                    <GridViewColumn Header="Type" Width="140" DisplayMemberBinding="{Binding Kind}" />
+                                    <GridViewColumn Header="Source" Width="90" DisplayMemberBinding="{Binding Source}" />
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+                    </DockPanel>
+                </TabItem>
+
+                <TabItem Header="Attribute Editor">
+                    <DockPanel Margin="6">
+                        <TextBlock DockPanel.Dock="Top" Foreground="#999" FontSize="11" Margin="0,0,0,4"
+                                   Text="Edit single-valued attributes inline; use Edit… for multi-valued. Read-only/system attributes are shown as plain grayed text you can still select and copy. Click Save (top) to apply." />
+                        <ListView ItemsSource="{Binding AllAttributes}">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Attribute" Width="170" DisplayMemberBinding="{Binding FriendlyName}" />
+                                    <GridViewColumn Header="LDAP name" Width="150" DisplayMemberBinding="{Binding LdapName}" />
+                                    <GridViewColumn Header="Value" Width="340">
+                                        <GridViewColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Grid>
+                                                    <!-- Single-valued, editable: inline text box -->
+                                                    <TextBox Text="{Binding EditText, UpdateSourceTrigger=PropertyChanged}"
+                                                             Visibility="{Binding IsSingleValueEditable, Converter={StaticResource BoolToVis}}" />
+                                                    <!-- Single-valued, read-only: static grayed text that's still selectable/copyable -->
+                                                    <TextBox Text="{Binding DisplaySummary, Mode=OneWay}" Style="{StaticResource ReadOnlyValueBox}"
+                                                             ToolTip="{Binding DisplaySummary}"
+                                                             Visibility="{Binding IsSingleValueReadOnly, Converter={StaticResource BoolToVis}}" />
+                                                    <!-- Multi-valued: summary + Edit button -->
+                                                    <DockPanel Visibility="{Binding IsMultiValued, Converter={StaticResource BoolToVis}}">
+                                                        <Button DockPanel.Dock="Right" Content="Edit…" Padding="6,1" Margin="6,0,0,0"
+                                                                Visibility="{Binding IsEditable, Converter={StaticResource BoolToVis}}"
+                                                                Command="{Binding DataContext.EditAttributeCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                CommandParameter="{Binding}" />
+                                                        <TextBlock Text="{Binding DisplaySummary}" VerticalAlignment="Center"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                    </DockPanel>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </GridViewColumn.CellTemplate>
+                                    </GridViewColumn>
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+                    </DockPanel>
+                </TabItem>
+            </TabControl>
+        </DockPanel>
+    </Grid>
+</UserControl>

@@ -1,0 +1,85 @@
+<Window x:Class="UnifiedDirectoryManager.Views.Dialogs.CopyToTemplateWindow"
+        x:Name="Root"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Save User as Template" Height="640" Width="640"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0">
+            <TextBlock TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,8"
+                       Text="Choose which of this user's properties and group memberships to save into a new template. Identity fields (name, logon name, UPN, email) are excluded — the template fills those per-user from tokens." />
+            <TextBlock Text="Template name" Style="{StaticResource FieldLabel}" />
+            <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" />
+            <TextBlock Text="Target OU" Style="{StaticResource FieldLabel}" />
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Content="Browse…" Command="{Binding BrowseOuCommand}" Margin="6,2,0,2" />
+                <TextBox Text="{Binding TargetOu, UpdateSourceTrigger=PropertyChanged}" />
+            </DockPanel>
+            <TextBlock Text="UPN suffix" Style="{StaticResource FieldLabel}" />
+            <TextBox Text="{Binding UpnSuffix, UpdateSourceTrigger=PropertyChanged}"
+                     ToolTip="Used by the {upnSuffix} token; derived from this user's UPN." />
+            <CheckBox Content="Account enabled by default" IsChecked="{Binding EnabledByDefault}" Margin="0,8,0,0" />
+            <CheckBox Content="Must change password at next logon" IsChecked="{Binding MustChangePassword}" Margin="0,4,0,0" />
+        </StackPanel>
+
+        <Border Grid.Row="1" BorderBrush="#DDD" BorderThickness="1" Margin="0,10,0,0" Padding="6">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <TextBlock Text="Attributes" FontWeight="SemiBold" Margin="0,0,0,4" />
+                    <ItemsControl ItemsSource="{Binding Attributes}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,1">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="200" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <CheckBox Grid.Column="0" IsChecked="{Binding Include}" Content="{Binding Friendly}" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="1" Text="{Binding Value}" Foreground="#444" VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis" ToolTip="{Binding Value}" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Text="On-prem group memberships" FontWeight="SemiBold" Margin="0,12,0,4" />
+                    <ItemsControl ItemsSource="{Binding OnPremGroups}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <CheckBox IsChecked="{Binding Include}" Content="{Binding Name}" Margin="0,1" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Text="Cloud-only (Entra ID) group memberships" FontWeight="SemiBold" Margin="0,12,0,4"
+                               Visibility="{Binding HasCloudGroups, Converter={StaticResource BoolToVis}}" />
+                    <ItemsControl ItemsSource="{Binding CloudGroups}"
+                                  Visibility="{Binding HasCloudGroups, Converter={StaticResource BoolToVis}}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <CheckBox IsChecked="{Binding Include}" Content="{Binding Name}" Margin="0,1" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </ScrollViewer>
+        </Border>
+
+        <TextBlock Grid.Row="2" Text="{Binding Status}" Foreground="#666" Margin="0,8,0,0" TextWrapping="Wrap" />
+
+        <DockPanel Grid.Row="3" Margin="0,10,0,0">
+            <TextBlock Text="{Binding TemplatesDirectory}" Foreground="#999" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="Save Template" IsDefault="True" Click="OnSave" MinWidth="110" Margin="0,0,6,0" />
+                <Button Content="Cancel" IsCancel="True" MinWidth="90" />
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>

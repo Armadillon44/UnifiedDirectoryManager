@@ -1,0 +1,101 @@
+<UserControl x:Class="UnifiedDirectoryManager.Views.Controls.ObjectListView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <DockPanel>
+        <!-- Filter bar -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource AccentLight}" Padding="6" BorderBrush="#CFE0F0" BorderThickness="0,0,0,1">
+            <WrapPanel>
+                <TextBlock Text="Show:" VerticalAlignment="Center" Margin="0,0,6,0" />
+                <RadioButton Content="Users" GroupName="f" Margin="0,0,8,0" VerticalAlignment="Center"
+                             IsChecked="{Binding Filter, Converter={StaticResource EnumMatch}, ConverterParameter=Users}" />
+                <RadioButton Content="Computers" GroupName="f" Margin="0,0,8,0" VerticalAlignment="Center"
+                             IsChecked="{Binding Filter, Converter={StaticResource EnumMatch}, ConverterParameter=Computers}" />
+                <RadioButton Content="Groups" GroupName="f" Margin="0,0,8,0" VerticalAlignment="Center"
+                             IsChecked="{Binding Filter, Converter={StaticResource EnumMatch}, ConverterParameter=Groups}" />
+                <RadioButton Content="All" GroupName="f" Margin="0,0,16,0" VerticalAlignment="Center"
+                             IsChecked="{Binding Filter, Converter={StaticResource EnumMatch}, ConverterParameter=All}" />
+                <CheckBox Content="Include sub-OUs" VerticalAlignment="Center" Margin="0,0,16,0"
+                          IsChecked="{Binding Subtree}" />
+                <TextBlock Text="Filter:" VerticalAlignment="Center" Margin="0,0,6,0" />
+                <TextBox Width="180" VerticalAlignment="Center" Text="{Binding QuickFilter, UpdateSourceTrigger=PropertyChanged}" />
+                <ToggleButton x:Name="ColumnsToggle" Content="Columns ▾" Margin="10,0,0,0" Padding="8,2" />
+                <Popup IsOpen="{Binding IsChecked, ElementName=ColumnsToggle}" StaysOpen="False"
+                       PlacementTarget="{Binding ElementName=ColumnsToggle}" Placement="Bottom" AllowsTransparency="True">
+                    <Border Background="White" BorderBrush="#BBB" BorderThickness="1" Padding="8">
+                        <ItemsControl ItemsSource="{Binding Columns}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <CheckBox Content="{Binding Header}" IsChecked="{Binding IsVisible}" Margin="0,2" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </Border>
+                </Popup>
+                <TextBlock Text="🔍 Search results" Foreground="#1A6A1A" FontWeight="SemiBold" VerticalAlignment="Center"
+                           Margin="16,0,6,0"
+                           Visibility="{Binding IsSearchActive, Converter={StaticResource BoolToVis}}" />
+                <Button Content="Clear search" Padding="8,2" Command="{Binding ClearSearchCommand}"
+                        ToolTip="Discard the advanced-search results and return to browsing the selected container."
+                        Visibility="{Binding IsSearchActive, Converter={StaticResource BoolToVis}}" />
+            </WrapPanel>
+        </Border>
+
+        <ListView x:Name="List" ItemsSource="{Binding RowsView}" SelectionMode="Extended"
+                  SelectionChanged="OnSelectionChanged"
+                  MouseDoubleClick="OnRowDoubleClick"
+                  GridViewColumnHeader.Click="OnHeaderClick"
+                  PreviewMouseLeftButtonDown="OnListPreviewMouseLeftButtonDown"
+                  PreviewMouseRightButtonDown="OnListPreviewMouseRightButtonDown"
+                  MouseMove="OnListMouseMove"
+                  Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Window}}"
+                  ScrollViewer.IsDeferredScrollingEnabled="True"
+                  VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
+            <!-- The menu's DataContext is the window's MainViewModel (carried via PlacementTarget.Tag),
+                 so items can bind to its selection-aware commands. -->
+            <ListView.ContextMenu>
+                <ContextMenu DataContext="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource Self}}">
+                    <MenuItem Header="Modify…" Command="{Binding OpenSelectedCommand}" />
+                    <MenuItem Header="Enable account(s)" Command="{Binding EnableSelectedCommand}"
+                              Visibility="{Binding SelectionHasDisabled, Converter={StaticResource BoolToVis}}" />
+                    <MenuItem Header="Disable account(s)" Command="{Binding DisableSelectedCommand}"
+                              Visibility="{Binding SelectionHasEnabled, Converter={StaticResource BoolToVis}}" />
+                    <MenuItem Header="Unlock account(s)" Command="{Binding UnlockSelectedCommand}"
+                              Visibility="{Binding SelectionHasUsers, Converter={StaticResource BoolToVis}}" />
+                    <Separator />
+                    <MenuItem Header="Add to groups…" Command="{Binding AddSelectedToGroupsCommand}" />
+                    <MenuItem Header="Copy user…" Command="{Binding CopyUserCommand}"
+                              Visibility="{Binding SelectionHasUsers, Converter={StaticResource BoolToVis}}" />
+                    <MenuItem Header="Save as template…" Command="{Binding SaveSelectedAsTemplateCommand}"
+                              Visibility="{Binding SelectionHasUsers, Converter={StaticResource BoolToVis}}" />
+                    <MenuItem Header="Move to OU…" Command="{Binding MoveSelectedToOuCommand}" />
+                    <MenuItem Header="Bulk edit…" Command="{Binding BulkEditCommand}" />
+                    <MenuItem Header="Run scenario" ItemsSource="{Binding ScenarioMenuItems}" IsEnabled="{Binding HasScenarios}">
+                        <MenuItem.ItemContainerStyle>
+                            <Style TargetType="MenuItem">
+                                <Setter Property="Header" Value="{Binding Name}" />
+                                <Setter Property="Command" Value="{Binding RunCommand}" />
+                            </Style>
+                        </MenuItem.ItemContainerStyle>
+                    </MenuItem>
+                    <Separator />
+                    <MenuItem Header="Delete…" Command="{Binding DeleteSelectedCommand}" />
+                </ContextMenu>
+            </ListView.ContextMenu>
+            <ListView.ItemContainerStyle>
+                <Style TargetType="ListViewItem" BasedOn="{StaticResource {x:Type ListViewItem}}">
+                    <Style.Triggers>
+                        <!-- Disabled accounts: greyed + italic so they stand out at a glance. -->
+                        <DataTrigger Binding="{Binding IsDisabled}" Value="True">
+                            <Setter Property="Foreground" Value="#A0A0A0" />
+                            <Setter Property="FontStyle" Value="Italic" />
+                            <Setter Property="ToolTip" Value="Account is disabled" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ListView.ItemContainerStyle>
+            <ListView.View>
+                <GridView x:Name="Grid" />
+            </ListView.View>
+        </ListView>
+    </DockPanel>
+</UserControl>

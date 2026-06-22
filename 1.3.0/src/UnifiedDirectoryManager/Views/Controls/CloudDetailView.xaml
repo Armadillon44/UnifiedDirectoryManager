@@ -1,0 +1,163 @@
+<UserControl x:Class="UnifiedDirectoryManager.Views.Controls.CloudDetailView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <!-- One property row: label + value. Editable props are white text boxes; on-prem-mastered and
+             system props are grayed + read-only with a hover tooltip explaining why. -->
+        <DataTemplate x:Key="PropertyRow">
+            <Grid Margin="0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="150" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding Label}" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" />
+                <TextBox Grid.Column="1" Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"
+                         IsReadOnly="{Binding IsEditable, Converter={StaticResource InverseBool}}"
+                         ToolTip="{Binding Tooltip}" TextWrapping="Wrap">
+                    <TextBox.Style>
+                        <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+                            <Setter Property="Background" Value="White" />
+                            <Setter Property="Foreground" Value="#222" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsEditable}" Value="False">
+                                    <Setter Property="Background" Value="#F3F3F3" />
+                                    <Setter Property="Foreground" Value="#666" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBox.Style>
+                </TextBox>
+            </Grid>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <Grid>
+        <!-- Empty state -->
+        <TextBlock Text="{Binding EmptyHint}" Foreground="#999" HorizontalAlignment="Center" VerticalAlignment="Center"
+                   TextWrapping="Wrap" Margin="12"
+                   Visibility="{Binding EmptyHint, Converter={StaticResource NonEmptyToVis}}" />
+
+        <DockPanel Visibility="{Binding HasTarget, Converter={StaticResource BoolToVis}}">
+            <!-- Header -->
+            <Border DockPanel.Dock="Top" Background="{StaticResource HeaderBrush}" Padding="8">
+                <StackPanel>
+                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" FontSize="14" Foreground="White" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding KindLabel, StringFormat='Entra ID {0}'}" Foreground="#DDD" FontSize="11" Margin="0,2,0,0" />
+                </StackPanel>
+            </Border>
+
+            <!-- Cloud user actions (writes; each confirmed) -->
+            <Border DockPanel.Dock="Top" Padding="6" Background="#F7F7F7" BorderBrush="#E0E0E0" BorderThickness="0,0,0,1"
+                    Visibility="{Binding IsUser, Converter={StaticResource BoolToVis}}">
+                <WrapPanel>
+                    <Button Content="Disable account" Command="{Binding DisableCommand}" Margin="0,0,6,0"
+                            Visibility="{Binding ShowDisable, Converter={StaticResource BoolToVis}}" />
+                    <Button Content="Enable account" Command="{Binding EnableCommand}" Margin="0,0,6,0"
+                            Visibility="{Binding ShowEnable, Converter={StaticResource BoolToVis}}" />
+                    <Button Content="Revoke sessions" Command="{Binding RevokeSessionsCommand}" />
+                </WrapPanel>
+            </Border>
+
+            <!-- Status / error line (always visible regardless of the active tab) -->
+            <Border DockPanel.Dock="Top" Padding="8,4" Background="#FDECEA" BorderBrush="#F5C6C0" BorderThickness="0,0,0,1"
+                    Visibility="{Binding Status, Converter={StaticResource NonEmptyToVis}}">
+                <TextBlock Text="{Binding Status}" Foreground="#B00020" TextWrapping="Wrap" />
+            </Border>
+
+            <!-- Save bar (appears when there are unsaved edits) -->
+            <Border DockPanel.Dock="Bottom" Padding="6" Background="#FFF8E1" BorderBrush="#E0E0E0" BorderThickness="0,1,0,0"
+                    Visibility="{Binding HasChanges, Converter={StaticResource BoolToVis}}">
+                <WrapPanel>
+                    <Button Content="Save changes" Command="{Binding SaveCommand}" Margin="0,0,6,0" />
+                    <Button Content="Revert" Command="{Binding RevertCommand}" />
+                </WrapPanel>
+            </Border>
+
+            <TabControl Margin="4">
+                <!-- Properties (all object kinds) -->
+                <TabItem Header="Properties">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding Sections}" Margin="8">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="0,0,0,8">
+                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" Margin="0,6,0,2"
+                                                   Foreground="{StaticResource AccentText}" />
+                                        <ItemsControl ItemsSource="{Binding Properties}" ItemTemplate="{StaticResource PropertyRow}" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </TabItem>
+
+                <!-- Licenses (users) -->
+                <TabItem Header="Licenses" Visibility="{Binding IsUser, Converter={StaticResource BoolToVis}}">
+                    <DockPanel Margin="8">
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6"
+                                    Visibility="{Binding CanManageLicenses, Converter={StaticResource BoolToVis}}">
+                            <Button Content="Assign license…" Command="{Binding AssignLicenseCommand}" Margin="0,0,6,0" />
+                            <Button Content="Remove selected" Command="{Binding RemoveLicensesCommand}"
+                                    CommandParameter="{Binding SelectedItems, ElementName=CloudLicensesList}" />
+                        </StackPanel>
+                        <ListView x:Name="CloudLicensesList" ItemsSource="{Binding Licenses}"
+                                  SelectionMode="Extended" VirtualizingStackPanel.IsVirtualizing="False">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="License" Width="200" DisplayMemberBinding="{Binding FriendlyName}" />
+                                    <GridViewColumn Header="SKU" Width="160" DisplayMemberBinding="{Binding SkuPartNumber}" />
+                                    <GridViewColumn Header="Assigned via" Width="170" DisplayMemberBinding="{Binding AssignedVia}" />
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+                    </DockPanel>
+                </TabItem>
+
+                <!-- Member Of (users + devices) -->
+                <TabItem Header="Member Of" Visibility="{Binding CanManageMemberships, Converter={StaticResource BoolToVis}}">
+                    <DockPanel Margin="8">
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                            <Button Content="Add to groups…" Command="{Binding AddToGroupsCommand}" Margin="0,0,6,0" />
+                            <Button Content="Remove selected" Command="{Binding RemoveFromGroupsCommand}"
+                                    CommandParameter="{Binding SelectedItems, ElementName=CloudMembershipsList}" />
+                        </StackPanel>
+                        <ListView x:Name="CloudMembershipsList" ItemsSource="{Binding Memberships}"
+                                  SelectionMode="Extended" VirtualizingStackPanel.IsVirtualizing="False">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Group" Width="220" DisplayMemberBinding="{Binding DisplayName}" />
+                                    <GridViewColumn Header="Kind" Width="130" DisplayMemberBinding="{Binding GroupKind}" />
+                                    <GridViewColumn Header="Membership" Width="90" DisplayMemberBinding="{Binding MembershipKind}" />
+                                    <GridViewColumn Header="Origin" Width="90" DisplayMemberBinding="{Binding Origin}" />
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+                    </DockPanel>
+                </TabItem>
+
+                <!-- Members (groups) -->
+                <TabItem Header="Members" Visibility="{Binding IsGroup, Converter={StaticResource BoolToVis}}">
+                    <DockPanel Margin="8">
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6"
+                                    Visibility="{Binding CanAddMembers, Converter={StaticResource BoolToVis}}">
+                            <Button Content="Add members…" Command="{Binding AddMembersCommand}" Margin="0,0,6,0" />
+                            <Button Content="Remove selected" Command="{Binding RemoveMembersCommand}"
+                                    CommandParameter="{Binding SelectedItems, ElementName=CloudMembersList}" />
+                        </StackPanel>
+                        <ListView x:Name="CloudMembersList" ItemsSource="{Binding Members}"
+                                  SelectionMode="Extended" VirtualizingStackPanel.IsVirtualizing="False"
+                                  GridViewColumnHeader.Click="OnMembersHeaderClick">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Name" Width="200" DisplayMemberBinding="{Binding DisplayName}" />
+                                    <GridViewColumn Header="UPN / mail" Width="220" DisplayMemberBinding="{Binding Upn}" />
+                                    <GridViewColumn Header="Type" Width="90" DisplayMemberBinding="{Binding ObjectType}" />
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+                    </DockPanel>
+                </TabItem>
+            </TabControl>
+        </DockPanel>
+    </Grid>
+</UserControl>

@@ -1,0 +1,13 @@
+<Window x:Class="UnifiedDirectoryManager.Views.Dialogs.CloudObjectPropertiesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ctrl="clr-namespace:UnifiedDirectoryManager.Views.Controls"
+        Title="Entra ID — Properties" Height="620" Width="560"
+        WindowStartupLocation="CenterOwner">
+    <DockPanel>
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="10">
+            <Button Content="Close" IsCancel="True" Click="OnClose" MinWidth="90" />
+        </StackPanel>
+        <ctrl:CloudDetailView />
+    </DockPanel>
+</Window>

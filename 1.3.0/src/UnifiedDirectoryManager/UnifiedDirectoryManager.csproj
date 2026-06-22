@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>UnifiedDirectoryManager</RootNamespace>
+    <AssemblyName>UnifiedDirectoryManager</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <Platforms>AnyCPU;x64;arm64</Platforms>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <ApplicationIcon>AD.ico</ApplicationIcon>
+    <Version>1.3.0</Version>
+    <Product>Unified Directory Manager</Product>
+    <Description>Active Directory and Entra management tool</Description>
+    <Company>LaCrosse Footwear, Inc.</Company>
+    <Authors>D Dreier</Authors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Embed the README so Help ▸ View README works from the self-contained exe. -->
+    <EmbeddedResource Include="..\..\README.md" Link="README.md" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <!-- System.DirectoryServices is provided by the net10.0-windows framework (no PackageReference
+         needed; an explicit one triggers NU1510). Protocols is still a real package dependency. -->
+    <PackageReference Include="System.DirectoryServices.Protocols" Version="10.0.9" />
+    <!-- Entra ID / Microsoft 365 cloud layer: Graph SDK + interactive browser auth (Azure.Identity). -->
+    <PackageReference Include="Microsoft.Graph" Version="6.2.0" />
+    <PackageReference Include="Azure.Identity" Version="1.21.0" />
+  </ItemGroup>
+
+</Project>

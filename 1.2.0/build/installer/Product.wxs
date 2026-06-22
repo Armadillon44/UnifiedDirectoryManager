@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Unified Directory Manager installer (WiX v5). Builds a per-machine MSI for one architecture.
+
+  The app ships as a self-contained single-file exe, so the only payload is UnifiedDirectoryManager.exe — the
+  .NET runtime is already bundled and there are no separate prerequisites to chain in.
+
+  Required preprocessor variables (passed via `wix build -d Name=Value`):
+    AppExe      full path to the published dist\<rid>\UnifiedDirectoryManager.exe
+    AppVersion  product version, e.g. 1.0.0
+    LicenseRtf  full path to the RTF shown on the wizard's agreement page
+
+  Build with `-arch x64` or `-arch arm64`; ProgramFiles64Folder resolves to "Program Files" for both.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <Package Name="Unified Directory Manager"
+           Manufacturer="La Crosse Footwear"
+           Version="$(var.AppVersion)"
+           UpgradeCode="A3F2C9E1-7B4D-4E2A-9C6F-1D8E5B0A4C73"
+           Scope="perMachine"
+           Compressed="yes">
+
+    <!-- Replace any older version on install, and block downgrades with a clear message. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Unified Directory Manager is already installed." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Icon for the Apps &amp; Features / Add-Remove-Programs entry, taken from the exe itself. -->
+    <Icon Id="AppIcon.exe" SourceFile="$(var.AppExe)" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.exe" />
+    <!-- (WixUI_InstallDir already sets ARPNOMODIFY, so the single-file app shows no Modify option.) -->
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Unified Directory Manager" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppShortcutFolder" Name="Unified Directory Manager" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="ProductComponents">
+      <!-- The application itself, plus its Start Menu shortcut. -->
+      <Component Id="MainExecutable" Directory="INSTALLFOLDER" Guid="*">
+        <File Id="UnifiedDirectoryManagerExe" Source="$(var.AppExe)" Name="UnifiedDirectoryManager.exe" KeyPath="yes">
+          <Shortcut Id="StartMenuShortcut" Directory="AppShortcutFolder"
+                    Name="Unified Directory Manager"
+                    Description="Active Directory Users &amp; Computers management tool"
+                    WorkingDirectory="INSTALLFOLDER" Advertise="no" />
+        </File>
+      </Component>
+
+      <!-- Owns the Start Menu folder so it is removed cleanly on uninstall. -->
+      <Component Id="StartMenuFolder" Directory="AppShortcutFolder" Guid="C7B1D6A4-2F88-4A3E-B5D0-9E3C7A1F62B8">
+        <RemoveFolder Id="RemoveStartMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKLM" Key="Software\La Crosse Footwear\Unified Directory Manager"
+                       Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="Unified Directory Manager" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+
+    <!-- Wizard with a license/notice page and an install-location chooser. -->
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+  </Package>
+</Wix>
