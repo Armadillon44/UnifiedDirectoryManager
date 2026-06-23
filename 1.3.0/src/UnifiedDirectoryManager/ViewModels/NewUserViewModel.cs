@@ -170,15 +170,38 @@ public partial class NewUserViewModel : ObservableObject
         return true;
     }
 
+    // Set while ReloadTemplates() rebuilds the template list so the transient SelectedTemplate churn
+    // (Clear() → null, then re-assign a fresh instance of the same template) does NOT re-seed the form
+    // and wipe the operator's in-progress edits. A genuine user template change still re-seeds.
+    private bool _suppressReseed;
+
     public void ReloadTemplates()
     {
         var previous = SelectedTemplate?.Name;
-        Templates.Clear();
-        foreach (var t in _store.LoadAll()) Templates.Add(t);
-        SelectedTemplate = Templates.FirstOrDefault(t => t.Name == previous) ?? Templates.FirstOrDefault();
+        _suppressReseed = true;
+        try
+        {
+            Templates.Clear();
+            foreach (var t in _store.LoadAll()) Templates.Add(t);
+            SelectedTemplate = Templates.FirstOrDefault(t => t.Name == previous) ?? Templates.FirstOrDefault();
+        }
+        finally { _suppressReseed = false; }
+
+        // Re-seed only when the effective selection actually changed (first load, or the previously
+        // selected template was deleted) — never on a background reload of the same template, which
+        // would otherwise discard edited groups / OU / name fields each time the window reactivates.
+        if (!string.Equals(SelectedTemplate?.Name, previous, StringComparison.OrdinalIgnoreCase))
+            ReseedFromTemplate(SelectedTemplate);
     }
 
     partial void OnSelectedTemplateChanged(UserTemplate? value)
+    {
+        if (_suppressReseed) return; // background reload — keep the in-progress form intact
+        ReseedFromTemplate(value);
+    }
+
+    /// <summary>Resets the editable form (groups, OU, manager, suggestions) to the template's defaults.</summary>
+    private void ReseedFromTemplate(UserTemplate? value)
     {
         OnPremGroups.Clear();
         CloudGroups.Clear();

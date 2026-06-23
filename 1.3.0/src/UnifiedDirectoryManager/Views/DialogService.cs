@@ -136,10 +136,11 @@ public sealed class DialogService : IDialogService
         new BulkCreateReportWindow { DataContext = vm, Owner = Owner }.ShowDialog(); // modal — secrets shown once
     }
 
-    public BulkCreateRowViewModel? CaptureBatchUser(UserTemplate? defaultTemplate, string? defaultOuDn, string? upnSuffix, BulkCreateRowViewModel? existing)
+    public void CaptureBatchUser(UserTemplate? defaultTemplate, string? defaultOuDn, string? upnSuffix, BulkCreateRowViewModel? existing, Action<BulkCreateRowViewModel> onCaptured)
     {
         // Reuse the actual New User window so each batch row is configured with the exact same form, but in
-        // capture mode: it validates and returns the inputs instead of creating the account now.
+        // capture mode: it validates and hands the inputs back instead of creating the account now. Shown
+        // non-modal so the operator can switch to other windows (e.g. the directory) while configuring a row.
         var vm = new NewUserViewModel(_directory, _templates, this, _graph, _cloudProvisioning, _settings)
         { IsBatchCapture = true, DefaultOu = defaultOuDn };
         vm.ReloadTemplates();
@@ -155,7 +156,8 @@ public sealed class DialogService : IDialogService
             Owner = Owner,
             Title = existing is null ? "Add User to Batch" : "Edit Batch User",
         };
-        return win.ShowDialog() == true ? MapRowFromNewUser(vm) : null;
+        win.BatchCaptured += () => onCaptured(MapRowFromNewUser(vm));
+        win.Show(); // non-modal
     }
 
     /// <summary>Prefills the New User capture window from an existing batch row (for editing).</summary>
@@ -212,6 +214,13 @@ public sealed class DialogService : IDialogService
         var vm = new CopyUserViewModel(_directory, _templates, this, _graph, _cloudProvisioning, _settings, sourceUserDistinguishedName);
         vm.UserCreated += () => onCreated();
         new CopyUserWindow { DataContext = vm, Owner = Owner }.Show(); // non-modal; loads on Loaded
+    }
+
+    public bool ShowCopyGroupsToUser(string sourceUserDistinguishedName)
+    {
+        var vm = new CopyGroupsViewModel(_directory, _graph, this, sourceUserDistinguishedName);
+        new CopyGroupsWindow { DataContext = vm, Owner = Owner }.ShowDialog(); // modal; loads on Loaded
+        return vm.Applied;
     }
 
     public void ShowScenarioEditor(Action onChanged)

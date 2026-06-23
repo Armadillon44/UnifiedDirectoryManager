@@ -475,6 +475,15 @@ public partial class EditPaneViewModel : ObservableObject
         finally { IsBusy = false; }
     }
 
+    /// <summary>Copies this user's group memberships onto another user (the operator picks which in the dialog).
+    /// The currently-open object is unchanged, so no reload is needed here.</summary>
+    [RelayCommand]
+    private void CopyGroupsToUser()
+    {
+        if (_dn is null) return;
+        _dialogs.ShowCopyGroupsToUser(_dn);
+    }
+
     /// <summary>Best-effort merge of the user's <b>cloud-only</b> Entra group memberships into the Member Of list
     /// (marked "Cloud"). Synced groups are deliberately excluded — they're already shown as their on-prem rows;
     /// listing their Entra twin too would conflate synced and cloud-only groups.</summary>
@@ -931,7 +940,7 @@ public partial class EditPaneViewModel : ObservableObject
             General: new[] { "displayName", "givenName", "middleName", "sn", "initials", "description", "physicalDeliveryOfficeName", "telephoneNumber", "wWWHomePage" },
             Account: new[] { "sAMAccountName", "userPrincipalName", "userAccountControl", "pwdLastSet", "lastLogonTimestamp", "homeDirectory", "homeDrive", "scriptPath", "profilePath" },
             Address: new[] { "streetAddress", "l", "st", "postalCode" },
-            Org: new[] { "title", "department", "company", "employeeID", "employeeNumber", "mobile", "homePhone", "pager", "facsimileTelephoneNumber", "ipPhone" },
+            Org: new[] { "title", "department", "company", "employeeID", "mobile", "homePhone", "pager", "facsimileTelephoneNumber", "ipPhone" },
             Email: new[] { "mail" });
     }
 }

@@ -7,6 +7,9 @@ public partial class NewUserWindow : Window
 {
     private NewUserViewModel? _vm;
 
+    /// <summary>Raised in batch-capture mode when the operator commits the row (window is non-modal).</summary>
+    public event Action? BatchCaptured;
+
     public NewUserWindow()
     {
         InitializeComponent();
@@ -50,7 +53,10 @@ public partial class NewUserWindow : Window
     {
         if (DataContext is not NewUserViewModel vm) return;
         if (!vm.ValidateForCapture(out var error)) { vm.Status = error; return; }
-        DialogResult = true; // closes the modal capture dialog; the host reads the configured values back
+        // Non-modal capture: hand the configured values back to the host, then close. (DialogResult can't
+        // be used on a window shown with Show(), and modal would block switching to other windows.)
+        BatchCaptured?.Invoke();
+        Close();
     }
 
     private void OnClose(object sender, RoutedEventArgs e) => Close();

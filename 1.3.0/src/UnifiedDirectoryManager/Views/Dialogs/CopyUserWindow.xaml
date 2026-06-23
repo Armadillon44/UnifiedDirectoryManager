@@ -20,7 +20,11 @@
         <ScrollViewer Grid.Row="0" Grid.Column="0" VerticalScrollBarVisibility="Auto" Margin="0,0,12,0">
             <StackPanel>
                 <TextBlock TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,8"
-                           Text="New user copied from the selected user. Naming autofills from the Standard User template; address, office, title, role, department, manager and group memberships are copied from the source (groups editable at right)." />
+                           Text="New user copied from the selected user. Naming autofills from the chosen naming-convention template; address, office, title, role, department, manager and group memberships are copied from the source (groups editable at right)." />
+                <TextBlock Text="Naming convention (template)" Style="{StaticResource FieldLabel}" />
+                <ComboBox ItemsSource="{Binding NamingTemplates}" SelectedItem="{Binding SelectedNamingTemplate}"
+                          DisplayMemberPath="Name" MaxDropDownHeight="320"
+                          ToolTip="Which template's sAMAccountName / UPN / email / display-name patterns to apply to the new user's name (e.g. {firstInitial}{last} → jdoe)." />
                 <TextBlock Text="First name" Style="{StaticResource FieldLabel}" />
                 <TextBox Text="{Binding FirstName, UpdateSourceTrigger=PropertyChanged}" />
                 <TextBlock Text="Middle name" Style="{StaticResource FieldLabel}" />

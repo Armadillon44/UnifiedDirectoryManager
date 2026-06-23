@@ -50,9 +50,11 @@ public interface IDialogService
     /// <summary>Shows the (modal) post-run report for a bulk create (generated passwords / TAPs, copy + export).</summary>
     void ShowBulkCreateReport(BulkCreateReport report);
 
-    /// <summary>Opens the standard New User window in batch-capture mode to configure one batch row (no I/O).
-    /// Pass <paramref name="existing"/> to edit (the window is prefilled). Returns the configured row, or null if cancelled.</summary>
-    BulkCreateRowViewModel? CaptureBatchUser(UserTemplate? defaultTemplate, string? defaultOuDn, string? upnSuffix, BulkCreateRowViewModel? existing);
+    /// <summary>Opens the standard New User window in batch-capture mode (non-modal, so the operator can
+    /// switch to other windows while configuring a row) to configure one batch row (no I/O). Pass
+    /// <paramref name="existing"/> to edit (the window is prefilled). <paramref name="onCaptured"/> is
+    /// invoked with the configured row when the operator commits; it is not called if they cancel.</summary>
+    void CaptureBatchUser(UserTemplate? defaultTemplate, string? defaultOuDn, string? upnSuffix, BulkCreateRowViewModel? existing, Action<BulkCreateRowViewModel> onCaptured);
 
     /// <summary>Opens the (non-modal) template editor.</summary>
     void ShowTemplateEditor();
@@ -62,6 +64,10 @@ public interface IDialogService
 
     /// <summary>Opens the (non-modal) "copy user" wizard seeded from the given user DN; <paramref name="onCreated"/> fires after each create.</summary>
     void ShowCopyUser(string sourceUserDistinguishedName, Action onCreated);
+
+    /// <summary>Opens the (modal) "copy groups to user" dialog: copies the source user's group memberships
+    /// (operator picks which) onto a chosen target user. Returns true if any membership was written.</summary>
+    bool ShowCopyGroupsToUser(string sourceUserDistinguishedName);
 
     /// <summary>Opens the (non-modal) scenario editor; <paramref name="onChanged"/> fires after each save/delete/import.</summary>
     void ShowScenarioEditor(Action onChanged);

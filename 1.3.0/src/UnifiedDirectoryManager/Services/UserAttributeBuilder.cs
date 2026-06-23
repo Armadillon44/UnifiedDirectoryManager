@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 using UnifiedDirectoryManager.Models;
 
@@ -41,7 +43,7 @@ public static class UserAttributeBuilder
         if (string.IsNullOrWhiteSpace(samPattern))
             i.Template.AttributeDefaults.TryGetValue("sAMAccountName", out samPattern);
         if (string.IsNullOrWhiteSpace(samPattern)) samPattern = "{first}.{last}";
-        return Sanitize(Resolve(i, samPattern, sam: string.Empty));
+        return SanitizeSam(Resolve(i, samPattern, sam: string.Empty));
     }
 
     /// <summary>Resolves the template's mail/UPN/proxy patterns into suggested values for the entered name.</summary>
@@ -125,6 +127,33 @@ public static class UserAttributeBuilder
         return trimmed.Length > 0 ? trimmed[..1] : string.Empty;
     }
 
-    private static string Sanitize(string sam) =>
-        new string(sam.Where(c => !char.IsWhiteSpace(c)).ToArray()).ToLowerInvariant();
+    /// <summary>
+    /// Sanitizes a resolved value into a valid sAMAccountName: folds accents to ASCII (José → jose),
+    /// drops every special character — including hyphen and underscore — keeping only ASCII letters,
+    /// digits, and the "." separator from a "{first}.{last}"-style pattern, then lowercases. Leading/
+    /// trailing dots (such as a trailing "." while the last name hasn't been typed yet) are trimmed.
+    /// Shared by the single-user New User wizard, Copy User, and the bulk-create engine so all three
+    /// produce identically-conventioned logon names.
+    /// </summary>
+    public static string SanitizeSam(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return string.Empty;
+        var folded = FoldDiacritics(value);
+        var sb = new StringBuilder(folded.Length);
+        foreach (var c in folded)
+            if (c < 128 && (char.IsLetterOrDigit(c) || c == '.'))
+                sb.Append(c);
+        return sb.ToString().Trim('.').ToLowerInvariant();
+    }
+
+    /// <summary>Decomposes accented characters and strips the combining marks (é → e, ñ → n).</summary>
+    private static string FoldDiacritics(string s)
+    {
+        var decomposed = s.Normalize(NormalizationForm.FormD);
+        var sb = new StringBuilder(decomposed.Length);
+        foreach (var c in decomposed)
+            if (CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark)
+                sb.Append(c);
+        return sb.ToString();
+    }
 }

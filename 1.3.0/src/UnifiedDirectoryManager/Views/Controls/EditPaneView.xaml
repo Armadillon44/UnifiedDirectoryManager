@@ -259,15 +259,26 @@
                 <TabItem Header="Member Of">
                     <DockPanel Margin="6">
                         <TextBlock DockPanel.Dock="Top" Foreground="#666" Margin="0,0,0,4" TextWrapping="Wrap"
-                                   Text="Groups this object belongs to — on-prem AD and Entra ID together (Ctrl/Shift-click to select several). Membership of a group synced from on-prem AD is mastered on-prem." />
+                                   Text="Groups this object belongs to — on-prem AD and Entra ID together (Ctrl/Shift-click to select several; Ctrl+C or right-click ▸ Copy to copy the list). Membership of a group synced from on-prem AD is mastered on-prem." />
                         <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
                             <Button Content="Add to groups…" Command="{Binding AddToGroupsCommand}" />
                             <Button Content="Remove selected" Command="{Binding RemoveFromGroupCommand}"
                                     CommandParameter="{Binding SelectedItems, ElementName=MemberOfList}" />
+                            <Button Content="Copy" Click="OnCopyMemberOf"
+                                    ToolTip="Copy the selected groups (or all, if none are selected) as tab-separated text — paste into a text file or Excel." />
+                            <Button Content="Copy groups to user…" Command="{Binding CopyGroupsToUserCommand}"
+                                    ToolTip="Copy this user's group memberships onto another user (pick which to copy)." />
                         </WrapPanel>
                         <ListView x:Name="MemberOfList" ItemsSource="{Binding MemberOf}"
                                   SelectionMode="Extended" VirtualizingStackPanel.IsVirtualizing="False"
+                                  KeyDown="OnMemberOfKeyDown"
                                   GridViewColumnHeader.Click="OnMemberOfHeaderClick">
+                            <ListView.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem Header="Copy selected" Click="OnCopyMemberOf" />
+                                    <MenuItem Header="Copy all" Click="OnCopyAllMemberOf" />
+                                </ContextMenu>
+                            </ListView.ContextMenu>
                             <ListView.View>
                                 <GridView>
                                     <GridViewColumn Header="Group" Width="240" DisplayMemberBinding="{Binding Name}" />

@@ -33,13 +33,19 @@ public partial class CopyUserViewModel : ObservableObject
     [ObservableProperty] private string _upn = string.Empty;
     [ObservableProperty] private string _email = string.Empty;
 
-    // Naming-convention patterns from the "Standard User" template (fall back to sensible defaults).
+    // Naming-convention patterns from the chosen template (fall back to sensible defaults). The operator
+    // picks which template's naming convention to apply via SelectedNamingTemplate (defaults to "Standard User").
     private string _samPattern = "{first}.{last}";
     private string _displayPattern = "{first} {last}";
     private string _upnPattern = "{sam}@{upnSuffix}";
     private string _mailPattern = "{sam}@{upnSuffix}";
     private string _upnSuffix = string.Empty;
+    private string _sourceUpnDomain = string.Empty; // source user's UPN domain — fallback suffix when a template has none
     private string _lastSam = string.Empty, _lastUpn = string.Empty, _lastEmail = string.Empty, _lastDisplay = string.Empty;
+
+    /// <summary>The templates the operator can choose a naming convention from (sAM / UPN / email / display patterns).</summary>
+    public ObservableCollection<UserTemplate> NamingTemplates { get; } = new();
+    [ObservableProperty] private UserTemplate? _selectedNamingTemplate;
 
     // Copied, editable detail fields (prefilled from the source user).
     [ObservableProperty] private string _street = string.Empty;
@@ -101,6 +107,19 @@ public partial class CopyUserViewModel : ObservableObject
         _settings = settings;
         _sourceDn = sourceDn;
         _entraConnectServer = settings.EntraConnectServer ?? string.Empty;
+
+        // Offer every template as a naming-convention choice; default to "Standard User" (the prior behavior).
+        try { foreach (var t in _store.LoadAll()) NamingTemplates.Add(t); }
+        catch (Exception ex) { AppLog.Instance.Warn("Could not load templates for the Copy User naming picker: " + ex.Message); }
+        SelectedNamingTemplate = NamingTemplates.FirstOrDefault(t => string.Equals(t.Name, "Standard User", StringComparison.OrdinalIgnoreCase))
+            ?? NamingTemplates.FirstOrDefault();
+    }
+
+    /// <summary>Switching the naming template re-applies its sAM / UPN / email / display patterns to the entered name.</summary>
+    partial void OnSelectedNamingTemplateChanged(UserTemplate? value)
+    {
+        ApplyNamingFromTemplate(value);
+        ApplySuggestions(force: true); // the operator explicitly chose this convention — apply it even over autofilled values
     }
 
     public async Task LoadAsync()
@@ -109,16 +128,15 @@ public partial class CopyUserViewModel : ObservableObject
         Status = "Loading source user…";
         try
         {
-            // Naming conventions always come from the "Standard User" template (not the source user).
-            LoadStandardTemplateNaming();
-
             var attrs = await _directory.LoadObjectAsync(_sourceDn);
             var map = attrs.GroupBy(a => a.LdapName, StringComparer.OrdinalIgnoreCase)
                            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
             TargetOu = DirectoryService.ParentDn(_sourceDn);
-            // If the template didn't carry a UPN suffix, fall back to the source user's UPN domain.
-            if (string.IsNullOrWhiteSpace(_upnSuffix)) _upnSuffix = DomainOf(map, "userPrincipalName");
+            // If the chosen naming template didn't carry a UPN suffix, fall back to the source user's UPN domain
+            // (remembered so the fallback still applies if the operator switches templates after load).
+            _sourceUpnDomain = DomainOf(map, "userPrincipalName");
+            if (string.IsNullOrWhiteSpace(_upnSuffix)) { _upnSuffix = _sourceUpnDomain; ApplySuggestions(force: true); }
 
             // Manager copied (editable via the picker).
             if (map.TryGetValue("manager", out var mgr) && mgr.RawValues.Count > 0 && !string.IsNullOrWhiteSpace(mgr.RawValues[0]))
@@ -212,39 +230,37 @@ public partial class CopyUserViewModel : ObservableObject
     private static string Raw(IReadOnlyDictionary<string, AdAttribute> map, string ldap) =>
         map.TryGetValue(ldap, out var a) && a.RawValues.Count > 0 ? a.RawValues[0] : string.Empty;
 
-    /// <summary>Suggests sAM / UPN / email / display name from the entered name using the Standard User
-    /// template's naming patterns (only while the field is still the last auto-suggested value).</summary>
-    private void ApplySuggestions()
+    /// <summary>Suggests sAM / UPN / email / display name from the entered name using the chosen template's
+    /// naming patterns. When <paramref name="force"/> is false, only fields still holding the last auto-suggested
+    /// value are updated (so manual edits are preserved); on a template switch the caller forces a re-apply.</summary>
+    private void ApplySuggestions(bool force = false)
     {
         var sam = Sanitize(Resolve(_samPattern, sam: string.Empty));
         var display = Resolve(_displayPattern, sam);
         var upn = Resolve(_upnPattern, sam);
         var email = Resolve(_mailPattern, sam);
 
-        if (SamAccountName == _lastSam) { SamAccountName = sam; _lastSam = sam; }
-        if (DisplayName == _lastDisplay) { DisplayName = display; _lastDisplay = display; }
-        if (Upn == _lastUpn) { Upn = upn; _lastUpn = upn; }
-        if (Email == _lastEmail) { Email = email; _lastEmail = email; }
+        if (force || SamAccountName == _lastSam) { SamAccountName = sam; _lastSam = sam; }
+        if (force || DisplayName == _lastDisplay) { DisplayName = display; _lastDisplay = display; }
+        if (force || Upn == _lastUpn) { Upn = upn; _lastUpn = upn; }
+        if (force || Email == _lastEmail) { Email = email; _lastEmail = email; }
     }
 
-    /// <summary>Loads the "Standard User" template (by file in the templates dir, else by name) for naming patterns.</summary>
-    private void LoadStandardTemplateNaming()
+    /// <summary>Loads the naming patterns (sAM / display / UPN / email + UPN suffix) from the chosen template,
+    /// resetting to sensible defaults first so an unset pattern doesn't carry over from a previously-selected one.</summary>
+    private void ApplyNamingFromTemplate(UserTemplate? template)
     {
-        UserTemplate? std = null;
-        try
-        {
-            var path = System.IO.Path.Combine(_store.TemplatesDirectory, "Standard User.json");
-            if (System.IO.File.Exists(path)) std = _store.ImportFrom(path);
-        }
-        catch (Exception ex) { AppLog.Instance.Warn("Could not read the Standard User template: " + ex.Message); }
-        std ??= _store.LoadAll().FirstOrDefault(t => string.Equals(t.Name, "Standard User", StringComparison.OrdinalIgnoreCase));
-        if (std is null) { AppLog.Instance.Warn("No \"Standard User\" template found — using default naming patterns."); return; }
+        _samPattern = "{first}.{last}";
+        _displayPattern = "{first} {last}";
+        _upnPattern = "{sam}@{upnSuffix}";
+        _mailPattern = "{sam}@{upnSuffix}";
+        if (template is null) { _upnSuffix = _sourceUpnDomain; return; }
 
-        _upnSuffix = std.UpnSuffix ?? string.Empty;
-        if (std.AttributeDefaults.TryGetValue("sAMAccountName", out var s) && !string.IsNullOrWhiteSpace(s)) _samPattern = s;
-        if (std.AttributeDefaults.TryGetValue("displayName", out var d) && !string.IsNullOrWhiteSpace(d)) _displayPattern = d;
-        if (std.AttributeDefaults.TryGetValue("userPrincipalName", out var u) && !string.IsNullOrWhiteSpace(u)) _upnPattern = u;
-        if (std.AttributeDefaults.TryGetValue("mail", out var m) && !string.IsNullOrWhiteSpace(m)) _mailPattern = m;
+        _upnSuffix = !string.IsNullOrWhiteSpace(template.UpnSuffix) ? template.UpnSuffix : _sourceUpnDomain;
+        if (template.AttributeDefaults.TryGetValue("sAMAccountName", out var s) && !string.IsNullOrWhiteSpace(s)) _samPattern = s;
+        if (template.AttributeDefaults.TryGetValue("displayName", out var d) && !string.IsNullOrWhiteSpace(d)) _displayPattern = d;
+        if (template.AttributeDefaults.TryGetValue("userPrincipalName", out var u) && !string.IsNullOrWhiteSpace(u)) _upnPattern = u;
+        if (template.AttributeDefaults.TryGetValue("mail", out var m) && !string.IsNullOrWhiteSpace(m)) _mailPattern = m;
     }
 
     [RelayCommand]
@@ -396,7 +412,9 @@ public partial class CopyUserViewModel : ObservableObject
     }
 
     private static string Ini(string name) { var t = name.Trim(); return t.Length > 0 ? t[..1] : string.Empty; }
-    private static string Sanitize(string sam) => new(sam.Where(c => !char.IsWhiteSpace(c)).ToArray());
+    // Use the shared sanitizer so Copy User honors the same logon-name conventions as New User / bulk
+    // create (lowercased, accents folded, special characters dropped).
+    private static string Sanitize(string sam) => UserAttributeBuilder.SanitizeSam(sam);
 
     // --- Post-create cloud provisioning (Entra Connect sync → wait for the user → add cloud groups) ---
 

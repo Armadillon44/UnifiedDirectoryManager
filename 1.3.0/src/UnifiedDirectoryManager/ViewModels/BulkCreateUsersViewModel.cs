@@ -104,8 +104,9 @@ public partial class BulkCreateUsersViewModel : ObservableObject
     private void AddUser()
     {
         if (SelectedTemplate is null) { Status = "Select a template first."; return; }
-        var row = _dialogs.CaptureBatchUser(SelectedTemplate, string.IsNullOrWhiteSpace(TargetOu) ? DefaultOu : TargetOu, UpnSuffix, existing: null);
-        if (row is not null) Rows.Add(row);
+        // Non-modal: the row is added via the callback when the operator commits the capture window.
+        _dialogs.CaptureBatchUser(SelectedTemplate, string.IsNullOrWhiteSpace(TargetOu) ? DefaultOu : TargetOu, UpnSuffix,
+            existing: null, onCaptured: row => Rows.Add(row));
     }
 
     /// <summary>Re-opens the New User window prefilled to edit an existing batch row.</summary>
@@ -113,10 +114,13 @@ public partial class BulkCreateUsersViewModel : ObservableObject
     private void EditRow(BulkCreateRowViewModel? row)
     {
         if (row is null) return;
-        var updated = _dialogs.CaptureBatchUser(SelectedTemplate, string.IsNullOrWhiteSpace(TargetOu) ? DefaultOu : TargetOu, UpnSuffix, existing: row);
-        if (updated is null) return;
-        var i = Rows.IndexOf(row);
-        if (i >= 0) Rows[i] = updated;
+        // Re-find the index in the callback — the window is non-modal, so the list may have changed by then.
+        _dialogs.CaptureBatchUser(SelectedTemplate, string.IsNullOrWhiteSpace(TargetOu) ? DefaultOu : TargetOu, UpnSuffix,
+            existing: row, onCaptured: updated =>
+            {
+                var i = Rows.IndexOf(row);
+                if (i >= 0) Rows[i] = updated; else Rows.Add(updated);
+            });
     }
 
     [RelayCommand]

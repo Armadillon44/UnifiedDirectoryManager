@@ -25,6 +25,7 @@
             <MenuItem Header="_Edit" IsEnabled="{Binding IsAdView}">
                 <MenuItem Header="_Advanced Search…" Command="{Binding AdvancedSearchCommand}" />
                 <MenuItem Header="Cop_y User…" Command="{Binding CopyUserCommand}" />
+                <MenuItem Header="Copy _Groups to User…" Command="{Binding CopyGroupsToUserCommand}" />
                 <MenuItem Header="Add Selected to _Groups…" Command="{Binding AddSelectedToGroupsCommand}" />
                 <MenuItem Header="_Bulk Edit…" Command="{Binding BulkEditCommand}" />
                 <Separator />

@@ -650,6 +650,14 @@ public partial class MainViewModel : ObservableObject
         _dialogs.ShowCopyUser(user.DistinguishedName, onCreated: () => _ = List.ReloadAsync());
     }
 
+    [RelayCommand]
+    private void CopyGroupsToUser()
+    {
+        var user = SelectedRowsOrSingle().FirstOrDefault(r => r.Type == AdObjectType.User);
+        if (user is null) { _dialogs.Alert("Copy groups to user", "Select the source user (whose groups to copy)."); return; }
+        if (_dialogs.ShowCopyGroupsToUser(user.DistinguishedName)) _ = List.ReloadAsync();
+    }
+
     private void UpdateSelectionState()
     {
         var rows = List.SelectedRows;
