@@ -1,11 +1,11 @@
 {
-  // Pin C# Dev Kit to the 1.3.0 solution so it loads exactly those projects
-  // instead of globbing every *.csproj in the workspace. Globbing is what
-  // transiently picks up the WPF markup-compile temp project
+  // Pin C# Dev Kit to the active solution (app/) so it loads exactly those
+  // projects instead of globbing every *.csproj in the workspace. Globbing is
+  // what transiently picks up the WPF markup-compile temp project
   // (UnifiedDirectoryManager_xxxx_wpftmp.csproj), which is created and deleted
   // during a build and causes "project file cannot be found" errors.
-  // Change this to 1.2.0/UnifiedDirectoryManager.sln to work on that version.
-  "dotnet.defaultSolution": "1.3.0/UnifiedDirectoryManager.sln",
+  // The frozen 1.2.0 reference build lives under archive/1.2.0/.
+  "dotnet.defaultSolution": "app/UnifiedDirectoryManager.sln",
 
   // Don't watch build output (reduces churn and spurious project-reload noise).
   "files.watcherExclude": {
