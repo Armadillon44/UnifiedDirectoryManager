@@ -31,9 +31,14 @@
     <!-- System.DirectoryServices is provided by the net10.0-windows framework (no PackageReference
          needed; an explicit one triggers NU1510). Protocols is still a real package dependency. -->
     <PackageReference Include="System.DirectoryServices.Protocols" Version="10.0.9" />
-    <!-- Entra ID / Microsoft 365 cloud layer: Graph SDK + interactive browser auth (Azure.Identity). -->
+    <!-- Entra ID / Microsoft 365 cloud layer: Graph SDK + interactive browser auth (Azure.Identity).
+         1.21.0 is the latest package and coexists cleanly with Microsoft.PowerShell.SDK (the Exchange
+         Online layer hosts PowerShell in-process); the spike confirmed no package-version conflict. -->
     <PackageReference Include="Microsoft.Graph" Version="6.2.0" />
     <PackageReference Include="Azure.Identity" Version="1.21.0" />
+    <!-- Exchange Online layer (v2.0): host PowerShell + the ExchangeOnlineManagement module in-process
+         to run mailbox cmdlets (convert to/from shared, internal forwarding) that Graph cannot do. -->
+    <PackageReference Include="Microsoft.PowerShell.SDK" Version="7.6.3" />
   </ItemGroup>
 
 </Project>

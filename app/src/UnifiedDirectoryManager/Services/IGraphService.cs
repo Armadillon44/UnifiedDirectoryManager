@@ -29,6 +29,13 @@ public interface IGraphService
     void SignOut();
 
     /// <summary>
+    /// Acquires an access token for the given scopes from the signed-in admin's credential, so a sibling
+    /// service (e.g. the Exchange Online layer, which needs a token for the outlook.office365.com resource)
+    /// can reuse the same sign-in. Reuses the cached account silently where possible. Throws if not configured.
+    /// </summary>
+    Task<string> GetAccessTokenAsync(string[] scopes, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Reads a user's cloud identity by UPN. Returns null if no such user exists in the tenant
     /// (e.g. an on-prem account that isn't synced). Throws on auth/permission/transport errors.
     /// </summary>
