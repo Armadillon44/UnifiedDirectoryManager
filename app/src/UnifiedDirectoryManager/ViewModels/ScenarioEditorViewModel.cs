@@ -25,18 +25,27 @@ public partial class ScenarioStepRow : ObservableObject
             Groups.Add(new AdObjectRow { DistinguishedName = dn, Name = NameResolver.RdnFallback(dn), Type = AdObjectType.Group });
         foreach (var g in step.CloudGroups)
             CloudGroups.Add(new CloudGroupRef { Id = g.Id, Name = g.Name });
+        _deliverAndForward = step.DeliverAndForward;
+        ForwardingTarget = step.ForwardingTarget is null
+            ? null
+            : new ForwardingTargetRef { Identity = step.ForwardingTarget.Identity, Name = step.ForwardingTarget.Name };
     }
 
     [ObservableProperty] private ScenarioActionType _action = ScenarioActionType.Disable;
     [ObservableProperty] private string _attribute = "description";
     [ObservableProperty] private string _value = string.Empty;
     [ObservableProperty] private string _targetOu = string.Empty;
+    [ObservableProperty] private bool _deliverAndForward;
 
     /// <summary>Groups for Add/Remove-from-groups steps (display rows; DNs are what get saved).</summary>
     public ObservableCollection<AdObjectRow> Groups { get; } = new();
 
     /// <summary>Entra ID groups for Cloud Add/Remove-from-groups steps.</summary>
     public ObservableCollection<CloudGroupRef> CloudGroups { get; } = new();
+
+    /// <summary>Internal forwarding target for ExchangeSetForwarding. Carried through the editor round-trip
+    /// so it isn't lost on edit/save; the picker UI lands in Phase 3.</summary>
+    public ForwardingTargetRef? ForwardingTarget { get; set; }
 
     public IReadOnlyList<ScenarioActionType> AllActions { get; } = Enum.GetValues<ScenarioActionType>();
 
@@ -52,6 +61,7 @@ public partial class ScenarioStepRow : ObservableObject
     public bool ShowCloudGroups => Action is ScenarioActionType.CloudAddToGroups or ScenarioActionType.CloudRemoveFromGroups;
     public bool ShowOu => Action is ScenarioActionType.MoveToOu;
     public bool ShowLogNote => Action is ScenarioActionType.SaveOperationLog;
+    public bool ShowForwarding => Action is ScenarioActionType.ExchangeSetForwarding;
 
     partial void OnActionChanged(ScenarioActionType value)
     {
@@ -61,6 +71,7 @@ public partial class ScenarioStepRow : ObservableObject
         OnPropertyChanged(nameof(ShowCloudGroups));
         OnPropertyChanged(nameof(ShowOu));
         OnPropertyChanged(nameof(ShowLogNote));
+        OnPropertyChanged(nameof(ShowForwarding));
     }
 
     [RelayCommand]
@@ -109,6 +120,10 @@ public partial class ScenarioStepRow : ObservableObject
         CloudGroups = ShowCloudGroups
             ? CloudGroups.Select(g => new CloudGroupRef { Id = g.Id, Name = g.Name }).ToList()
             : new List<CloudGroupRef>(),
+        ForwardingTarget = ShowForwarding && ForwardingTarget is not null
+            ? new ForwardingTargetRef { Identity = ForwardingTarget.Identity, Name = ForwardingTarget.Name }
+            : null,
+        DeliverAndForward = ShowForwarding && DeliverAndForward,
     };
 }
 

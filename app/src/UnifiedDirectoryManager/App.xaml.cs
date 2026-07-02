@@ -50,12 +50,13 @@ public partial class App : Application
         // Exchange Online layer (v2.0): hosts the ExchangeOnlineManagement module and reuses the Graph
         // sign-in for its token. Configured (but not connected) from the saved tenant; connect is lazy.
         // NOTE: -Organization is seeded with the tenant id; confirm the tenant-domain form during live testing.
-        _exchange = new ExchangeService(graph);
+        var exchange = new ExchangeService(graph);
         if (!string.IsNullOrWhiteSpace(settings.EntraTenantId))
-            _exchange.Configure(settings.EntraTenantId!);
+            exchange.Configure(settings.EntraTenantId!);
+        _exchange = exchange;
 
-        // Scenario runner needs the cloud client too (scenarios can include Entra ID steps).
-        var scenarioRunner = new ScenarioRunner(_directory, graph);
+        // Scenario runner needs the cloud clients too (scenarios can include Entra ID + Exchange steps).
+        var scenarioRunner = new ScenarioRunner(_directory, graph, exchange);
 
         var dialogs = new DialogService(_directory, templates, scenarios, settingsStore, settings, graph, locator, credentials, scenarioRunner);
 

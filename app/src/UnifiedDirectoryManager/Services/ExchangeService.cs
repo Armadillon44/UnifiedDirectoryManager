@@ -146,10 +146,28 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         if (_connected && _runspace is { RunspaceStateInfo.State: RunspaceState.Opened }) return;
         if (!IsConfigured) throw new InvalidOperationException("Set the Exchange organization before connecting.");
 
-        // Borrow an Exchange-resource token from the existing Entra sign-in (throws if not signed in).
-        var token = await _graph.GetAccessTokenAsync(ExoScopes, ct).ConfigureAwait(false);
+        // Borrow an Exchange-resource token from the existing Entra sign-in (throws if not signed in). This runs
+        // before the cmdlet-invoke wrapper, so translate its failures here — the most common first-run failure is
+        // the Exchange Online permission not being consented for the app registration.
+        string token;
+        try
+        {
+            token = await _graph.GetAccessTokenAsync(ExoScopes, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            throw new ExchangeException(
+                "Couldn't get an Exchange Online access token. Grant the app registration the Office 365 Exchange "
+                + "Online permission with admin consent, then retry. (" + ExchangeErrors.Friendly(ex) + ")", ex);
+        }
 
-        OpenRunspaceLocked();
+        try { OpenRunspaceLocked(); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            throw new ExchangeException("Couldn't start the Exchange Online PowerShell session: " + ExchangeErrors.Friendly(ex), ex);
+        }
 
         try
         {

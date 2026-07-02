@@ -73,6 +73,10 @@ public sealed class ScenarioActionToLabelConverter : IValueConverter
             ScenarioActionType.CloudAddToGroups => "Cloud: add to groups",
             ScenarioActionType.CloudRemoveFromGroups => "Cloud: remove from groups",
             ScenarioActionType.CloudRemoveAllGroups => "Cloud: remove from all groups",
+            ScenarioActionType.ExchangeConvertToShared => "Exchange: convert to shared mailbox",
+            ScenarioActionType.ExchangeConvertToRegular => "Exchange: convert to regular mailbox",
+            ScenarioActionType.ExchangeSetForwarding => "Exchange: set mailbox forwarding",
+            ScenarioActionType.ExchangeClearForwarding => "Exchange: clear mailbox forwarding",
             ScenarioActionType.SaveOperationLog => "Save operation log",
             _ => value.ToString() ?? string.Empty,
         } : string.Empty;

@@ -514,6 +514,10 @@ public partial class MainViewModel : ObservableObject
                 or ScenarioActionType.CloudRemoveAllGroups))
             cautions.Add("• Includes Entra ID (cloud) steps — requires being signed in to Entra ID; they act on each "
                        + "object's synced cloud twin (skipped per-object if no cloud match is found).");
+        if (scenario.Steps.Any(s => s.Action is ScenarioActionType.ExchangeConvertToShared or ScenarioActionType.ExchangeConvertToRegular
+                or ScenarioActionType.ExchangeSetForwarding or ScenarioActionType.ExchangeClearForwarding))
+            cautions.Add("• Includes Exchange Online (mailbox) steps — requires being signed in to Entra ID and an "
+                       + "Exchange admin role; they act on each user's mailbox by UPN.");
         if (cautions.Count > 0)
         {
             lines.Add(string.Empty);
@@ -631,6 +635,13 @@ public partial class MainViewModel : ObservableObject
         ScenarioActionType.CloudAddToGroups => $"Cloud: add to {step.CloudGroups.Count} group(s)",
         ScenarioActionType.CloudRemoveFromGroups => $"Cloud: remove from {step.CloudGroups.Count} group(s)",
         ScenarioActionType.CloudRemoveAllGroups => "Cloud: remove from all groups",
+        ScenarioActionType.ExchangeConvertToShared => "Exchange: convert mailbox to shared",
+        ScenarioActionType.ExchangeConvertToRegular => "Exchange: convert mailbox to regular",
+        ScenarioActionType.ExchangeSetForwarding => step.ForwardingTarget is null || string.IsNullOrWhiteSpace(step.ForwardingTarget.Identity)
+            ? "Exchange: set mailbox forwarding (no target)"
+            : $"Exchange: forward to {(string.IsNullOrWhiteSpace(step.ForwardingTarget.Name) ? step.ForwardingTarget.Identity : step.ForwardingTarget.Name)}"
+              + (step.DeliverAndForward ? " (deliver + forward)" : " (forward only)"),
+        ScenarioActionType.ExchangeClearForwarding => "Exchange: clear mailbox forwarding",
         _ => step.Action.ToString(),
     };
 
