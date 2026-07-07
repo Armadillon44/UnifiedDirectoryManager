@@ -195,9 +195,13 @@ public sealed class ExchangeService : IExchangeService, IDisposable
 
         try { _runspace?.Dispose(); } catch { /* replacing a faulted runspace */ }
 
-        // The recipe proven in the Phase 0 spike: CreateDefault2 (minimal — no auto-loaded PackageManagement)
-        // + ExecutionPolicy.Bypass, or importing the EXO module fails with an AuthorizationManager check.
-        var iss = InitialSessionState.CreateDefault2();
+        // Use the FULL default session (NOT CreateDefault2). Connect-ExchangeOnline downloads a cloud-side
+        // "WebModule" of the mailbox cmdlets (Get-Mailbox, Set-Mailbox, …) and forms it using the standard
+        // engine modules plus PackageManagement/PowerShellGet. The minimal CreateDefault2 session starves that
+        // step, so the connect fails with "Module could not be correctly formed. Please run Connect-ExchangeOnline
+        // again." ExecutionPolicy.Bypass is what stops the AuthorizationManager from rejecting the (unsigned)
+        // module format data when hosting in-proc — it works with the full session too.
+        var iss = InitialSessionState.CreateDefault();
         iss.ExecutionPolicy = Microsoft.PowerShell.ExecutionPolicy.Bypass;
         iss.ImportPSModule(new[] { ModuleName });
 
