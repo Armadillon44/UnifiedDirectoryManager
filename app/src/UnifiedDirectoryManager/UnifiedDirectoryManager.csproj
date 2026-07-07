@@ -21,6 +21,15 @@
     <Authors>D Dreier</Authors>
   </PropertyGroup>
 
+  <!-- Debug builds land in a top-level ./debug/ folder at the repo root, a short path that's easy to find
+       and launch. Absolute path (resolved here) so the WPF markup-compile temp project can't misresolve a
+       relative one. Release/publish/installer are unaffected (this is Debug-only). -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <OutputPath>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\..\debug'))\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+  </PropertyGroup>
+
   <ItemGroup>
     <!-- Embed the README so Help ▸ View README works from the self-contained exe. -->
     <EmbeddedResource Include="..\..\README.md" Link="README.md" />
