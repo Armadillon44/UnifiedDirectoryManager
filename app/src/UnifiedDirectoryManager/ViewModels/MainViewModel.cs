@@ -60,7 +60,7 @@ public partial class MainViewModel : ObservableObject
     public bool EditDockBottom => EditDock == EditPaneDock.Bottom;
 
     public MainViewModel(IDirectoryService directory, IDialogService dialogs, IScenarioStore scenarios,
-        ISettingsStore settingsStore, AppSettings settings, IGraphService graph,
+        ISettingsStore settingsStore, AppSettings settings, IGraphService graph, IExchangeService exchange,
         ICredentialStore credentials)
     {
         _directory = directory;
@@ -73,7 +73,7 @@ public partial class MainViewModel : ObservableObject
         _editDock = Enum.TryParse<EditPaneDock>(settings.EditDock, out var dock) ? dock : EditPaneDock.Right;
 
         List = new ObjectListViewModel(directory, SetError, settingsStore, settings);
-        Edit = new EditPaneViewModel(directory, dialogs, SetError, graph);
+        Edit = new EditPaneViewModel(directory, dialogs, SetError, graph, exchange);
         Cloud = new CloudObjectListViewModel(graph, dialogs, settingsStore, settings);
 
         List.SelectionChanged += (_, row) =>

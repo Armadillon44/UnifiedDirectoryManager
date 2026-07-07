@@ -236,6 +236,49 @@
                     </ScrollViewer>
                 </TabItem>
 
+                <TabItem Header="Exchange" Visibility="{Binding ShowExchangeTab, Converter={StaticResource BoolToVis}}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="6" DataContext="{Binding Exchange}">
+                            <!-- Header: Exchange Online mailbox + signed-in account (sign-in is configured in File ▸ Settings) -->
+                            <Border BorderBrush="#E0E0E0" BorderThickness="0,0,0,1" Padding="0,0,0,8" Margin="0,0,0,8">
+                                <StackPanel>
+                                    <TextBlock Text="Exchange Online mailbox" FontWeight="SemiBold" />
+                                    <TextBlock Foreground="#666" FontSize="11" Margin="0,2,0,0"
+                                               Text="{Binding SignedInAccount, TargetNullValue='Signed in as: (not signed in)', StringFormat='Signed in as: {0}'}" />
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Look-up action + status line (no auto-fetch: the first EXO connect can be slow) -->
+                            <WrapPanel>
+                                <Button Content="Look up mailbox" Command="{Binding LookUpMailboxCommand}" />
+                            </WrapPanel>
+                            <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" Foreground="#666" Margin="0,6,0,2" />
+
+                            <!-- Resolved mailbox (read-only) -->
+                            <Grid Visibility="{Binding HasResult, Converter={StaticResource BoolToVis}}" Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="Display name" Foreground="#666" Margin="0,2,12,2" />
+                                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding DisplayName}" Margin="0,2" TextWrapping="Wrap" />
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="Primary SMTP" Foreground="#666" Margin="0,2,12,2" />
+                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding PrimarySmtpAddress}" Margin="0,2" TextWrapping="Wrap" />
+                                <TextBlock Grid.Row="2" Grid.Column="0" Text="Mailbox type" Foreground="#666" Margin="0,2,12,2" />
+                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding MailboxType}" Margin="0,2" FontWeight="SemiBold" />
+                                <TextBlock Grid.Row="3" Grid.Column="0" Text="Forwarding" Foreground="#666" Margin="0,2,12,2" />
+                                <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding Forwarding}" Margin="0,2" TextWrapping="Wrap" />
+                            </Grid>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
                 <TabItem Header="Members" Visibility="{Binding IsGroup, Converter={StaticResource BoolToVis}}">
                     <DockPanel Margin="6">
                         <TextBlock DockPanel.Dock="Top" Text="Objects that belong to this group (click a column header to sort; Ctrl/Shift-click to select several)" Foreground="#666" Margin="0,0,0,4" TextWrapping="Wrap" />

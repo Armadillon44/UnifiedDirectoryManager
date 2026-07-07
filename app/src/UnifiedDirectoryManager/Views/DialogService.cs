@@ -16,6 +16,7 @@ public sealed class DialogService : IDialogService
     private readonly ISettingsStore _settingsStore;
     private readonly AppSettings _settings;
     private readonly IGraphService _graph;
+    private readonly IExchangeService _exchange;
     private readonly IDomainLocator _locator;
     private readonly ICredentialStore _credentials;
     private readonly EntraSyncService _entraSync;
@@ -25,7 +26,7 @@ public sealed class DialogService : IDialogService
     private readonly BulkUserCsvImporter _csvImporter;
 
     public DialogService(IDirectoryService directory, ITemplateStore templates, IScenarioStore scenarios,
-        ISettingsStore settingsStore, AppSettings settings, IGraphService graph,
+        ISettingsStore settingsStore, AppSettings settings, IGraphService graph, IExchangeService exchange,
         IDomainLocator locator, ICredentialStore credentials, ScenarioRunner scenarioRunner)
     {
         _directory = directory;
@@ -34,6 +35,7 @@ public sealed class DialogService : IDialogService
         _settingsStore = settingsStore;
         _settings = settings;
         _graph = graph;
+        _exchange = exchange;
         _locator = locator;
         _credentials = credentials;
         _scenarioRunner = scenarioRunner;
@@ -276,7 +278,7 @@ public sealed class DialogService : IDialogService
 
     public void OpenObjectEditor(string distinguishedName, AdObjectType type, string title, Action onChanged)
     {
-        var vm = new EditPaneViewModel(_directory, this, AppLog.Instance.Warn, _graph);
+        var vm = new EditPaneViewModel(_directory, this, AppLog.Instance.Warn, _graph, _exchange);
         vm.ObjectChanged += () => onChanged();
         var window = new ObjectEditorWindow { DataContext = vm, Title = title, Owner = Owner };
         window.Show(); // non-modal so several editors can be open at once

@@ -50,6 +50,7 @@ public partial class EditPaneViewModel : ObservableObject
     private readonly IDialogService _dialogs;
     private readonly Action<string> _onError;
     private readonly IGraphService _graph;
+    private readonly IExchangeService _exchange;
 
     // Cloud correlation keys for the selected object (used to add it to cloud groups).
     private string? _cloudUpn;
@@ -59,8 +60,14 @@ public partial class EditPaneViewModel : ObservableObject
     /// <summary>Read-only Entra ID (cloud) view for the selected synced object; backs the Cloud tab.</summary>
     public CloudTabViewModel Cloud { get; }
 
+    /// <summary>Read-only Exchange Online mailbox view for the selected user; backs the Exchange tab.</summary>
+    public ExchangeTabViewModel Exchange { get; }
+
     /// <summary>Whether to show the Cloud tab (users, groups and computers can be synced to Entra).</summary>
     [ObservableProperty] private bool _showCloudTab;
+
+    /// <summary>Whether to show the Exchange tab (users only — mailbox actions apply to user mailboxes).</summary>
+    [ObservableProperty] private bool _showExchangeTab;
 
     private string? _dn;
 
@@ -113,13 +120,15 @@ public partial class EditPaneViewModel : ObservableObject
     public ObservableCollection<GroupMembership> MemberOf { get; } = new();
     public ObservableCollection<AdAttribute> AllAttributes { get; } = new();
 
-    public EditPaneViewModel(IDirectoryService directory, IDialogService dialogs, Action<string> onError, IGraphService graph)
+    public EditPaneViewModel(IDirectoryService directory, IDialogService dialogs, Action<string> onError, IGraphService graph, IExchangeService exchange)
     {
         _directory = directory;
         _dialogs = dialogs;
         _onError = onError;
         _graph = graph;
+        _exchange = exchange;
         Cloud = new CloudTabViewModel(graph, dialogs);
+        Exchange = new ExchangeTabViewModel(exchange, graph);
     }
 
     public void Clear()
@@ -138,8 +147,10 @@ public partial class EditPaneViewModel : ObservableObject
         _originalProtected = false;
         IsProtectedFromDeletion = false;
         ShowCloudTab = false;
+        ShowExchangeTab = false;
         _cloudUpn = _cloudSid = _cloudComputerName = null;
         Cloud.Reset();
+        Exchange.Reset();
     }
 
     public async Task LoadAsync(string distinguishedName, AdObjectType type)
@@ -236,6 +247,10 @@ public partial class EditPaneViewModel : ObservableObject
                     : map.TryGetValue("name", out var nm) && nm.RawValues.Count > 0 ? nm.RawValues[0] : null)
                 : null;
             Cloud.SetTarget(type, _cloudUpn, _cloudSid, _cloudComputerName);
+
+            // Exchange tab: users only (mailbox actions are user-only), keyed by the same UPN.
+            ShowExchangeTab = IsUser;
+            Exchange.SetTarget(type, _cloudUpn);
 
             // Merge the user's Entra (cloud) group memberships into the Member Of tab (best-effort, when signed in).
             if (IsUser && _graph.IsSignedIn && !string.IsNullOrWhiteSpace(_cloudUpn))
