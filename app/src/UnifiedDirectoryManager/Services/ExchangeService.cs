@@ -153,7 +153,10 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                 + "Online permission with admin consent, then retry. (" + ExchangeErrors.Friendly(ex) + ")", ex);
         }
 
-        var resp = await SendAndReadLockedAsync("CONNECT", JsonSerializer.Serialize(new { token, org = _organization }), ConnectTimeout, ct)
+        // Delegated token → connect with -UserPrincipalName (the signed-in admin); -Organization is the
+        // app-only pattern and leaves a delegated connect malformed. Pass both; the host prefers the UPN.
+        var resp = await SendAndReadLockedAsync("CONNECT",
+                JsonSerializer.Serialize(new { token, org = _organization, upn = _graph.SignedInAccount }), ConnectTimeout, ct)
             .ConfigureAwait(false);
         if (!resp.Ok)
         {
@@ -411,7 +414,11 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                 'CONNECT' {
                     try {
                         $p = __arg $payload
-                        Connect-ExchangeOnline -AccessToken $p.token -Organization $p.org -ShowBanner:$false -WarningAction SilentlyContinue -ErrorAction Stop 6>$null
+                        if ($p.upn) {
+                            Connect-ExchangeOnline -AccessToken $p.token -UserPrincipalName $p.upn -ShowBanner:$false -WarningAction SilentlyContinue -ErrorAction Stop 6>$null
+                        } else {
+                            Connect-ExchangeOnline -AccessToken $p.token -Organization $p.org -ShowBanner:$false -WarningAction SilentlyContinue -ErrorAction Stop 6>$null
+                        }
                         __emit @{ ok = $true }
                     } catch { __emit @{ ok = $false; error = $_.Exception.Message; detail = ($_ | Out-String) } }
                 }
