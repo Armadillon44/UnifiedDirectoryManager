@@ -1,45 +1,54 @@
-using System.Management.Automation;
-using System.Management.Automation.Runspaces;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using System.Text.Json;
 using UnifiedDirectoryManager.Models;
 
 namespace UnifiedDirectoryManager.Services;
 
 /// <summary>
-/// Hosted-PowerShell implementation of <see cref="IExchangeService"/>. Runs the ExchangeOnlineManagement
-/// module inside an in-process runspace and connects with an access token borrowed from the Entra sign-in
-/// (<see cref="IGraphService.GetAccessTokenAsync"/>) for the outlook.office365.com resource — so the admin
-/// is not prompted a second time.
+/// Out-of-process implementation of <see cref="IExchangeService"/>. Runs the ExchangeOnlineManagement module
+/// in a separate <c>pwsh</c> process rather than in-process, because the EXO module bundles its own
+/// MSAL/Azure.Core that clash with the Graph SDK's newer versions inside a single process (the connect fails
+/// with "Module could not be correctly formed"). A child process gets its own clean assemblies and a correct
+/// PowerShell module environment, so the module works reliably.
 ///
-/// The runspace and its commands are not reentrant, so every operation is serialized behind <see cref="_gate"/>
-/// and the (blocking) PowerShell pipeline runs off the UI thread. The connect access token is static and expires
-/// after ~1h; operations that fail because the session lapsed reconnect once with a fresh token and retry.
+/// A single long-lived pwsh session is kept and reused across operations (connecting per-operation would be far
+/// too slow for bulk scenario runs). Communication is a line protocol over stdin/stdout: the C# side sends
+/// <c>VERB &lt;base64-json&gt;</c> lines; the host script replies with a framed JSON envelope. The EXO access token
+/// is borrowed from the Entra sign-in (<see cref="IGraphService.GetAccessTokenAsync"/>) and passed via stdin
+/// (never on the command line). Requires PowerShell 7 + the ExchangeOnlineManagement module on the machine.
 /// </summary>
 public sealed class ExchangeService : IExchangeService, IDisposable
 {
-    // Exchange Online admin resource (NOT Graph). The .default scope yields the consented EXO permissions.
     private static readonly string[] ExoScopes = { "https://outlook.office365.com/.default" };
+    private const string Begin = "<<<UDM-BEGIN>>>";
+    private const string End = "<<<UDM-END>>>";
+    private const string Ready = "<<<UDM-READY>>>";
 
-    private const string ModuleName = "ExchangeOnlineManagement";
+    private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(150);
+    private static readonly TimeSpan OpTimeout = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(60);
 
     private readonly IGraphService _graph;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private string? _organization;
-    private Runspace? _runspace;
+    private Process? _pwsh;
+    private readonly StringBuilder _stderr = new();
     private bool _connected;
 
     public ExchangeService(IGraphService graph) => _graph = graph;
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_organization);
-    public bool IsConnected => _connected;
+    public bool IsConnected => _connected && _pwsh is { HasExited: false };
     public string? Organization => _organization;
 
     public void Configure(string organization)
     {
         var org = organization?.Trim();
         if (string.Equals(org, _organization, StringComparison.OrdinalIgnoreCase)) return;
-        // A different org means any existing session is stale.
-        Disconnect();
+        Disconnect(); // a different org invalidates any existing session
         _organization = org;
     }
 
@@ -53,102 +62,78 @@ public sealed class ExchangeService : IExchangeService, IDisposable
     public void Disconnect()
     {
         _gate.Wait();
-        try
-        {
-            if (_connected && _runspace is { RunspaceStateInfo.State: RunspaceState.Opened })
-            {
-                try
-                {
-                    using var ps = NewPowerShell();
-                    ps.AddCommand("Disconnect-ExchangeOnline")
-                      .AddParameter("Confirm", false)
-                      .AddParameter("ErrorAction", "SilentlyContinue");
-                    ps.Invoke();
-                }
-                catch (Exception ex) { AppLog.Instance.Warn("Disconnect-ExchangeOnline failed: " + ex.Message); }
-            }
-            _connected = false;
-            try { _runspace?.Dispose(); } catch { /* best effort */ }
-            _runspace = null;
-        }
+        try { KillLocked(); }
         finally { _gate.Release(); }
     }
 
     public async Task<MailboxInfo?> GetMailboxAsync(string identity, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(identity)) return null;
-        // SilentlyContinue + empty-result check so a missing mailbox returns null rather than throwing.
-        var results = await RunAsync(cancellationToken, throwOnError: false, ps =>
-            ps.AddCommand("Get-Mailbox")
-              .AddParameter("Identity", identity)
-              .AddParameter("ErrorAction", "SilentlyContinue")).ConfigureAwait(false);
-        return results.Count == 0 ? null : MapMailbox(results[0]);
+        var data = await RunOpAsync(new { op = "get-mailbox", identity }, cancellationToken).ConfigureAwait(false);
+        return data is { ValueKind: JsonValueKind.Object } d ? MapMailbox(d) : null; // null data = mailbox not found
     }
 
     public async Task<IReadOnlyList<MailboxRecipient>> SearchRecipientsAsync(string text, CancellationToken cancellationToken = default)
     {
-        var results = await RunAsync(cancellationToken, throwOnError: false, ps =>
-        {
-            var cmd = ps.AddCommand("Get-Recipient")
-                        .AddParameter("ResultSize", 50)
-                        .AddParameter("ErrorAction", "SilentlyContinue");
-            if (!string.IsNullOrWhiteSpace(text))
-            {
-                // Escape single quotes to keep the OPATH filter literal (no injection).
-                var esc = text.Trim().Replace("'", "''");
-                cmd.AddParameter("Filter", $"DisplayName -like '*{esc}*' -or PrimarySmtpAddress -like '*{esc}*'");
-            }
-        }).ConfigureAwait(false);
-
-        return results.Select(MapRecipient).ToList();
+        var data = await RunOpAsync(new { op = "search-recipients", text = text ?? string.Empty }, cancellationToken).ConfigureAwait(false);
+        var list = new List<MailboxRecipient>();
+        if (data is { ValueKind: JsonValueKind.Array } arr)
+            foreach (var e in arr.EnumerateArray()) list.Add(MapRecipient(e));
+        else if (data is { ValueKind: JsonValueKind.Object } one) // ConvertTo-Json renders a single result as an object
+            list.Add(MapRecipient(one));
+        return list;
     }
 
     public Task ConvertMailboxAsync(string identity, MailboxType type, CancellationToken cancellationToken = default)
     {
         if (type == MailboxType.Unknown)
             throw new ArgumentException("Only Regular and Shared are convertible.", nameof(type));
-
-        var typeArg = type == MailboxType.Shared ? "Shared" : "Regular";
-        return RunAsync(cancellationToken, throwOnError: true, ps =>
-            ps.AddCommand("Set-Mailbox")
-              .AddParameter("Identity", identity)
-              .AddParameter("Type", typeArg)
-              .AddParameter("ErrorAction", "Stop"));
+        return RunOpAsync(new { op = "convert", identity, type = type == MailboxType.Shared ? "Shared" : "Regular" }, cancellationToken);
     }
 
     public Task SetForwardingAsync(string identity, string forwardingTargetIdentity, bool deliverToMailboxAndForward, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(forwardingTargetIdentity))
             throw new ArgumentException("A forwarding target is required.", nameof(forwardingTargetIdentity));
-
-        return RunAsync(cancellationToken, throwOnError: true, ps =>
-            ps.AddCommand("Set-Mailbox")
-              .AddParameter("Identity", identity)
-              .AddParameter("ForwardingAddress", forwardingTargetIdentity)
-              .AddParameter("DeliverToMailboxAndForward", deliverToMailboxAndForward)
-              .AddParameter("ErrorAction", "Stop"));
+        return RunOpAsync(new { op = "set-forwarding", identity, target = forwardingTargetIdentity, deliver = deliverToMailboxAndForward }, cancellationToken);
     }
 
     public Task ClearForwardingAsync(string identity, CancellationToken cancellationToken = default)
-    {
-        return RunAsync(cancellationToken, throwOnError: true, ps =>
-            ps.AddCommand("Set-Mailbox")
-              .AddParameter("Identity", identity)
-              .AddParameter("ForwardingAddress", null)            // $null clears the internal forwarding target
-              .AddParameter("DeliverToMailboxAndForward", false)
-              .AddParameter("ErrorAction", "Stop"));
-    }
+        => RunOpAsync(new { op = "clear-forwarding", identity }, cancellationToken);
 
-    // --- connection / execution plumbing (all callers hold _gate) ---
+    // --- session plumbing (all callers hold _gate) ---
+
+    /// <summary>Runs one operation against the reused session, reconnecting once if the session lapsed. Throws
+    /// <see cref="ExchangeException"/> on failure; returns the response's <c>data</c> element (may be null).</summary>
+    private async Task<JsonElement?> RunOpAsync(object request, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await EnsureConnectedLockedAsync(ct).ConfigureAwait(false);
+            var json = JsonSerializer.Serialize(request);
+            var resp = await SendAndReadLockedAsync("OP", json, OpTimeout, ct).ConfigureAwait(false);
+            if (!resp.Ok && IsSessionExpired(resp.Error))
+            {
+                AppLog.Instance.Warn("Exchange Online session looks expired; restarting the host and reconnecting once.");
+                KillLocked();
+                await EnsureConnectedLockedAsync(ct).ConfigureAwait(false);
+                resp = await SendAndReadLockedAsync("OP", json, OpTimeout, ct).ConfigureAwait(false);
+            }
+            if (!resp.Ok) throw new ExchangeException(ExchangeErrors.Friendly(resp.Error));
+            return resp.Data;
+        }
+        finally { _gate.Release(); }
+    }
 
     private async Task EnsureConnectedLockedAsync(CancellationToken ct)
     {
-        if (_connected && _runspace is { RunspaceStateInfo.State: RunspaceState.Opened }) return;
-        if (!IsConfigured) throw new InvalidOperationException("Set the Exchange organization before connecting.");
+        if (IsConnected) return;
+        if (!IsConfigured) throw new ExchangeException("Exchange Online isn't configured — set the tenant/organization first.");
 
-        // Borrow an Exchange-resource token from the existing Entra sign-in (throws if not signed in). This runs
-        // before the cmdlet-invoke wrapper, so translate its failures here — the most common first-run failure is
-        // the Exchange Online permission not being consented for the app registration.
+        StartProcessLocked();
+        await ReadUntilReadyLockedAsync(ct).ConfigureAwait(false);
+
         string token;
         try
         {
@@ -157,132 +142,184 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
+            KillLocked();
             throw new ExchangeException(
                 "Couldn't get an Exchange Online access token. Grant the app registration the Office 365 Exchange "
                 + "Online permission with admin consent, then retry. (" + ExchangeErrors.Friendly(ex) + ")", ex);
         }
 
-        try { OpenRunspaceLocked(); }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
+        var resp = await SendAndReadLockedAsync("CONNECT", JsonSerializer.Serialize(new { token, org = _organization }), ConnectTimeout, ct)
+            .ConfigureAwait(false);
+        if (!resp.Ok)
         {
-            throw new ExchangeException("Couldn't start the Exchange Online PowerShell session: " + ExchangeErrors.Friendly(ex), ex);
+            KillLocked();
+            throw new ExchangeException("Connect to Exchange Online failed: " + ExchangeErrors.Friendly(resp.Error));
         }
-
-        try
-        {
-            await InvokeOnceLockedAsync(ct, throwOnError: true, ps =>
-                ps.AddCommand("Connect-ExchangeOnline")
-                  .AddParameter("AccessToken", token)
-                  .AddParameter("Organization", _organization)
-                  .AddParameter("ShowBanner", false)
-                  .AddParameter("SkipLoadingFormatData")   // avoids the AuthorizationManager format-data failure when hosting in-proc
-                  .AddParameter("ErrorAction", "Stop")).ConfigureAwait(false);
-        }
-        catch (ExchangeException ex) when (ex.Message.Contains("Connect-ExchangeOnline", StringComparison.OrdinalIgnoreCase)
-                                           && ex.Message.Contains("not recognized", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new ExchangeException("The ExchangeOnlineManagement PowerShell module was not found on this machine.", ex);
-        }
-
         _connected = true;
-        AppLog.Instance.Info($"Connected to Exchange Online ({_organization}).");
+        AppLog.Instance.Info($"Connected to Exchange Online ({_organization}) via pwsh host.");
     }
 
-    private void OpenRunspaceLocked()
+    private void StartProcessLocked()
     {
-        if (_runspace is { RunspaceStateInfo.State: RunspaceState.Opened }) return;
+        KillLocked();
+        var scriptPath = WriteHostScript();
 
-        try { _runspace?.Dispose(); } catch { /* replacing a faulted runspace */ }
+        var psi = new ProcessStartInfo
+        {
+            FileName = ResolvePwsh(),
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            StandardOutputEncoding = new UTF8Encoding(false),
+            StandardErrorEncoding = new UTF8Encoding(false),
+        };
+        foreach (var a in new[] { "-NoProfile", "-NoLogo", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath })
+            psi.ArgumentList.Add(a);
 
-        // Use the FULL default session (NOT CreateDefault2). Connect-ExchangeOnline downloads a cloud-side
-        // "WebModule" of the mailbox cmdlets (Get-Mailbox, Set-Mailbox, …) and forms it using the standard
-        // engine modules plus PackageManagement/PowerShellGet. The minimal CreateDefault2 session starves that
-        // step, so the connect fails with "Module could not be correctly formed. Please run Connect-ExchangeOnline
-        // again." ExecutionPolicy.Bypass is what stops the AuthorizationManager from rejecting the (unsigned)
-        // module format data when hosting in-proc — it works with the full session too.
-        var iss = InitialSessionState.CreateDefault();
-        iss.ExecutionPolicy = Microsoft.PowerShell.ExecutionPolicy.Bypass;
-        iss.ImportPSModule(new[] { ModuleName });
-
-        var runspace = RunspaceFactory.CreateRunspace(iss);
-        runspace.Open();
-        _runspace = runspace;
+        var p = new Process { StartInfo = psi };
+        p.Start();
+        // stdin encoding can't be set via ProcessStartInfo reliably on all hosts; wrap it as UTF-8 (no BOM).
+        // (Base64 payloads are ASCII anyway, so this only matters for safety.)
+        _stderr.Clear();
+        p.ErrorDataReceived += (_, e) => { if (e.Data is not null) lock (_stderr) { if (_stderr.Length < 8192) _stderr.AppendLine(e.Data); } };
+        p.BeginErrorReadLine();
+        _pwsh = p;
     }
 
-    private async Task<List<PSObject>> RunAsync(CancellationToken ct, bool throwOnError, Action<PowerShell> build)
+    private void KillLocked()
     {
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        _connected = false;
+        var p = _pwsh;
+        _pwsh = null;
+        if (p is null) return;
         try
         {
-            await EnsureConnectedLockedAsync(ct).ConfigureAwait(false);
-            try
+            if (!p.HasExited)
             {
-                return await InvokeOnceLockedAsync(ct, throwOnError, build).ConfigureAwait(false);
-            }
-            catch (ExchangeException ex) when (throwOnError && IsSessionExpired(ex))
-            {
-                AppLog.Instance.Warn("Exchange Online session looks expired; reconnecting once and retrying.");
-                _connected = false;
-                await EnsureConnectedLockedAsync(ct).ConfigureAwait(false);
-                return await InvokeOnceLockedAsync(ct, throwOnError, build).ConfigureAwait(false);
+                try { p.StandardInput.WriteLine("QUIT"); p.StandardInput.Flush(); } catch { /* ignore */ }
+                if (!p.WaitForExit(1500)) p.Kill(entireProcessTree: true);
             }
         }
-        finally { _gate.Release(); }
+        catch (Exception ex) { AppLog.Instance.Warn("Stopping the Exchange host process failed: " + ex.Message); }
+        finally { try { p.Dispose(); } catch { /* ignore */ } }
     }
 
-    private async Task<List<PSObject>> InvokeOnceLockedAsync(CancellationToken ct, bool throwOnError, Action<PowerShell> build)
+    private async Task ReadUntilReadyLockedAsync(CancellationToken ct)
     {
-        using var ps = NewPowerShell();
-        build(ps);
+        while (true)
+        {
+            var line = await ReadLineLockedAsync(StartupTimeout, ct).ConfigureAwait(false);
+            if (line is null)
+                throw new ExchangeException("The Exchange Online host (pwsh) exited during startup. " + DrainStderr());
+            if (line == Ready) return;
+            if (line == Begin) // an error envelope before ready (e.g. the module failed to import)
+            {
+                var payload = await ReadLineLockedAsync(StartupTimeout, ct).ConfigureAwait(false);
+                await ReadLineLockedAsync(StartupTimeout, ct).ConfigureAwait(false); // consume END
+                var r = Parse(payload);
+                throw new ExchangeException(ExchangeErrors.Friendly(r.Error ?? "The ExchangeOnlineManagement module could not be loaded."));
+            }
+            // ignore any other stray startup output
+        }
+    }
 
-        using var reg = ct.Register(() => { try { ps.Stop(); } catch { /* best effort */ } });
-
-        List<PSObject> results;
+    private async Task<Resp> SendAndReadLockedAsync(string verb, string json, TimeSpan timeout, CancellationToken ct)
+    {
+        if (_pwsh is null) throw new ExchangeException("The Exchange Online host is not running.");
+        var b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
         try
         {
-            var output = await Task.Run(() => ps.Invoke(), ct).ConfigureAwait(false);
-            results = output.ToList();
+            await _pwsh.StandardInput.WriteLineAsync((verb + " " + b64).AsMemory(), ct).ConfigureAwait(false);
+            await _pwsh.StandardInput.FlushAsync(ct).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            throw new ExchangeException(ExchangeErrors.Friendly(ex), ex);
+            throw new ExchangeException("The Exchange Online host stopped accepting input. " + DrainStderr(), ex);
         }
 
-        if (throwOnError && ps.HadErrors && ps.Streams.Error.Count > 0)
-            throw new ExchangeException(ExchangeErrors.Friendly(ps.Streams.Error[0]));
-
-        return results;
+        // Read until the framed envelope; tolerate stray lines before BEGIN.
+        while (true)
+        {
+            var line = await ReadLineLockedAsync(timeout, ct).ConfigureAwait(false);
+            if (line is null) throw new ExchangeException("The Exchange Online host (pwsh) exited unexpectedly. " + DrainStderr());
+            if (line != Begin) continue;
+            var payload = await ReadLineLockedAsync(timeout, ct).ConfigureAwait(false);
+            await ReadLineLockedAsync(timeout, ct).ConfigureAwait(false); // consume END
+            return Parse(payload);
+        }
     }
 
-    private PowerShell NewPowerShell()
+    /// <summary>Reads one stdout line with a timeout; kills the host and throws on timeout so a hung EXO call
+    /// can't block the app forever.</summary>
+    private async Task<string?> ReadLineLockedAsync(TimeSpan timeout, CancellationToken ct)
     {
-        var ps = PowerShell.Create();
-        ps.Runspace = _runspace!;
-        return ps;
+        var reader = _pwsh?.StandardOutput ?? throw new ExchangeException("The Exchange Online host is not running.");
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(timeout);
+        try
+        {
+            return await Task.Run(() => reader.ReadLine(), cts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            KillLocked();
+            throw new ExchangeException("The Exchange Online operation timed out.");
+        }
     }
 
-    // Heuristic: did the command fail because the EXO session/token lapsed (so a reconnect is worth one retry)?
-    private static bool IsSessionExpired(Exception ex)
+    private string DrainStderr()
     {
-        var m = ex.Message;
+        lock (_stderr)
+        {
+            var s = _stderr.ToString().Trim();
+            return s.Length == 0 ? string.Empty : "Details: " + s;
+        }
+    }
+
+    // Heuristic: did the op fail because the EXO session/token lapsed (worth one reconnect+retry)?
+    private static bool IsSessionExpired(string? error)
+    {
+        if (string.IsNullOrEmpty(error)) return false;
+        var m = error;
         return m.Contains("session", StringComparison.OrdinalIgnoreCase)
             || m.Contains("expired", StringComparison.OrdinalIgnoreCase)
-            || m.Contains("token", StringComparison.OrdinalIgnoreCase)
             || m.Contains("reconnect", StringComparison.OrdinalIgnoreCase)
-            || m.Contains("not recognized", StringComparison.OrdinalIgnoreCase); // cmdlet vanished after the session dropped
+            || m.Contains("Connect-ExchangeOnline", StringComparison.OrdinalIgnoreCase)
+            || m.Contains("not recognized", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static MailboxInfo MapMailbox(PSObject o)
+    private readonly record struct Resp(bool Ok, string? Error, JsonElement? Data);
+
+    private static Resp Parse(string? payload)
     {
-        string S(string p) => o.Properties[p]?.Value?.ToString() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(payload))
+            return new Resp(false, "The Exchange Online host returned no response.", null);
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            var root = doc.RootElement;
+            var ok = root.TryGetProperty("ok", out var o) && o.ValueKind == JsonValueKind.True;
+            string? error = root.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+            JsonElement? data = root.TryGetProperty("data", out var d) && d.ValueKind != JsonValueKind.Null ? d.Clone() : null;
+            return new Resp(ok, error, data);
+        }
+        catch (Exception ex)
+        {
+            return new Resp(false, "Unparseable response from the Exchange Online host: " + ex.Message, null);
+        }
+    }
+
+    private static MailboxInfo MapMailbox(JsonElement d)
+    {
+        string S(string p) => d.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
+        bool B(string p) => d.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.True;
 
         var rtd = S("RecipientTypeDetails");
         var type = rtd.Equals("SharedMailbox", StringComparison.OrdinalIgnoreCase) ? MailboxType.Shared
                  : rtd.Equals("UserMailbox", StringComparison.OrdinalIgnoreCase) ? MailboxType.Regular
                  : MailboxType.Unknown;
-
         var upn = S("UserPrincipalName");
         var fwd = S("ForwardingAddress");
 
@@ -293,21 +330,37 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             PrimarySmtpAddress = S("PrimarySmtpAddress"),
             Type = type,
             ForwardingAddress = fwd.Length > 0 ? fwd : null,
-            DeliverToMailboxAndForward = o.Properties["DeliverToMailboxAndForward"]?.Value is bool b && b,
+            DeliverToMailboxAndForward = B("DeliverToMailboxAndForward"),
         };
     }
 
-    private static MailboxRecipient MapRecipient(PSObject o)
+    private static MailboxRecipient MapRecipient(JsonElement d)
     {
-        string S(string p) => o.Properties[p]?.Value?.ToString() ?? string.Empty;
+        string S(string p) => d.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
         var smtp = S("PrimarySmtpAddress");
         return new MailboxRecipient
         {
             Identity = smtp.Length > 0 ? smtp : S("Identity"),
             DisplayName = S("DisplayName"),
             PrimarySmtpAddress = smtp,
-            RecipientType = S("RecipientTypeDetails"),
+            RecipientType = S("RecipientType"),
         };
+    }
+
+    private static string ResolvePwsh()
+    {
+        var known = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "PowerShell", "7", "pwsh.exe");
+        return File.Exists(known) ? known : "pwsh.exe"; // else rely on PATH
+    }
+
+    private static string WriteHostScript()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "UnifiedDirectoryManager");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "exo-host.ps1");
+        File.WriteAllText(path, HostScript, new UTF8Encoding(false));
+        return path;
     }
 
     public void Dispose()
@@ -315,4 +368,87 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         try { Disconnect(); } catch { /* best effort */ }
         _gate.Dispose();
     }
+
+    // The pwsh host loop. Started via -File; reads command lines from stdin and replies with a framed JSON
+    // envelope on stdout. Only __emit writes to stdout, so the framing stays clean (cmdlet output is captured
+    // into variables; warnings/info are suppressed or go to stderr).
+    private const string HostScript = """
+        $ErrorActionPreference = 'Stop'
+        try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch {}
+
+        function __emit($obj) {
+            [Console]::Out.WriteLine('<<<UDM-BEGIN>>>')
+            [Console]::Out.WriteLine(($obj | ConvertTo-Json -Depth 8 -Compress))
+            [Console]::Out.WriteLine('<<<UDM-END>>>')
+            [Console]::Out.Flush()
+        }
+        function __arg($b64) { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) | ConvertFrom-Json }
+
+        try {
+            Import-Module ExchangeOnlineManagement -ErrorAction Stop
+        } catch {
+            __emit @{ ok = $false; error = ("Import ExchangeOnlineManagement failed: " + $_.Exception.Message) }
+            exit 1
+        }
+        [Console]::Out.WriteLine('<<<UDM-READY>>>'); [Console]::Out.Flush()
+
+        while ($true) {
+            $line = [Console]::In.ReadLine()
+            if ($null -eq $line) { break }
+            $sp = $line.IndexOf(' ')
+            $verb = if ($sp -lt 0) { $line } else { $line.Substring(0, $sp) }
+            $payload = if ($sp -lt 0) { '' } else { $line.Substring($sp + 1) }
+            switch ($verb) {
+                'QUIT' { try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}; break }
+                'CONNECT' {
+                    try {
+                        $p = __arg $payload
+                        Connect-ExchangeOnline -AccessToken $p.token -Organization $p.org -ShowBanner:$false -SkipLoadingFormatData -WarningAction SilentlyContinue -ErrorAction Stop 6>$null
+                        __emit @{ ok = $true }
+                    } catch { __emit @{ ok = $false; error = $_.Exception.Message } }
+                }
+                'OP' {
+                    try {
+                        $r = __arg $payload
+                        switch ($r.op) {
+                            'get-mailbox' {
+                                $m = Get-Mailbox -Identity $r.identity -ErrorAction SilentlyContinue
+                                if ($null -eq $m) { __emit @{ ok = $true; data = $null } }
+                                else {
+                                    __emit @{ ok = $true; data = @{
+                                        DisplayName = [string]$m.DisplayName
+                                        PrimarySmtpAddress = [string]$m.PrimarySmtpAddress
+                                        RecipientTypeDetails = [string]$m.RecipientTypeDetails
+                                        ForwardingAddress = [string]$m.ForwardingAddress
+                                        DeliverToMailboxAndForward = [bool]$m.DeliverToMailboxAndForward
+                                        UserPrincipalName = [string]$m.UserPrincipalName
+                                    } }
+                                }
+                            }
+                            'convert' { Set-Mailbox -Identity $r.identity -Type $r.type -ErrorAction Stop 6>$null; __emit @{ ok = $true } }
+                            'set-forwarding' { Set-Mailbox -Identity $r.identity -ForwardingAddress $r.target -DeliverToMailboxAndForward ([bool]$r.deliver) -ErrorAction Stop 6>$null; __emit @{ ok = $true } }
+                            'clear-forwarding' { Set-Mailbox -Identity $r.identity -ForwardingAddress $null -DeliverToMailboxAndForward $false -ErrorAction Stop 6>$null; __emit @{ ok = $true } }
+                            'search-recipients' {
+                                if ([string]::IsNullOrWhiteSpace([string]$r.text)) {
+                                    $rc = Get-Recipient -ResultSize 50 -ErrorAction SilentlyContinue
+                                } else {
+                                    $esc = ([string]$r.text).Replace("'", "''")
+                                    $rc = Get-Recipient -ResultSize 50 -Filter "DisplayName -like '*$esc*' -or PrimarySmtpAddress -like '*$esc*'" -ErrorAction SilentlyContinue
+                                }
+                                $data = @($rc | ForEach-Object { @{
+                                    Identity = [string]$_.PrimarySmtpAddress
+                                    DisplayName = [string]$_.DisplayName
+                                    PrimarySmtpAddress = [string]$_.PrimarySmtpAddress
+                                    RecipientType = [string]$_.RecipientTypeDetails
+                                } })
+                                __emit @{ ok = $true; data = $data }
+                            }
+                            default { __emit @{ ok = $false; error = ("Unknown op: " + [string]$r.op) } }
+                        }
+                    } catch { __emit @{ ok = $false; error = $_.Exception.Message } }
+                }
+                default { __emit @{ ok = $false; error = ("Unknown verb: " + $verb) } }
+            }
+        }
+        """;
 }

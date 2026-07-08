@@ -1,5 +1,3 @@
-using System.Management.Automation;
-
 namespace UnifiedDirectoryManager.Services;
 
 /// <summary>
@@ -11,21 +9,14 @@ public sealed class ExchangeException : Exception
     public ExchangeException(string message, Exception? inner = null) : base(message, inner) { }
 }
 
-/// <summary>Turns PowerShell/Exchange errors into a readable one-line message for the UI.</summary>
+/// <summary>Turns Exchange/PowerShell error text into a readable one-line message for the UI.</summary>
 public static class ExchangeErrors
 {
-    /// <summary>The most specific message available from a PowerShell error record.</summary>
-    public static string Friendly(ErrorRecord error)
-    {
-        // The exception message is usually the cmdlet's own text; fall back to the record's string form.
-        var msg = error.Exception?.Message;
-        if (string.IsNullOrWhiteSpace(msg)) msg = error.ToString();
-        return Humanize(msg);
-    }
+    public static string Friendly(string? message) => Humanize(message);
 
     public static string Friendly(Exception ex) => Humanize(ex.Message);
 
-    private static string Humanize(string msg)
+    private static string Humanize(string? msg)
     {
         if (string.IsNullOrWhiteSpace(msg)) return "The Exchange Online operation failed.";
 
