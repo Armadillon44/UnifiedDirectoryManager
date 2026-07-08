@@ -84,6 +84,13 @@ public sealed class DialogService : IDialogService
         return window.ShowDialog() == true && vm.Commit() ? vm.Picked : null;
     }
 
+    public MailboxRecipient? PickMailboxRecipient(string title)
+    {
+        var vm = new MailboxRecipientPickerViewModel(_exchange);
+        var window = new MailboxRecipientPickerWindow { DataContext = vm, Title = title, Owner = Owner };
+        return window.ShowDialog() == true && vm.Commit() ? vm.Picked : null;
+    }
+
     public bool Confirm(string title, string heading, IEnumerable<string> lines)
     {
         var window = new ConfirmWindow(title, heading, lines) { Owner = Owner };

@@ -236,7 +236,7 @@
                     </ScrollViewer>
                 </TabItem>
 
-                <TabItem Header="Exchange" Visibility="{Binding ShowExchangeTab, Converter={StaticResource BoolToVis}}">
+                <TabItem Header="ExOL" Visibility="{Binding ShowExchangeTab, Converter={StaticResource BoolToVis}}">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="6" DataContext="{Binding Exchange}">
                             <!-- Header: Exchange Online mailbox + signed-in account (sign-in is configured in File ▸ Settings) -->
@@ -271,10 +271,29 @@
                                 <TextBlock Grid.Row="1" Grid.Column="0" Text="Primary SMTP" Foreground="#666" Margin="0,2,12,2" />
                                 <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding PrimarySmtpAddress}" Margin="0,2" TextWrapping="Wrap" />
                                 <TextBlock Grid.Row="2" Grid.Column="0" Text="Mailbox type" Foreground="#666" Margin="0,2,12,2" />
-                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding MailboxType}" Margin="0,2" FontWeight="SemiBold" />
+                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding MailboxTypeText}" Margin="0,2" FontWeight="SemiBold" />
                                 <TextBlock Grid.Row="3" Grid.Column="0" Text="Forwarding" Foreground="#666" Margin="0,2,12,2" />
                                 <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding Forwarding}" Margin="0,2" TextWrapping="Wrap" />
                             </Grid>
+
+                            <!-- Mailbox actions (available once a mailbox is loaded). Each confirms first and re-reads. -->
+                            <StackPanel Visibility="{Binding HasResult, Converter={StaticResource BoolToVis}}" Margin="0,14,0,0">
+                                <!-- Convert only applies to Regular/Shared mailboxes; hidden for room/equipment (Unknown). -->
+                                <StackPanel Visibility="{Binding CanConvert, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Mailbox type" FontWeight="SemiBold" Margin="0,0,0,4" />
+                                    <WrapPanel>
+                                        <Button Content="Convert to Shared" Command="{Binding ConvertToSharedCommand}" Margin="0,0,6,0" />
+                                        <Button Content="Convert to Regular" Command="{Binding ConvertToRegularCommand}" />
+                                    </WrapPanel>
+                                </StackPanel>
+
+                                <TextBlock Text="Forwarding (internal)" FontWeight="SemiBold" Margin="0,12,0,4" />
+                                <CheckBox Content="Also deliver a copy to the mailbox" IsChecked="{Binding DeliverAndForward}" Margin="0,0,0,6" />
+                                <WrapPanel>
+                                    <Button Content="Set forwarding…" Command="{Binding SetForwardingCommand}" Margin="0,0,6,0" />
+                                    <Button Content="Clear forwarding" Command="{Binding ClearForwardingCommand}" />
+                                </WrapPanel>
+                            </StackPanel>
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>

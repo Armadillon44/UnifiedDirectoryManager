@@ -128,7 +128,7 @@ public partial class EditPaneViewModel : ObservableObject
         _graph = graph;
         _exchange = exchange;
         Cloud = new CloudTabViewModel(graph, dialogs);
-        Exchange = new ExchangeTabViewModel(exchange, graph);
+        Exchange = new ExchangeTabViewModel(exchange, graph, dialogs);
     }
 
     public void Clear()

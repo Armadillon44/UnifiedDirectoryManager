@@ -23,6 +23,9 @@ public interface IDialogService
     /// <summary>Picks Entra ID groups to add an object to. Returns the picked groups, or null if cancelled.</summary>
     IReadOnlyList<CloudGroup>? PickCloudGroups(string title);
 
+    /// <summary>Picks a single internal Exchange recipient (user/shared mailbox/distribution group) to forward a mailbox to. Null if cancelled.</summary>
+    MailboxRecipient? PickMailboxRecipient(string title);
+
     /// <summary>Confirmation dialog listing the changes about to happen. Returns true to proceed.</summary>
     bool Confirm(string title, string heading, IEnumerable<string> lines);
 
