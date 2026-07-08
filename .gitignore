@@ -2,7 +2,8 @@
 [Bb]in/
 [Oo]bj/
 dist/
-/debug/   # redirected Debug build output (see UnifiedDirectoryManager.csproj)
+# redirected Debug build output (see UnifiedDirectoryManager.csproj)
+/debug/
 
 # WPF markup-compile temp projects (created and deleted during a build;
 # can linger if a build is interrupted)
