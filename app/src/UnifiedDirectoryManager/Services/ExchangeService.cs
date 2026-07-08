@@ -153,6 +153,8 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                 + "Online permission with admin consent, then retry. (" + ExchangeErrors.Friendly(ex) + ")", ex);
         }
 
+        LogTokenClaims(token); // diagnostic: which delegated scopes did the token actually get? (never logs the token)
+
         // Delegated token → connect with -UserPrincipalName (the signed-in admin); -Organization is the
         // app-only pattern and leaves a delegated connect malformed. Pass both; the host prefers the UPN.
         var resp = await SendAndReadLockedAsync("CONNECT",
@@ -356,6 +358,24 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             PrimarySmtpAddress = smtp,
             RecipientType = S("RecipientType"),
         };
+    }
+
+    /// <summary>Logs the audience + delegated scopes (scp) + app roles from the EXO access token, to confirm
+    /// which Exchange permission the token actually carries. Never logs the token itself.</summary>
+    private static void LogTokenClaims(string jwt)
+    {
+        try
+        {
+            var parts = jwt.Split('.');
+            if (parts.Length < 2) return;
+            var payload = parts[1].Replace('-', '+').Replace('_', '/');
+            switch (payload.Length % 4) { case 2: payload += "=="; break; case 3: payload += "="; break; }
+            using var doc = JsonDocument.Parse(Encoding.UTF8.GetString(Convert.FromBase64String(payload)));
+            var root = doc.RootElement;
+            string Claim(string n) => root.TryGetProperty(n, out var v) ? v.ToString() : "(none)";
+            AppLog.Instance.Info($"EXO token claims — aud={Claim("aud")}; scp={Claim("scp")}; roles={Claim("roles")}; appid={Claim("appid")}");
+        }
+        catch (Exception ex) { AppLog.Instance.Warn("Could not decode EXO token claims: " + ex.Message); }
     }
 
     private static string ResolvePwsh()
