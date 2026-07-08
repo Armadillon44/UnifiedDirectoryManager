@@ -120,7 +120,12 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                 await EnsureConnectedLockedAsync(ct).ConfigureAwait(false);
                 resp = await SendAndReadLockedAsync("OP", json, OpTimeout, ct).ConfigureAwait(false);
             }
-            if (!resp.Ok) throw new ExchangeException(ExchangeErrors.Friendly(resp.Error));
+            if (!resp.Ok)
+            {
+                if (!string.IsNullOrWhiteSpace(resp.Detail))
+                    AppLog.Instance.Error("Exchange Online operation failed. Full PowerShell error record:" + Environment.NewLine + resp.Detail);
+                throw new ExchangeException(ExchangeErrors.Friendly(resp.Error));
+            }
             return resp.Data;
         }
         finally { _gate.Release(); }
@@ -153,6 +158,8 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         if (!resp.Ok)
         {
             KillLocked();
+            if (!string.IsNullOrWhiteSpace(resp.Detail))
+                AppLog.Instance.Error("Exchange Online connect failed. Full PowerShell error record:" + Environment.NewLine + resp.Detail);
             throw new ExchangeException("Connect to Exchange Online failed: " + ExchangeErrors.Friendly(resp.Error));
         }
         _connected = true;
@@ -290,24 +297,25 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             || m.Contains("not recognized", StringComparison.OrdinalIgnoreCase);
     }
 
-    private readonly record struct Resp(bool Ok, string? Error, JsonElement? Data);
+    private readonly record struct Resp(bool Ok, string? Error, JsonElement? Data, string? Detail);
 
     private static Resp Parse(string? payload)
     {
         if (string.IsNullOrWhiteSpace(payload))
-            return new Resp(false, "The Exchange Online host returned no response.", null);
+            return new Resp(false, "The Exchange Online host returned no response.", null, null);
         try
         {
             using var doc = JsonDocument.Parse(payload);
             var root = doc.RootElement;
             var ok = root.TryGetProperty("ok", out var o) && o.ValueKind == JsonValueKind.True;
             string? error = root.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+            string? detail = root.TryGetProperty("detail", out var dt) && dt.ValueKind == JsonValueKind.String ? dt.GetString() : null;
             JsonElement? data = root.TryGetProperty("data", out var d) && d.ValueKind != JsonValueKind.Null ? d.Clone() : null;
-            return new Resp(ok, error, data);
+            return new Resp(ok, error, data, detail);
         }
         catch (Exception ex)
         {
-            return new Resp(false, "Unparseable response from the Exchange Online host: " + ex.Message, null);
+            return new Resp(false, "Unparseable response from the Exchange Online host: " + ex.Message, null, null);
         }
     }
 
@@ -403,9 +411,9 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                 'CONNECT' {
                     try {
                         $p = __arg $payload
-                        Connect-ExchangeOnline -AccessToken $p.token -Organization $p.org -ShowBanner:$false -SkipLoadingFormatData -WarningAction SilentlyContinue -ErrorAction Stop 6>$null
+                        Connect-ExchangeOnline -AccessToken $p.token -Organization $p.org -ShowBanner:$false -WarningAction SilentlyContinue -ErrorAction Stop 6>$null
                         __emit @{ ok = $true }
-                    } catch { __emit @{ ok = $false; error = $_.Exception.Message } }
+                    } catch { __emit @{ ok = $false; error = $_.Exception.Message; detail = ($_ | Out-String) } }
                 }
                 'OP' {
                     try {
@@ -445,7 +453,7 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                             }
                             default { __emit @{ ok = $false; error = ("Unknown op: " + [string]$r.op) } }
                         }
-                    } catch { __emit @{ ok = $false; error = $_.Exception.Message } }
+                    } catch { __emit @{ ok = $false; error = $_.Exception.Message; detail = ($_ | Out-String) } }
                 }
                 default { __emit @{ ok = $false; error = ("Unknown verb: " + $verb) } }
             }
