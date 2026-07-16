@@ -144,6 +144,13 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         }, cancellationToken);
     }
 
+    public Task RemoveDistributionGroupMemberAsync(string groupIdentity, string memberIdentity, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(groupIdentity)) throw new ArgumentException("A group is required.", nameof(groupIdentity));
+        if (string.IsNullOrWhiteSpace(memberIdentity)) throw new ArgumentException("A member is required.", nameof(memberIdentity));
+        return RunOpAsync(new { op = "remove-dl-member", group = groupIdentity, member = memberIdentity }, cancellationToken);
+    }
+
     // --- session plumbing (all callers hold _gate) ---
 
     /// <summary>Runs one operation against the reused session, reconnecting once if the session lapsed. Throws
@@ -602,6 +609,22 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 if ($r.sendAs) { try { Remove-RecipientPermission -Identity $r.identity -Trustee $r.delegateId -AccessRights SendAs -Confirm:$false -ErrorAction Stop | Out-Null } catch { if ($_.Exception.Message -notmatch 'not found|does not exist|doesn''t|isn''t|cannot be found|not have') { $errs += 'Send As: ' + $_.Exception.Message } } }
                                 if ($r.sendOnBehalf) { try { Set-Mailbox -Identity $r.identity -GrantSendOnBehalfTo @{ Remove = $r.delegateId } -ErrorAction Stop 6>$null } catch { if ($_.Exception.Message -notmatch 'not found|does not exist|doesn''t|isn''t|cannot be found|not have') { $errs += 'Send on Behalf: ' + $_.Exception.Message } } }
                                 if ($errs.Count -gt 0) { __emit @{ ok = $false; error = ($errs -join '; ') } } else { __emit @{ ok = $true } }
+                            }
+                            'remove-dl-member' {
+                                # Remove a member from a distribution list / mail-enabled security group. Microsoft Graph
+                                # can't modify these, so this is the only path. -BypassSecurityGroupManagerCheck lets an
+                                # Exchange admin who isn't the group's ManagedBy owner make the change. Idempotent: if the
+                                # member isn't in the group, treat it as success (there is nothing left to remove).
+                                try {
+                                    Remove-DistributionGroupMember -Identity $r.group -Member $r.member -BypassSecurityGroupManagerCheck -Confirm:$false -ErrorAction Stop 6>$null
+                                    __emit @{ ok = $true }
+                                } catch {
+                                    if ($_.Exception.Message -match "isn't a member|is not a member|not a member of the group") {
+                                        __emit @{ ok = $true; detail = "member was not in the group" }
+                                    } else {
+                                        __emit @{ ok = $false; error = $_.Exception.Message; detail = ($_ | Out-String) }
+                                    }
+                                }
                             }
                             default { __emit @{ ok = $false; error = ("Unknown op: " + [string]$r.op) } }
                         }

@@ -80,4 +80,13 @@ public interface IExchangeService
 
     /// <summary>Removes the given <paramref name="access"/> permissions for a delegate on a mailbox.</summary>
     Task RemoveDelegateAsync(string identity, string delegateIdentity, DelegateAccess access, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Removes <paramref name="memberIdentity"/> from a distribution list or mail-enabled security group
+    /// (<paramref name="groupIdentity"/>, by primary SMTP / alias / name) via Remove-DistributionGroupMember.
+    /// These groups can't be modified through Microsoft Graph, so this is the only path to remove a member.
+    /// Idempotent — if the member isn't in the group, it's treated as success. Does not apply to Exchange
+    /// dynamic distribution groups (their membership is query-computed).
+    /// </summary>
+    Task RemoveDistributionGroupMemberAsync(string groupIdentity, string memberIdentity, CancellationToken cancellationToken = default);
 }
