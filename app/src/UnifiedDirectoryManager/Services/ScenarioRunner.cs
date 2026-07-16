@@ -282,8 +282,8 @@ public sealed class ScenarioRunner
         var failed = new List<string>();
 
         // Distribution lists / mail-enabled security groups are removed through Exchange (see below). The member
-        // identity EXO expects is the object's mailbox recipient — resolved lazily and only for a user (only a
-        // user is a distribution-group member in this flow), so a run with no such groups pays nothing for it.
+        // identity EXO expects is the object's recipient (a user's UPN or a group's SMTP) — resolved lazily on the
+        // first such group, so a run with no distribution/mail-enabled-security groups pays nothing for it.
         string? exoMember = null;
         var exoMemberResolved = false;
 
@@ -301,45 +301,58 @@ public sealed class ScenarioRunner
             if (string.Equals(g.GroupKind, "Distribution", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(g.GroupKind, "Mail-enabled security", StringComparison.OrdinalIgnoreCase))
             {
+                // The group's primary SMTP is the reliable Exchange identity; fall back to the display name.
+                var groupId = string.IsNullOrWhiteSpace(g.Mail) ? g.DisplayName : g.Mail!;
                 try
                 {
                     if (!exoMemberResolved) { exoMember = await ResolveExoMemberIdentityAsync(dn, target, ct); exoMemberResolved = true; }
                     if (string.IsNullOrWhiteSpace(exoMember))
-                        throw new InvalidOperationException("only a user mailbox can be removed from a distribution list via Exchange");
-                    // The group's primary SMTP is the reliable Exchange identity; fall back to the display name.
-                    var groupId = string.IsNullOrWhiteSpace(g.Mail) ? g.DisplayName : g.Mail!;
+                        throw new InvalidOperationException("this object has no mailbox/recipient identity, so it can't be removed from a distribution list via Exchange");
                     await _exchange.RemoveDistributionGroupMemberAsync(groupId, exoMember!, ct);
-                    // Record name AND id so the log is a re-addable record; note the channel + kind used to remove it.
-                    removed.Add($"{g.DisplayName}  —  {g.Id}  (via Exchange — {g.GroupKind})");
+                    // Record name AND the SMTP actually used — the identity a re-add (Add-DistributionGroupMember)
+                    // needs — plus the channel + kind, so the log stays a re-addable record.
+                    removed.Add($"{g.DisplayName}  —  {groupId}  (via Exchange — {g.GroupKind})");
                 }
-                catch (Exception ex) { failed.Add($"{g.DisplayName}: {ex.Message}"); }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; } // user cancel — let RunAsync record it
+                catch (Exception ex) { failed.Add($"{g.DisplayName}: {DirectoryService.Friendly(ex)}"); }
                 continue;
             }
 
             // Record name AND id so the log is a re-addable record (a re-add / copy-to-another-user can find the group).
             try { await _graph.RemoveMemberFromGroupAsync(g.Id, objectId, ct); removed.Add($"{g.DisplayName}  —  {g.Id}"); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; } // user cancel — let RunAsync record it
             catch (Exception ex) { failed.Add($"{g.DisplayName}: {GraphErrors.Friendly(ex)}"); }
         }
-        // Any remaining per-group failures are RECORDED but NOT thrown, so the scenario continues with its
-        // remaining steps rather than aborting this target.
         var detail = removed.Count == 0
-            ? "Cloud: removed from all removable Entra ID groups (none removed)"
+            ? "Cloud: removed from 0 Entra ID group(s)"
             : $"Cloud: removed from {removed.Count} Entra ID group(s):" + Bullets(removed);
         if (skippedDynamic.Count > 0)
             detail += Environment.NewLine + $"    skipped {skippedDynamic.Count} dynamic group(s):" + Bullets(skippedDynamic);
         if (failed.Count > 0)
+        {
             detail += Environment.NewLine + $"    ⚠ could not remove {failed.Count} group(s):" + Bullets(failed);
+            // At least one membership couldn't be removed — signal the step as FAILED so a termination run isn't
+            // reported as a false success, while the detail still records which groups WERE removed (for re-add).
+            // RunAsync records this per-step failure and CONTINUES with the remaining steps (it does not abort),
+            // and a genuine user-cancellation was already re-thrown above rather than landing in `failed`.
+            throw new InvalidOperationException(detail);
+        }
         return detail;
     }
 
     /// <summary>Resolves the identity Exchange Online should treat as the distribution-group member being removed:
-    /// the target's mailbox UPN for a user (the only object that is a distribution-group member in this flow).
-    /// Returns null for non-user objects, which have no mailbox recipient to remove here.</summary>
+    /// a user's mailbox UPN, or a group's primary SMTP (a group can be nested in a distribution list; EXO's
+    /// -Member accepts a group recipient). Returns null for object types that can't be a distribution-group
+    /// member (e.g. computers).</summary>
     private async Task<string?> ResolveExoMemberIdentityAsync(string dn, AdObjectRow target, CancellationToken ct)
     {
         EnsureExchange(); // service configured + signed in to Entra (the EXO token is borrowed from the sign-in)
-        if (target.Type != AdObjectType.User) return null;
-        return await CorrelationAsync(dn, "userPrincipalName", formatted: false, ct);
+        return target.Type switch
+        {
+            AdObjectType.User => await CorrelationAsync(dn, "userPrincipalName", formatted: false, ct),
+            AdObjectType.Group => await CorrelationAsync(dn, "mail", formatted: false, ct), // group's primary SMTP
+            _ => null, // computers etc. are never distribution-group members
+        };
     }
 
     private static CloudObjectKind CloudKindFor(AdObjectType type) => type switch
