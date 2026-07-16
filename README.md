@@ -8,11 +8,18 @@ the things ADUC never had: reusable **new-user templates**, GUI **advanced searc
 Built with **WPF on .NET 10**. Ships as a **self-contained, single-file `.exe`** for **win-x64** and
 **win-arm64** — no .NET install required on the target machine (Windows 10 / 11).
 
-> **v2.0.0 — Exchange Online.** This release adds an **ExOL** tab and matching scenario steps for
-> pure-cloud tenants: convert mailboxes **Regular ↔ Shared**, set/clear **internal forwarding**,
-> manage **delegation** (Full Access / Send As / Send on Behalf), **delegate a departing user's mailbox
-> to their manager**, and remove members from **cloud distribution lists / mail-enabled security groups**
-> (which Microsoft Graph can't touch) via the Exchange Online module.
+> **v2.1.0 — Unified group picker + saved searches.**
+> - New-user templates and every create flow now use **one group picker** that spans **on-prem AD, Entra ID
+>   (cloud), and Exchange Online distribution groups** in a single bucket — each is applied through the right
+>   backend at creation (LDAP / Graph / `Add-DistributionGroupMember`).
+> - **Advanced Search** can now **save and recall searches and raw LDAP queries** (export/import to share),
+>   so common lookups are one click away.
+>
+> **v2.0.0 — Exchange Online.** An **ExOL** tab and matching scenario steps for pure-cloud tenants: convert
+> mailboxes **Regular ↔ Shared**, set/clear **internal forwarding**, manage **delegation** (Full Access /
+> Send As / Send on Behalf), **delegate a departing user's mailbox to their manager**, and remove members
+> from **cloud distribution lists / mail-enabled security groups** (which Microsoft Graph can't touch) via
+> the Exchange Online module.
 
 ---
 
@@ -37,10 +44,10 @@ templates, and logs live under `%APPDATA%\UnifiedDirectoryManager\` and follow y
   friendly-name UI backed by real `lDAPDisplayName` attributes, and manage group membership. **Every
   write is confirmed with a diff.**
 - **New-user templates + Bulk Create** — target OU, UPN suffix, country, token-driven attribute defaults,
-  and on-prem/cloud groups; provision many users in one phased pass with per-user passphrases and
-  Temporary Access Passes.
-- **Advanced search → Bulk Edit** — build conditions by friendly attribute name (or raw LDAP), then set
-  attributes / enable-disable / add-remove groups across all matches.
+  and groups from a **single unified picker** (on-prem AD + Entra cloud + Exchange distribution groups);
+  provision many users in one phased pass with per-user passphrases and Temporary Access Passes.
+- **Advanced search → Bulk Edit** — build conditions by friendly attribute name (or raw LDAP), **save and
+  recall** searches/queries, then set attributes / enable-disable / add-remove groups across all matches.
 - **Entra ID (cloud)** — manage a synced object's Entra groups and account state, and run an **Entra
   Connect delta sync** on demand.
 - **Exchange Online (ExOL)** — mailbox convert, forwarding, and delegation for pure-cloud tenants (see
