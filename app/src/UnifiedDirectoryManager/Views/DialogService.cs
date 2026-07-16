@@ -13,6 +13,7 @@ public sealed class DialogService : IDialogService
     private readonly IDirectoryService _directory;
     private readonly ITemplateStore _templates;
     private readonly IScenarioStore _scenarios;
+    private readonly ISavedSearchStore _savedSearches;
     private readonly ISettingsStore _settingsStore;
     private readonly AppSettings _settings;
     private readonly IGraphService _graph;
@@ -26,12 +27,13 @@ public sealed class DialogService : IDialogService
     private readonly BulkUserCsvImporter _csvImporter;
 
     public DialogService(IDirectoryService directory, ITemplateStore templates, IScenarioStore scenarios,
-        ISettingsStore settingsStore, AppSettings settings, IGraphService graph, IExchangeService exchange,
-        IDomainLocator locator, ICredentialStore credentials, ScenarioRunner scenarioRunner)
+        ISavedSearchStore savedSearches, ISettingsStore settingsStore, AppSettings settings, IGraphService graph,
+        IExchangeService exchange, IDomainLocator locator, ICredentialStore credentials, ScenarioRunner scenarioRunner)
     {
         _directory = directory;
         _templates = templates;
         _scenarios = scenarios;
+        _savedSearches = savedSearches;
         _settingsStore = settingsStore;
         _settings = settings;
         _graph = graph;
@@ -274,7 +276,7 @@ public sealed class DialogService : IDialogService
 
     public SearchQuery? ShowAdvancedSearch(string defaultBaseDn)
     {
-        var vm = new AdvancedSearchViewModel(this);
+        var vm = new AdvancedSearchViewModel(this, _savedSearches);
         if (!string.IsNullOrWhiteSpace(defaultBaseDn))
             vm.AddBase(defaultBaseDn);
         new AdvancedSearchWindow { DataContext = vm, Owner = Owner }.ShowDialog();
