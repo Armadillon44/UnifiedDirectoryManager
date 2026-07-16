@@ -101,9 +101,11 @@ public sealed class ScenarioRunner
                 if (groupDns.Count > 0)
                     await _directory.ApplyChangesAsync(dn,
                         new[] { new PendingChange { Op = ChangeOp.RemoveFromGroups, Values = groupDns } }, ct);
+                // Record each group's name AND full DN so the log is a re-addable record (the Add-to-groups
+                // pickers act on DNs) — useful to restore later or copy to another user with similar access.
                 detail = groupDns.Count == 0
                     ? "Removed all on-prem group memberships (none to remove)"
-                    : $"Removed from {groupDns.Count} on-prem group(s):" + Bullets(groupDns.Select(NameResolver.RdnFallback));
+                    : $"Removed from {groupDns.Count} on-prem group(s):" + Bullets(groupDns.Select(gdn => $"{NameResolver.RdnFallback(gdn)}  —  {gdn}"));
                 break;
             }
 
@@ -266,7 +268,8 @@ public sealed class ScenarioRunner
             // On-prem-synced memberships are on-prem-mastered (handled on the AD side), so they're skipped here
             // and intentionally not logged — there's nothing actionable to report about them.
             if (string.Equals(g.Origin, "Synced", StringComparison.OrdinalIgnoreCase)) continue;
-            try { await _graph.RemoveMemberFromGroupAsync(g.Id, objectId, ct); removed.Add(g.DisplayName); }
+            // Record name AND id so the log is a re-addable record (a re-add / copy-to-another-user can find the group).
+            try { await _graph.RemoveMemberFromGroupAsync(g.Id, objectId, ct); removed.Add($"{g.DisplayName}  —  {g.Id}"); }
             catch (Exception ex) { errors.Add($"{g.DisplayName}: {GraphErrors.Friendly(ex)}"); }
         }
         if (errors.Count > 0) throw new InvalidOperationException(string.Join("; ", errors));
