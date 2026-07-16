@@ -193,6 +193,36 @@ public partial class ExchangeTabViewModel : ObservableObject
             () => _exchange.RemoveDelegateAsync(_identity!, del.Identity, access), refreshOnFailure: true);
     }
 
+    [RelayCommand]
+    private async Task ChangeDelegateAsync(MailboxDelegate? del)
+    {
+        if (del is null || IsBusy || !EnsureReady()) return;
+
+        var result = _dialogs.EditDelegateAccess(del.DisplayName, del.Access);
+        if (result is null) return;
+        var (newAccess, autoMapping) = result.Value;
+
+        var toGrant = newAccess & ~del.Access;   // permissions to add
+        var toRemove = del.Access & ~newAccess;   // permissions to take away
+        if (toGrant == DelegateAccess.None && toRemove == DelegateAccess.None)
+        {
+            StatusMessage = $"No change to {del.DisplayName}’s access.";
+            return;
+        }
+
+        var lines = new List<string>();
+        foreach (var p in DescribeAccess(toGrant, autoMapping)) lines.Add("Grant: " + p);
+        foreach (var p in DescribeAccess(toRemove, false)) lines.Add("Remove: " + p);
+        if (!_dialogs.Confirm("Change delegate access", $"Update “{del.DisplayName}”’s access to “{TargetLabel}”?", lines))
+            return;
+
+        await RunWriteAsync("Updating delegate…", $"Updated {del.DisplayName}’s access.", async () =>
+        {
+            if (toGrant != DelegateAccess.None) await _exchange.AddDelegateAsync(_identity!, del.Identity, toGrant, autoMapping);
+            if (toRemove != DelegateAccess.None) await _exchange.RemoveDelegateAsync(_identity!, del.Identity, toRemove);
+        }, refreshOnFailure: true);
+    }
+
     private DelegateAccess BuildGrantAccess() =>
         (GrantFullAccess ? DelegateAccess.FullAccess : 0)
         | (GrantSendAs ? DelegateAccess.SendAs : 0)

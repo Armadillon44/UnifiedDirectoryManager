@@ -91,6 +91,13 @@ public sealed class DialogService : IDialogService
         return window.ShowDialog() == true && vm.Commit() ? vm.Picked : null;
     }
 
+    public (DelegateAccess Access, bool AutoMapping)? EditDelegateAccess(string delegateName, DelegateAccess current)
+    {
+        var vm = new DelegateAccessViewModel(delegateName, current);
+        var window = new DelegateAccessWindow { DataContext = vm, Owner = Owner };
+        return window.ShowDialog() == true ? (vm.SelectedAccess, vm.AutoMapping) : null;
+    }
+
     public bool Confirm(string title, string heading, IEnumerable<string> lines)
     {
         var window = new ConfirmWindow(title, heading, lines) { Owner = Owner };

@@ -298,14 +298,17 @@
                                 <ItemsControl x:Name="DelegatesList" ItemsSource="{Binding Delegates}" Margin="0,0,0,6">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
-                                            <DockPanel Margin="0,2">
-                                                <Button DockPanel.Dock="Right" Content="Remove" MinWidth="70"
-                                                        Command="{Binding DataContext.RemoveDelegateCommand, ElementName=DelegatesList}"
-                                                        CommandParameter="{Binding}" />
-                                                <TextBlock VerticalAlignment="Center" TextWrapping="Wrap">
+                                            <StackPanel Orientation="Horizontal" Margin="0,2">
+                                                <TextBlock VerticalAlignment="Center" MinWidth="230" TextWrapping="Wrap">
                                                     <Run Text="{Binding DisplayName, Mode=OneWay}" FontWeight="SemiBold" /><Run Text="  —  " Foreground="#999" /><Run Text="{Binding AccessSummary, Mode=OneWay}" Foreground="#666" />
                                                 </TextBlock>
-                                            </DockPanel>
+                                                <Button Content="Change…" MinWidth="70" Margin="8,0,0,0"
+                                                        Command="{Binding DataContext.ChangeDelegateCommand, ElementName=DelegatesList}"
+                                                        CommandParameter="{Binding}" />
+                                                <Button Content="Remove" MinWidth="70" Margin="6,0,0,0"
+                                                        Command="{Binding DataContext.RemoveDelegateCommand, ElementName=DelegatesList}"
+                                                        CommandParameter="{Binding}" />
+                                            </StackPanel>
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
