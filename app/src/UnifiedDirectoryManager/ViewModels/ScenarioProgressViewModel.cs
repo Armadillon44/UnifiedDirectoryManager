@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using UnifiedDirectoryManager.Models;
 using UnifiedDirectoryManager.Services;
 
@@ -16,6 +17,7 @@ public partial class ScenarioProgressViewModel : ObservableObject
     private readonly IReadOnlyList<AdObjectRow> _targets;
     private readonly ScenarioRunner _runner;
     private readonly IList<string>? _operationLog;
+    private readonly CancellationTokenSource _cts = new();
 
     public string ScenarioName => _scenario.Name;
     public int Total => _targets.Count;
@@ -26,6 +28,7 @@ public partial class ScenarioProgressViewModel : ObservableObject
     [ObservableProperty] private int _done;
     [ObservableProperty] private bool _isRunning = true;
     [ObservableProperty] private bool _isDone;
+    [ObservableProperty] private bool _canCancel = true;
     [ObservableProperty] private string _summary = string.Empty;
 
     public string ProgressText => $"{Done} of {Total} object(s) processed";
@@ -47,6 +50,17 @@ public partial class ScenarioProgressViewModel : ObservableObject
 
     partial void OnDoneChanged(int value) => OnPropertyChanged(nameof(ProgressText));
 
+    /// <summary>Requests cancellation; the run stops after the current step (in-flight Exchange calls are abandoned).</summary>
+    [RelayCommand]
+    private void Cancel()
+    {
+        if (!CanCancel) return;
+        CanCancel = false;
+        _cts.Cancel();
+        Lines.Add("⏸ Cancelling — the run will stop after the current step…");
+        LineAdded?.Invoke();
+    }
+
     /// <summary>Runs the scenario, streaming progress into <see cref="Lines"/>. Called once by the window on load.</summary>
     public async Task RunAsync()
     {
@@ -55,8 +69,16 @@ public partial class ScenarioProgressViewModel : ObservableObject
         var count = new Progress<int>(n => Done = n);
         try
         {
-            Result = await _runner.RunAsync(_scenario, _targets, count, default, _operationLog, live);
-            Summary = $"Done — {Result.SuccessCount} succeeded, {Result.FailureCount} failed.";
+            Result = await _runner.RunAsync(_scenario, _targets, count, _cts.Token, _operationLog, live);
+            Summary = _cts.IsCancellationRequested
+                ? $"Cancelled — {Result.SuccessCount} succeeded, {Result.FailureCount} failed, {Total - Done} not started."
+                : $"Done — {Result.SuccessCount} succeeded, {Result.FailureCount} failed.";
+        }
+        catch (OperationCanceledException)
+        {
+            Summary = $"Cancelled — {Done} of {Total} object(s) processed.";
+            Lines.Add("✗ " + Summary);
+            LineAdded?.Invoke();
         }
         catch (Exception ex)
         {
@@ -69,6 +91,8 @@ public partial class ScenarioProgressViewModel : ObservableObject
         {
             IsRunning = false;
             IsDone = true;
+            CanCancel = false;
+            _cts.Dispose();
         }
     }
 }

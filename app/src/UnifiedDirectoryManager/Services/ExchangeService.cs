@@ -330,9 +330,12 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         {
             return await Task.Run(() => reader.ReadLine(), cts.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
+            // Kill the host either way — an EXO cmdlet can't be interrupted mid-run, so abandon the process
+            // (the next operation restarts it). This unblocks the orphaned blocking ReadLine too.
             KillLocked();
+            if (ct.IsCancellationRequested) throw;                 // user cancellation → propagate
             throw new ExchangeException("The Exchange Online operation timed out.");
         }
     }

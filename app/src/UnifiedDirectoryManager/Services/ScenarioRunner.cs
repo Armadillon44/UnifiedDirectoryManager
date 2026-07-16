@@ -28,7 +28,7 @@ public sealed class ScenarioRunner
         var done = 0;
         foreach (var target in targets)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested) break; // stop early, returning the partial results so far
             var dn = target.DistinguishedName;
             ScenarioStep? current = null;
             operationLog?.Add($"=== {target.Type}: {target.Name} ===");
