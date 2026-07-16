@@ -30,36 +30,54 @@ public sealed class ScenarioRunner
         {
             if (cancellationToken.IsCancellationRequested) break; // stop early, returning the partial results so far
             var dn = target.DistinguishedName;
-            ScenarioStep? current = null;
             operationLog?.Add($"=== {target.Type}: {target.Name} ===");
             operationLog?.Add($"    {target.DistinguishedName}");
             live?.Report($"▶ {target.Type}: {target.Name}");
-            try
+
+            // Each step is isolated: a step that throws is recorded and the scenario CONTINUES with the
+            // remaining steps for this target (AD has no transactions, so earlier steps stay committed). The
+            // target is reported failed only if one or more steps failed.
+            var stepFailures = new List<string>();
+            var cancelled = false;
+            var n = 0;
+            foreach (var step in scenario.Steps)
             {
-                var n = 0;
-                foreach (var step in scenario.Steps)
+                if (cancellationToken.IsCancellationRequested) { cancelled = true; break; }
+                // The Save-operation-log step is a meta-step: it records nothing per object and makes no change.
+                if (step.Action == ScenarioActionType.SaveOperationLog) continue;
+                n++;
+                try
                 {
-                    current = step;
-                    // The Save-operation-log step is a meta-step: it records nothing per object and makes no change.
-                    if (step.Action == ScenarioActionType.SaveOperationLog) continue;
-                    n++;
                     var (newDn, detail) = await RunStepAsync(step, dn, target, cancellationToken);
-                    dn = newDn;
+                    dn = newDn; // a MoveToOu changes the DN for later steps
                     operationLog?.Add($"    {n}. {detail}");
                     live?.Report($"    ✓ {detail}");
                 }
-                results.Add(new BulkItemResult(target.DistinguishedName, target.Name, true, null));
-                operationLog?.Add("    RESULT: Success");
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    cancelled = true;
+                    break; // user cancelled mid-step — stop this target; the run ends on the next outer check
+                }
+                catch (Exception ex)
+                {
+                    var reason = ex is Microsoft.Graph.Models.ODataErrors.ODataError ? GraphErrors.Friendly(ex) : DirectoryService.Friendly(ex);
+                    var msg = $"step “{step.Action}”: {reason}";
+                    stepFailures.Add(msg);
+                    operationLog?.Add($"    {n}. ✗ FAILED — {msg}");
+                    live?.Report($"    ✗ {msg}");
+                }
             }
-            catch (Exception ex)
+
+            if (stepFailures.Count == 0)
             {
-                // Name the failing step: earlier steps may already be committed (AD has no transactions),
-                // so the operator needs to know how far the scenario got.
-                var where = current is null ? string.Empty : $"step “{current.Action}”: ";
-                var reason = ex is Microsoft.Graph.Models.ODataErrors.ODataError ? GraphErrors.Friendly(ex) : DirectoryService.Friendly(ex);
-                results.Add(new BulkItemResult(target.DistinguishedName, target.Name, false, where + reason));
-                operationLog?.Add($"    RESULT: FAILED — {where}{reason}");
-                live?.Report($"    ✗ {where}{reason}");
+                results.Add(new BulkItemResult(target.DistinguishedName, target.Name, true, null));
+                operationLog?.Add(cancelled ? "    RESULT: Cancelled" : "    RESULT: Success");
+            }
+            else
+            {
+                var summary = $"{stepFailures.Count} step(s) failed: " + string.Join("; ", stepFailures);
+                results.Add(new BulkItemResult(target.DistinguishedName, target.Name, false, summary));
+                operationLog?.Add($"    RESULT: {stepFailures.Count} step(s) failed{(cancelled ? " (cancelled)" : "")}");
             }
             operationLog?.Add(string.Empty);
             progress?.Report(++done);
