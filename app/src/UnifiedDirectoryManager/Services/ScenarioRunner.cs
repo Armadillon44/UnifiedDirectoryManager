@@ -259,7 +259,7 @@ public sealed class ScenarioRunner
         var groups = await _graph.GetObjectMemberOfAsync(objectId, CloudKindFor(target.Type), ct);
         var removed = new List<string>();
         var skippedDynamic = new List<string>();
-        var errors = new List<string>();
+        var failed = new List<string>();
         foreach (var g in groups)
         {
             ct.ThrowIfCancellationRequested();
@@ -270,14 +270,18 @@ public sealed class ScenarioRunner
             if (string.Equals(g.Origin, "Synced", StringComparison.OrdinalIgnoreCase)) continue;
             // Record name AND id so the log is a re-addable record (a re-add / copy-to-another-user can find the group).
             try { await _graph.RemoveMemberFromGroupAsync(g.Id, objectId, ct); removed.Add($"{g.DisplayName}  —  {g.Id}"); }
-            catch (Exception ex) { errors.Add($"{g.DisplayName}: {GraphErrors.Friendly(ex)}"); }
+            catch (Exception ex) { failed.Add($"{g.DisplayName}: {GraphErrors.Friendly(ex)}"); }
         }
-        if (errors.Count > 0) throw new InvalidOperationException(string.Join("; ", errors));
+        // Per-group failures (commonly mail-enabled security groups / distribution lists, which Graph can't
+        // modify — manage those in Exchange) are RECORDED but NOT thrown, so the scenario continues with its
+        // remaining steps rather than aborting this target.
         var detail = removed.Count == 0
-            ? "Cloud: removed from all Entra ID groups (none removable)"
+            ? "Cloud: removed from all removable Entra ID groups (none removed)"
             : $"Cloud: removed from {removed.Count} Entra ID group(s):" + Bullets(removed);
         if (skippedDynamic.Count > 0)
             detail += Environment.NewLine + $"    skipped {skippedDynamic.Count} dynamic group(s):" + Bullets(skippedDynamic);
+        if (failed.Count > 0)
+            detail += Environment.NewLine + $"    ⚠ could not remove {failed.Count} group(s) — mail-enabled security groups / distribution lists must be managed in Exchange:" + Bullets(failed);
         return detail;
     }
 
