@@ -501,11 +501,18 @@ public partial class MainViewModel : ObservableObject
         lines.AddRange(scenario.Steps.Select((s, i) => $"   {i + 1}. {DescribeStep(s)}"));
 
         // Call out the consequences that aren't obvious from the step list — especially in a hybrid tenant.
+        // A Save-operation-log step records the removed groups (with DNs/ids) so they can be re-added; without
+        // it, nothing persists them. Word the remove-all-groups cautions accordingly.
+        var wantsLog = scenario.Steps.Any(s => s.Action == ScenarioActionType.SaveOperationLog);
         var cautions = new List<string>();
         if (scenario.Steps.Any(s => s.Action == ScenarioActionType.RemoveAllGroups))
-            cautions.Add("• Removes ALL on-prem group memberships — they are NOT recorded, so they can't be auto-restored.");
+            cautions.Add(wantsLog
+                ? "• Removes ALL on-prem group memberships — recorded in the operation log (with DNs) so they can be re-added, though membership is not auto-restored."
+                : "• Removes ALL on-prem group memberships — NOT recorded (add a Save-operation-log step to keep a re-addable record).");
         if (scenario.Steps.Any(s => s.Action == ScenarioActionType.CloudRemoveAllGroups))
-            cautions.Add("• Removes ALL cloud (Entra) group memberships — not recorded/auto-restorable; dynamic and on-prem-synced groups are skipped.");
+            cautions.Add(wantsLog
+                ? "• Removes ALL cloud (Entra) group memberships — recorded in the operation log; dynamic and on-prem-synced groups are skipped."
+                : "• Removes ALL cloud (Entra) group memberships — NOT recorded (add a Save-operation-log step); dynamic and on-prem-synced groups are skipped.");
         if (scenario.Steps.Any(s => s.Action == ScenarioActionType.MoveToOu && !string.IsNullOrWhiteSpace(s.TargetOu)))
             cautions.Add("• Moves the object. On a directory-synced (hybrid) object, the next Entra Connect sync may "
                        + "disable or SOFT-DELETE the cloud user and mailbox (recoverable for ~30 days).");
@@ -527,7 +534,6 @@ public partial class MainViewModel : ObservableObject
         }
 
         // Does this scenario ask for an operation log? If so, remind the operator where it will be saved.
-        var wantsLog = scenario.Steps.Any(s => s.Action == ScenarioActionType.SaveOperationLog);
         var defaultLogDir = OperationLog.ResolveDirectory(Settings);
         var defaultLogName = $"{OperationLog.SafeFileNamePart(scenario.Name)}-{DateTime.Now:yyyyMMdd-HHmmss}.log";
         if (wantsLog)
