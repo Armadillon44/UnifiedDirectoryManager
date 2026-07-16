@@ -25,11 +25,20 @@ public sealed class UserTemplate
     public List<string> GroupDns { get; set; } = new();
 
     /// <summary>
-    /// Entra ID (cloud) groups the new user is added to after creation. Because cloud group membership
-    /// requires the user to exist in Entra first, selecting any of these makes a post-create Entra Connect
-    /// sync mandatory (the new-user wizard runs the sync, waits for the user to appear, then adds them).
+    /// Entra ID (cloud) security / Microsoft 365 groups the new user is added to after creation (via Microsoft
+    /// Graph). Because cloud group membership requires the user to exist in Entra first, selecting any of these
+    /// makes a post-create Entra Connect sync mandatory (the new-user wizard runs the sync, waits for the user
+    /// to appear, then adds them).
     /// </summary>
     public List<CloudGroupRef> CloudGroups { get; set; } = new();
+
+    /// <summary>
+    /// Exchange Online distribution lists / mail-enabled security groups the new user is added to after
+    /// creation (via Add-DistributionGroupMember — Graph can't modify these). Like cloud groups, these are
+    /// applied post-sync; they additionally require the user to be provisioned as an Exchange recipient, which
+    /// can lag a little behind the Entra sync (a create-time add may need the "Retry cloud" step).
+    /// </summary>
+    public List<DistributionGroupRef> DistributionGroups { get; set; } = new();
 
     /// <summary>Default account state at creation.</summary>
     public bool EnabledByDefault { get; set; } = true;

@@ -208,7 +208,17 @@ public sealed class BulkUserCsvImporter
                 var hits = await _graph.SearchGroupsAsync(name, ct);
                 var match = hits.FirstOrDefault(g => string.Equals(g.DisplayName, name, StringComparison.OrdinalIgnoreCase))
                             ?? hits.FirstOrDefault();
-                if (match is not null) row.CloudGroups.Add(new CloudGroupRef { Id = match.Id, Name = match.DisplayName });
+                if (match is not null)
+                {
+                    // Distribution lists / mail-enabled security groups can only be applied through Exchange
+                    // Online; everything else through Graph. Classify so each lands in the right track.
+                    var viaExchange = string.Equals(match.GroupKind, "Distribution", StringComparison.OrdinalIgnoreCase)
+                                   || string.Equals(match.GroupKind, "Mail-enabled security", StringComparison.OrdinalIgnoreCase);
+                    if (viaExchange)
+                        row.DistributionGroups.Add(new DistributionGroupRef { Id = match.Id, Name = match.DisplayName, Smtp = match.Mail ?? string.Empty });
+                    else
+                        row.CloudGroups.Add(new CloudGroupRef { Id = match.Id, Name = match.DisplayName });
+                }
                 else row.Warnings.Add($"Cloud group “{name}” not found — skipped.");
             }
             catch (Exception ex)

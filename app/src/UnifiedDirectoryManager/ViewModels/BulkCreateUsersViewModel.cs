@@ -231,11 +231,12 @@ public partial class BulkCreateUsersViewModel : ObservableObject
 
             var upn = attrs.TryGetValue("userPrincipalName", out var u) ? u : null;
             var cloudGroups = row.CloudGroups.ToList();
-            var needsCloud = cloudGroups.Count > 0 || row.IssueTap;
+            var distributionGroups = row.DistributionGroups.ToList();
+            var needsCloud = cloudGroups.Count > 0 || distributionGroups.Count > 0 || row.IssueTap;
             if (needsCloud)
             {
                 anyCloud = true;
-                if (string.IsNullOrWhiteSpace(upn)) problems.Add($"Row {idx} ({sam}): a routable UPN is required for cloud groups / a Temporary Access Pass.");
+                if (string.IsNullOrWhiteSpace(upn)) problems.Add($"Row {idx} ({sam}): a routable UPN is required for cloud / Exchange groups or a Temporary Access Pass.");
                 if (row.IssueTap && (row.TapLifetimeMinutes < 10 || row.TapLifetimeMinutes > 43200))
                     problems.Add($"Row {idx} ({sam}): Temporary Access Pass lifetime must be 10–43200 minutes.");
             }
@@ -248,6 +249,7 @@ public partial class BulkCreateUsersViewModel : ObservableObject
                 Proxies = b.Proxies,
                 OnPremGroupDns = row.OnPremGroupDns,
                 CloudGroups = cloudGroups,
+                DistributionGroups = distributionGroups,
                 IssueTap = row.IssueTap,
                 TapLifetimeMinutes = row.TapLifetimeMinutes,
                 TapOneTimeUse = row.TapOneTimeUse,

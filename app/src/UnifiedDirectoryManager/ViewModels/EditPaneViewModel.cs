@@ -379,11 +379,12 @@ public partial class EditPaneViewModel : ObservableObject
         var picked = _dialogs.PickGroupsHybrid($"Add “{Title}” to groups");
         if (picked is null || picked.Count == 0) return;
 
-        var onPrem = picked.Where(g => g.Origin == GroupOrigin.OnPrem && g.Dn is not null).ToList();
-        var cloud = picked.Where(g => g.Origin == GroupOrigin.Cloud && g.CloudId is not null).ToList();
+        var onPrem = picked.Where(g => g.Channel == GroupChannel.OnPremAd && g.Dn is not null).ToList();
+        var cloud = picked.Where(g => g.Channel == GroupChannel.EntraGraph && g.CloudId is not null).ToList();
+        var exchange = picked.Where(g => g.Channel == GroupChannel.ExchangeOnline).ToList();
 
         if (!_dialogs.Confirm("Confirm", $"Add “{Title}” to {picked.Count} group(s)?",
-                picked.Select(g => $"{g.OriginLabel}: {g.Name}")))
+                picked.Select(g => $"{g.ChannelLabel}: {g.Name}")))
             return;
 
         IsBusy = true;
@@ -408,6 +409,21 @@ public partial class EditPaneViewModel : ObservableObject
                     {
                         try { await _graph.AddMemberToGroupAsync(g.CloudId!, cloudId); }
                         catch (Exception ex) { cloudErrors.Add($"{g.Name}: {GraphErrors.Friendly(ex)}"); }
+                    }
+            }
+
+            // Exchange distribution / mail-enabled security groups: Graph can't add these, so use the EXO module.
+            // The member identity is this user's UPN (mailboxes/users only).
+            if (exchange.Count > 0)
+            {
+                if (string.IsNullOrWhiteSpace(_cloudUpn))
+                    cloudErrors.Add("No mailbox identity for this object — Exchange distribution groups were skipped.");
+                else
+                    foreach (var g in exchange)
+                    {
+                        var groupId = !string.IsNullOrWhiteSpace(g.Smtp) ? g.Smtp! : (g.CloudId ?? g.Name);
+                        try { await _exchange.AddDistributionGroupMemberAsync(groupId, _cloudUpn!); }
+                        catch (Exception ex) { cloudErrors.Add($"{g.Name} (Exchange): {ex.Message}"); }
                     }
             }
 

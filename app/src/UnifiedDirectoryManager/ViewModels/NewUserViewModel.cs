@@ -25,9 +25,11 @@ public partial class NewUserViewModel : ObservableObject
     public ObservableCollection<UserTemplate> Templates { get; } = new();
     public ObservableCollection<PreviewRow> Preview { get; } = new();
 
-    /// <summary>Editable group memberships — auto-filled from the template, then the operator can add/remove.</summary>
+    /// <summary>Editable group memberships — auto-filled from the template, then the operator can add/remove.
+    /// One unified picker feeds all three by channel: on-prem AD, Entra ID (Graph), and Exchange distribution.</summary>
     public ObservableCollection<TemplateCopyGroupRow> OnPremGroups { get; } = new();
     public ObservableCollection<TemplateCopyGroupRow> CloudGroups { get; } = new();
+    public ObservableCollection<TemplateCopyGroupRow> DistributionGroups { get; } = new();
 
     /// <summary>Live progress lines for the create → sync → wait → add-cloud-groups sequence.</summary>
     public ObservableCollection<string> ProgressSteps { get; } = new();
@@ -63,8 +65,9 @@ public partial class NewUserViewModel : ObservableObject
     // Set when the post-create Entra Connect sync didn't complete, so the operator can re-attempt it.
     [ObservableProperty] private bool _canRetrySync;
 
-    // Cloud groups still to be applied — captured for a sync retry after a failure.
+    // Cloud + distribution groups still to be applied — captured for a sync retry after a failure.
     private IReadOnlyList<CloudGroupRef> _pendingCloudGroups = Array.Empty<CloudGroupRef>();
+    private IReadOnlyList<DistributionGroupRef> _pendingDistributionGroups = Array.Empty<DistributionGroupRef>();
 
     // Post-create Entra Connect sync (optional; mandatory when the template has cloud groups).
     [ObservableProperty] private bool _runEntraSync;
@@ -87,8 +90,12 @@ public partial class NewUserViewModel : ObservableObject
     /// <summary>The issued pass — shown read-only with a Copy button; visible only once (never persisted).</summary>
     [ObservableProperty] private string _tapCode = string.Empty;
 
-    /// <summary>True when cloud groups or a Temporary Access Pass are selected — the post-create sync is then required.</summary>
-    public bool SyncMandatory => CloudGroups.Count > 0 || IssueTap;
+    /// <summary>True when cloud/Exchange groups or a Temporary Access Pass are selected — the post-create sync is then required.</summary>
+    public bool SyncMandatory => CloudGroups.Count > 0 || DistributionGroups.Count > 0 || IssueTap;
+
+    /// <summary>Section-header visibility for the New User group list.</summary>
+    public bool HasCloudGroups => CloudGroups.Count > 0;
+    public bool HasDistributionGroups => DistributionGroups.Count > 0;
 
     /// <summary>The sync checkbox is only toggleable when sync isn't mandatory.</summary>
     public bool SyncCheckboxEnabled => !SyncMandatory;
@@ -122,13 +129,17 @@ public partial class NewUserViewModel : ObservableObject
         _cloudProvisioning = cloudProvisioning;
         _settings = settings;
         _entraConnectServer = settings.EntraConnectServer ?? string.Empty;
-        // Selecting cloud groups makes the sync mandatory; keep the dependent state in sync.
-        CloudGroups.CollectionChanged += (_, _) =>
+        // Selecting cloud / Exchange groups makes the sync mandatory; keep the dependent state in sync.
+        void OnGroupsChanged(object? _, System.Collections.Specialized.NotifyCollectionChangedEventArgs __)
         {
             OnPropertyChanged(nameof(SyncMandatory));
             OnPropertyChanged(nameof(SyncCheckboxEnabled));
+            OnPropertyChanged(nameof(HasCloudGroups));
+            OnPropertyChanged(nameof(HasDistributionGroups));
             if (SyncMandatory) RunEntraSync = true;
-        };
+        }
+        CloudGroups.CollectionChanged += OnGroupsChanged;
+        DistributionGroups.CollectionChanged += OnGroupsChanged;
         ReloadTemplates();
     }
 
@@ -164,8 +175,8 @@ public partial class NewUserViewModel : ObservableObject
         var attrs = BuildAttributes();
         if (!attrs.TryGetValue("cn", out var cn) || string.IsNullOrWhiteSpace(cn)) { error = "Could not derive a common name (cn)."; return false; }
         if (!attrs.ContainsKey("sAMAccountName")) { error = "Could not derive a logon name (sAMAccountName)."; return false; }
-        var needsCloud = CloudGroups.Any(g => g.Include) || IssueTap;
-        if (needsCloud && string.IsNullOrWhiteSpace(Upn)) { error = "A routable UPN is required for cloud groups / a Temporary Access Pass."; return false; }
+        var needsCloud = CloudGroups.Any(g => g.Include) || DistributionGroups.Any(g => g.Include) || IssueTap;
+        if (needsCloud && string.IsNullOrWhiteSpace(Upn)) { error = "A routable UPN is required for cloud / Exchange groups or a Temporary Access Pass."; return false; }
         if (IssueTap && (TapLifetimeMinutes < 10 || TapLifetimeMinutes > 43200)) { error = "Temporary Access Pass lifetime must be 10–43200 minutes."; return false; }
         return true;
     }
@@ -205,6 +216,7 @@ public partial class NewUserViewModel : ObservableObject
     {
         OnPremGroups.Clear();
         CloudGroups.Clear();
+        DistributionGroups.Clear();
         if (value is not null)
         {
             TargetOu = string.IsNullOrWhiteSpace(value.TargetOu) ? (DefaultOu ?? string.Empty) : value.TargetOu;
@@ -216,9 +228,11 @@ public partial class NewUserViewModel : ObservableObject
 
             // Seed the editable group lists from the template (the operator can add/remove before creating).
             foreach (var dn in value.GroupDns)
-                OnPremGroups.Add(new TemplateCopyGroupRow { Name = NameResolver.RdnFallback(dn), Id = dn });
+                OnPremGroups.Add(new TemplateCopyGroupRow { Name = NameResolver.RdnFallback(dn), Id = dn, Channel = GroupChannel.OnPremAd });
             foreach (var g in value.CloudGroups)
-                CloudGroups.Add(new TemplateCopyGroupRow { Name = g.Name, Id = g.Id });
+                CloudGroups.Add(new TemplateCopyGroupRow { Name = g.Name, Id = g.Id, Channel = GroupChannel.EntraGraph });
+            foreach (var g in value.DistributionGroups)
+                DistributionGroups.Add(new TemplateCopyGroupRow { Name = g.Name, Id = g.Id, Channel = GroupChannel.ExchangeOnline, Smtp = g.Smtp });
         }
         // (CloudGroups.CollectionChanged keeps SyncMandatory/RunEntraSync in sync.)
         ApplySuggestions(force: true); // a new template resets the suggested email/UPN/proxies
@@ -311,28 +325,38 @@ public partial class NewUserViewModel : ObservableObject
     [RelayCommand]
     private void AddGroups()
     {
-        var picked = _dialogs.PickObjects("Add the new user to groups", AdObjectType.Group, multiSelect: true);
+        // One picker spans on-prem AD, Entra ID (Graph), and Exchange Online distribution groups; route each
+        // pick into the collection that matches its apply channel.
+        var picked = _dialogs.PickGroupsHybrid("Add the new user to groups (on-prem + cloud + Exchange)");
         if (picked is null) return;
         foreach (var g in picked)
-            if (OnPremGroups.All(x => !string.Equals(x.Id, g.DistinguishedName, StringComparison.OrdinalIgnoreCase)))
-                OnPremGroups.Add(new TemplateCopyGroupRow { Name = g.Name, Id = g.DistinguishedName });
+        {
+            switch (g.Channel)
+            {
+                case GroupChannel.OnPremAd when g.Dn is not null:
+                    if (OnPremGroups.All(x => !string.Equals(x.Id, g.Dn, StringComparison.OrdinalIgnoreCase)))
+                        OnPremGroups.Add(new TemplateCopyGroupRow { Name = g.Name, Id = g.Dn, Channel = GroupChannel.OnPremAd });
+                    break;
+                case GroupChannel.EntraGraph when g.CloudId is not null:
+                    if (CloudGroups.All(x => !string.Equals(x.Id, g.CloudId, StringComparison.OrdinalIgnoreCase)))
+                        CloudGroups.Add(new TemplateCopyGroupRow { Name = g.Name, Id = g.CloudId, Channel = GroupChannel.EntraGraph });
+                    break;
+                case GroupChannel.ExchangeOnline:
+                    if (DistributionGroups.All(x => !string.Equals(x.Id, g.CloudId ?? g.Smtp, StringComparison.OrdinalIgnoreCase)))
+                        DistributionGroups.Add(new TemplateCopyGroupRow { Name = g.Name, Id = g.CloudId ?? string.Empty, Channel = GroupChannel.ExchangeOnline, Smtp = g.Smtp });
+                    break;
+            }
+        }
     }
 
     [RelayCommand]
     private void RemoveGroup(TemplateCopyGroupRow? row) { if (row is not null) OnPremGroups.Remove(row); }
 
     [RelayCommand]
-    private void AddCloudGroups()
-    {
-        var picked = _dialogs.PickCloudGroups("Add the new user to cloud (Entra ID) groups");
-        if (picked is null) return;
-        foreach (var g in picked)
-            if (CloudGroups.All(x => !string.Equals(x.Id, g.Id, StringComparison.OrdinalIgnoreCase)))
-                CloudGroups.Add(new TemplateCopyGroupRow { Name = g.DisplayName, Id = g.Id });
-    }
+    private void RemoveCloudGroup(TemplateCopyGroupRow? row) { if (row is not null) CloudGroups.Remove(row); }
 
     [RelayCommand]
-    private void RemoveCloudGroup(TemplateCopyGroupRow? row) { if (row is not null) CloudGroups.Remove(row); }
+    private void RemoveDistributionGroup(TemplateCopyGroupRow? row) { if (row is not null) DistributionGroups.Remove(row); }
 
     [RelayCommand]
     private async Task CreateAsync()
@@ -345,14 +369,15 @@ public partial class NewUserViewModel : ObservableObject
         if (!attributes.ContainsKey("sAMAccountName")) { Status = "Could not derive a logon name (sAMAccountName)."; return; }
 
         var cloudGroups = CloudGroups.Where(g => g.Include).Select(g => new CloudGroupRef { Id = g.Id, Name = g.Name }).ToList();
+        var distributionGroups = DistributionGroups.Where(g => g.Include).Select(g => new DistributionGroupRef { Id = g.Id, Name = g.Name, Smtp = g.Smtp ?? string.Empty }).ToList();
         var selectedOnPremDns = OnPremGroups.Where(g => g.Include).Select(g => g.Id).ToList();
-        var doSync = RunEntraSync || cloudGroups.Count > 0 || IssueTap;
+        var doSync = RunEntraSync || cloudGroups.Count > 0 || distributionGroups.Count > 0 || IssueTap;
 
         // Fail fast on cloud prerequisites BEFORE creating anything on-prem.
-        if (cloudGroups.Count > 0 || IssueTap)
+        if (cloudGroups.Count > 0 || distributionGroups.Count > 0 || IssueTap)
         {
-            if (!_graph.IsSignedIn) { Status = "Sign in to Entra ID (File ▸ Settings ▸ Cloud) before creating a user with cloud groups or a Temporary Access Pass."; return; }
-            if (string.IsNullOrWhiteSpace(Upn)) { Status = "A routable UPN is required to match the user in Entra ID for cloud groups / a Temporary Access Pass."; return; }
+            if (!_graph.IsSignedIn) { Status = "Sign in to Entra ID (File ▸ Settings ▸ Cloud) before creating a user with cloud / Exchange groups or a Temporary Access Pass."; return; }
+            if (string.IsNullOrWhiteSpace(Upn)) { Status = "A routable UPN is required to match the user in Entra ID for cloud / Exchange groups or a Temporary Access Pass."; return; }
         }
         if (IssueTap && (TapLifetimeMinutes < 10 || TapLifetimeMinutes > 43200))
         {
@@ -401,7 +426,9 @@ public partial class NewUserViewModel : ObservableObject
         lines.AddRange(Preview.Select(p => $"{p.Friendly}: {p.Value}"));
         if (onPremGroups.Count > 0) lines.Add($"Add to {onPremGroups.Count} on-prem group(s)");
         if (validCloudGroups.Count > 0) lines.Add($"Add to {validCloudGroups.Count} cloud group(s) after an Entra Connect sync");
-        else if (doSync) lines.Add($"Run an Entra Connect delta sync on {EntraConnectServer} after creating");
+        if (distributionGroups.Count > 0) lines.Add($"Add to {distributionGroups.Count} Exchange distribution group(s) after an Entra Connect sync");
+        if (validCloudGroups.Count == 0 && distributionGroups.Count == 0 && doSync)
+            lines.Add($"Run an Entra Connect delta sync on {EntraConnectServer} after creating");
         if (IssueTap) lines.Add($"Issue a Temporary Access Pass (valid {TapLifetimeMinutes} min, {(TapOneTimeUse ? "one-time use" : "multi-use")}) once the user syncs");
         if (missingOnPrem.Count > 0)
         {
@@ -461,7 +488,7 @@ public partial class NewUserViewModel : ObservableObject
                 return; // outcome stays visible in the progress panel; the user closes the window
             }
 
-            await RunPostCreateCloudAsync(validCloudGroups);
+            await RunPostCreateCloudAsync(validCloudGroups, distributionGroups);
         }
         catch (Exception ex)
         {
@@ -471,6 +498,7 @@ public partial class NewUserViewModel : ObservableObject
             if (Created && doSync)
             {
                 _pendingCloudGroups = validCloudGroups;
+                _pendingDistributionGroups = distributionGroups;
                 CanRetrySync = true;
                 _dialogs.Alert("Entra Connect sync failed",
                     $"The on-prem user account was created, but the Entra Connect sync step failed:\n\n{Status}\n\n" +
@@ -481,8 +509,9 @@ public partial class NewUserViewModel : ObservableObject
         finally { IsBusy = false; }
     }
 
-    /// <summary>Runs the Entra Connect delta sync, waits for the new user to appear in Entra, then adds cloud groups.</summary>
-    private async Task RunPostCreateCloudAsync(IReadOnlyList<CloudGroupRef> cloudGroups)
+    /// <summary>Runs the Entra Connect delta sync, waits for the new user to appear in Entra, then adds cloud
+    /// (Graph) groups and Exchange Online distribution groups.</summary>
+    private async Task RunPostCreateCloudAsync(IReadOnlyList<CloudGroupRef> cloudGroups, IReadOnlyList<DistributionGroupRef> distributionGroups)
     {
         // A fresh attempt: clear any prior retry offer; it's re-enabled below if this attempt doesn't complete.
         CanRetrySync = false;
@@ -499,6 +528,7 @@ public partial class NewUserViewModel : ObservableObject
             Step("✗ Entra Connect sync failed: " + error);
             Status = "The on-prem account was created, but the Entra Connect sync failed. Retry the sync or close.";
             _pendingCloudGroups = cloudGroups;
+            _pendingDistributionGroups = distributionGroups;
             CanRetrySync = true;
             _dialogs.Alert("Entra Connect sync failed",
                 $"The on-prem user account was created successfully, but the Entra Connect delta sync failed:\n\n{sync.Output}\n\n" +
@@ -507,8 +537,8 @@ public partial class NewUserViewModel : ObservableObject
         }
         Step("✓ Delta sync started.");
 
-        // Cloud groups and/or a Temporary Access Pass both need the synced user; otherwise the sync was the whole job.
-        bool needCloudUser = cloudGroups.Count > 0 || IssueTap;
+        // Cloud/Exchange groups and/or a Temporary Access Pass all need the synced user; otherwise the sync was the whole job.
+        bool needCloudUser = cloudGroups.Count > 0 || distributionGroups.Count > 0 || IssueTap;
         if (!needCloudUser) { Status = "User created and a delta sync was started."; Step("Done."); return; }
 
         // 2. Wait for the synced user to show up in Entra (initial settle, then poll).
@@ -517,19 +547,28 @@ public partial class NewUserViewModel : ObservableObject
         if (cloudUser is null)
         {
             Status = "User created, but it hadn't synced to Entra ID in time — cloud groups / Temporary Access Pass were NOT applied.";
-            Step("✗ Not found in Entra ID within the wait window. Retry the sync, or run one later and add cloud groups / issue a TAP from the user's Cloud tab.");
+            Step("✗ Not found in Entra ID within the wait window. Retry the sync, or run one later and add cloud / Exchange groups / issue a TAP from the user's Cloud tab.");
             _pendingCloudGroups = cloudGroups;
+            _pendingDistributionGroups = distributionGroups;
             CanRetrySync = true; // let the operator re-run the sync without recreating the user
             return;
         }
         Step("✓ Found in Entra ID.");
 
-        // 3. Add the user to each cloud group.
+        // 3a. Add the user to each Entra (Graph) cloud group.
         int ok = 0, failed = 0;
         if (cloudGroups.Count > 0)
         {
             Step("• Adding cloud groups…");
             (ok, failed) = await _cloudProvisioning.AddUserToGroupsAsync(cloudUser.Id, cloudGroups, Step);
+        }
+
+        // 3b. Add the user to each Exchange Online distribution group (Graph can't; member identity = the UPN).
+        int dok = 0, dfailed = 0;
+        if (distributionGroups.Count > 0)
+        {
+            Step("• Adding Exchange distribution groups…");
+            (dok, dfailed) = await _cloudProvisioning.AddUserToDistributionGroupsAsync(Upn.Trim(), distributionGroups, Step);
         }
 
         // 4. Issue a Temporary Access Pass, if requested. The pass is captured into TapCode (shown once + copyable).
@@ -542,6 +581,7 @@ public partial class NewUserViewModel : ObservableObject
 
         var summary = "User created";
         if (cloudGroups.Count > 0) summary += $"; added to {ok} cloud group(s)" + (failed > 0 ? $", {failed} failed" : "");
+        if (distributionGroups.Count > 0) summary += $"; added to {dok} distribution group(s)" + (dfailed > 0 ? $", {dfailed} failed" : "");
         if (TapCode.Length > 0) summary += "; Temporary Access Pass issued (copy it now)";
         Status = summary + ".";
         Step("Done.");
@@ -559,7 +599,7 @@ public partial class NewUserViewModel : ObservableObject
         Step("• Retrying Entra Connect sync…");
         try
         {
-            await RunPostCreateCloudAsync(_pendingCloudGroups);
+            await RunPostCreateCloudAsync(_pendingCloudGroups, _pendingDistributionGroups);
         }
         catch (Exception ex)
         {

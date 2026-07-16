@@ -26,8 +26,10 @@ public partial class TemplateEditorViewModel : ObservableObject
 
     public ObservableCollection<UserTemplate> Templates { get; } = new();
     public ObservableCollection<TemplateAttributeRow> AttributeRows { get; } = new();
-    public ObservableCollection<AdObjectRow> Groups { get; } = new();
-    public ObservableCollection<CloudGroupRef> CloudGroups { get; } = new();
+
+    /// <summary>One combined bucket of groups spanning on-prem AD, Entra ID (Graph), and Exchange Online
+    /// distribution groups. Split back into the template's typed lists (by <see cref="GroupRef.Channel"/>) on save.</summary>
+    public ObservableCollection<GroupRef> Groups { get; } = new();
 
     [ObservableProperty] private UserTemplate? _selectedTemplate;
     [ObservableProperty] private string _name = string.Empty;
@@ -138,13 +140,14 @@ public partial class TemplateEditorViewModel : ObservableObject
             ?? (value.AttributeDefaults.TryGetValue("co", out var co) ? Services.Countries.ByName(co) : null)
             ?? Services.Countries.NotSet;
 
+        // Combine the template's three typed group lists into the one editable bucket.
         Groups.Clear();
         foreach (var dn in value.GroupDns)
-            Groups.Add(new AdObjectRow { DistinguishedName = dn, Name = NameResolver.RdnFallback(dn), Type = AdObjectType.Group });
-
-        CloudGroups.Clear();
+            Groups.Add(new GroupRef(GroupChannel.OnPremAd, NameResolver.RdnFallback(dn), dn, null, null, DirectoryService.ParentDn(dn)));
         foreach (var g in value.CloudGroups)
-            CloudGroups.Add(new CloudGroupRef { Id = g.Id, Name = g.Name });
+            Groups.Add(new GroupRef(GroupChannel.EntraGraph, g.Name, null, g.Id, null, "Entra ID group"));
+        foreach (var g in value.DistributionGroups)
+            Groups.Add(new GroupRef(GroupChannel.ExchangeOnline, g.Name, null, string.IsNullOrWhiteSpace(g.Id) ? null : g.Id, g.Smtp, "Distribution group"));
     }
 
     [RelayCommand]
@@ -164,7 +167,6 @@ public partial class TemplateEditorViewModel : ObservableObject
         AttributeRows.Add(new TemplateAttributeRow { LdapName = "sAMAccountName", Value = "{first}.{last}" });
         AttributeRows.Add(new TemplateAttributeRow { LdapName = "displayName", Value = "{first} {last}" });
         Groups.Clear();
-        CloudGroups.Clear();
         _managerDn = null;
         ManagerDisplay = "(none)";
         SelectedCountry = Services.Countries.NotSet;
@@ -200,26 +202,15 @@ public partial class TemplateEditorViewModel : ObservableObject
     [RelayCommand]
     private void PickGroups()
     {
-        var picked = _dialogs.PickObjects("Template groups", AdObjectType.Group, multiSelect: true);
+        // One picker spans on-prem AD, Entra ID (Graph), and Exchange Online distribution groups.
+        var picked = _dialogs.PickGroupsHybrid("Template groups (on-prem + cloud + Exchange)");
         if (picked is null) return;
         foreach (var g in picked)
-            if (Groups.All(x => !string.Equals(x.DistinguishedName, g.DistinguishedName, StringComparison.OrdinalIgnoreCase)))
+            if (Groups.All(x => !string.Equals(x.Key, g.Key, StringComparison.OrdinalIgnoreCase)))
                 Groups.Add(g);
     }
 
-    [RelayCommand] private void RemoveGroup(AdObjectRow? row) { if (row is not null) Groups.Remove(row); }
-
-    [RelayCommand]
-    private void PickCloudGroups()
-    {
-        var picked = _dialogs.PickCloudGroups("Template cloud (Entra ID) groups");
-        if (picked is null) return;
-        foreach (var g in picked)
-            if (CloudGroups.All(x => !string.Equals(x.Id, g.Id, StringComparison.OrdinalIgnoreCase)))
-                CloudGroups.Add(new CloudGroupRef { Id = g.Id, Name = g.DisplayName });
-    }
-
-    [RelayCommand] private void RemoveCloudGroup(CloudGroupRef? row) { if (row is not null) CloudGroups.Remove(row); }
+    [RelayCommand] private void RemoveGroup(GroupRef? row) { if (row is not null) Groups.Remove(row); }
 
     [RelayCommand]
     private void PickManager()
@@ -322,8 +313,13 @@ public partial class TemplateEditorViewModel : ObservableObject
             UpnSuffix = UpnSuffix.Trim(),
             EnabledByDefault = EnabledByDefault,
             MustChangePasswordAtNextLogon = MustChangePassword,
-            GroupDns = Groups.Select(g => g.DistinguishedName).ToList(),
-            CloudGroups = CloudGroups.Select(g => new CloudGroupRef { Id = g.Id, Name = g.Name }).ToList(),
+            // Split the one combined bucket back into the template's typed lists by apply channel.
+            GroupDns = Groups.Where(g => g.Channel == GroupChannel.OnPremAd && g.Dn is not null)
+                             .Select(g => g.Dn!).ToList(),
+            CloudGroups = Groups.Where(g => g.Channel == GroupChannel.EntraGraph && g.CloudId is not null)
+                                .Select(g => new CloudGroupRef { Id = g.CloudId!, Name = g.Name }).ToList(),
+            DistributionGroups = Groups.Where(g => g.Channel == GroupChannel.ExchangeOnline)
+                                       .Select(g => new DistributionGroupRef { Id = g.CloudId ?? string.Empty, Name = g.Name, Smtp = g.Smtp ?? string.Empty }).ToList(),
         };
         foreach (var row in AttributeRows)
             if (!string.IsNullOrWhiteSpace(row.LdapName) && !HandledLdap.Contains(row.LdapName.Trim(), StringComparer.OrdinalIgnoreCase))

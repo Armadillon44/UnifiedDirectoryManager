@@ -36,8 +36,10 @@ public partial class BulkCreateRowViewModel : ObservableObject
 
     /// <summary>Per-row on-prem groups (Name + DN in <c>Id</c>).</summary>
     public ObservableCollection<TemplateCopyGroupRow> OnPremGroups { get; } = new();
-    /// <summary>Per-row Entra ID groups.</summary>
+    /// <summary>Per-row Entra ID (Graph) groups.</summary>
     public ObservableCollection<CloudGroupRef> CloudGroups { get; } = new();
+    /// <summary>Per-row Exchange Online distribution / mail-enabled security groups.</summary>
+    public ObservableCollection<DistributionGroupRef> DistributionGroups { get; } = new();
 
     /// <summary>Extra attribute overrides keyed by lDAPDisplayName (from a CSV import).</summary>
     public Dictionary<string, string> AttributeOverrides { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -51,6 +53,7 @@ public partial class BulkCreateRowViewModel : ObservableObject
     {
         OnPremGroups.CollectionChanged += (_, _) => OnPropertyChanged(nameof(OnPremGroupsSummary));
         CloudGroups.CollectionChanged += (_, _) => OnPropertyChanged(nameof(CloudGroupsSummary));
+        DistributionGroups.CollectionChanged += (_, _) => OnPropertyChanged(nameof(CloudGroupsSummary));
     }
 
     /// <summary>Computed logon name preview for this row.</summary>
@@ -68,7 +71,15 @@ public partial class BulkCreateRowViewModel : ObservableObject
 
     public string OuRdn => string.IsNullOrWhiteSpace(TargetOu) ? "(batch OU)" : NameResolver.RdnFallback(TargetOu);
     public string OnPremGroupsSummary => OnPremGroups.Count == 0 ? "(none)" : $"{OnPremGroups.Count} group(s)";
-    public string CloudGroupsSummary => CloudGroups.Count == 0 ? "(none)" : string.Join(", ", CloudGroups.Select(g => g.Name));
+    // Cloud column also covers Exchange distribution groups (both are applied in the post-sync cloud phase).
+    public string CloudGroupsSummary
+    {
+        get
+        {
+            var names = CloudGroups.Select(g => g.Name).Concat(DistributionGroups.Select(g => g.Name)).ToList();
+            return names.Count == 0 ? "(none)" : string.Join(", ", names);
+        }
+    }
     public string TapText => IssueTap ? $"{TapLifetimeMinutes} min" : string.Empty;
 
     /// <summary>True when this row has no identity data at all (a blank trailing row is simply skipped).</summary>
@@ -122,11 +133,15 @@ public partial class BulkCreateRowViewModel : ObservableObject
             Enabled = template?.EnabledByDefault ?? true,
         };
         foreach (var g in src.CloudGroups) row.CloudGroups.Add(g);
+        foreach (var g in src.DistributionGroups) row.DistributionGroups.Add(g);
+        // If the CSV named no cloud/Exchange groups, fall back to the template's.
         if (row.CloudGroups.Count == 0 && template is not null)
             foreach (var g in template.CloudGroups) row.CloudGroups.Add(new CloudGroupRef { Id = g.Id, Name = g.Name });
+        if (row.DistributionGroups.Count == 0 && template is not null)
+            foreach (var g in template.DistributionGroups) row.DistributionGroups.Add(new DistributionGroupRef { Id = g.Id, Name = g.Name, Smtp = g.Smtp });
         if (template is not null)
             foreach (var dn in template.GroupDns)
-                row.OnPremGroups.Add(new TemplateCopyGroupRow { Name = NameResolver.RdnFallback(dn), Id = dn });
+                row.OnPremGroups.Add(new TemplateCopyGroupRow { Name = NameResolver.RdnFallback(dn), Id = dn, Channel = GroupChannel.OnPremAd });
         foreach (var (k, v) in src.AttributeOverrides) row.AttributeOverrides[k] = v;
         return row;
     }

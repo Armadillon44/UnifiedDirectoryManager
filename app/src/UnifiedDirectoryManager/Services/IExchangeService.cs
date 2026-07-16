@@ -89,4 +89,13 @@ public interface IExchangeService
     /// dynamic distribution groups (their membership is query-computed).
     /// </summary>
     Task RemoveDistributionGroupMemberAsync(string groupIdentity, string memberIdentity, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Adds <paramref name="memberIdentity"/> to a distribution list or mail-enabled security group
+    /// (<paramref name="groupIdentity"/>, by primary SMTP / alias / name) via Add-DistributionGroupMember —
+    /// the only path, since Graph can't modify these groups. Idempotent: if the member is already in the group
+    /// it's treated as success. The member must already exist as an Exchange recipient (a freshly-synced user
+    /// can take a short while to provision in Exchange Online, so a create-time add may need a retry).
+    /// </summary>
+    Task AddDistributionGroupMemberAsync(string groupIdentity, string memberIdentity, CancellationToken cancellationToken = default);
 }

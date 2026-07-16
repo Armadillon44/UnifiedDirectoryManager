@@ -139,6 +139,12 @@ public sealed class BulkUserCreator
                 var (ok, failed) = await _cloud.AddUserToGroupsAsync(cloudUser.Id, req.CloudGroups, Report);
                 summary.Add($"added to {ok} cloud group(s)" + (failed > 0 ? $", {failed} failed" : ""));
             }
+            if (req.DistributionGroups.Count > 0)
+            {
+                Report($"• {req.Label}: adding Exchange distribution groups…");
+                var (ok, failed) = await _cloud.AddUserToDistributionGroupsAsync(req.Upn?.Trim() ?? string.Empty, req.DistributionGroups, Report);
+                summary.Add($"added to {ok} distribution group(s)" + (failed > 0 ? $", {failed} failed" : ""));
+            }
             if (req.IssueTap)
             {
                 Report($"• {req.Label}: issuing a Temporary Access Pass…");

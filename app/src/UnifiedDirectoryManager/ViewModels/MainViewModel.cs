@@ -18,6 +18,7 @@ public partial class MainViewModel : ObservableObject
     private readonly IScenarioStore _scenarios;
     private readonly ISettingsStore _settingsStore;
     private readonly IGraphService _graph;
+    private readonly IExchangeService _exchange;
     private readonly ICredentialStore _credentials;
     private TreeNodeViewModel? _cloudRoot;
     private bool _scenarioRunning; // guards against a second (fire-and-forget) scenario run overlapping
@@ -68,6 +69,7 @@ public partial class MainViewModel : ObservableObject
         _scenarios = scenarios;
         _settingsStore = settingsStore;
         _graph = graph;
+        _exchange = exchange;
         _credentials = credentials;
         Settings = settings;
         _editDock = Enum.TryParse<EditPaneDock>(settings.EditDock, out var dock) ? dock : EditPaneDock.Right;
@@ -307,11 +309,12 @@ public partial class MainViewModel : ObservableObject
         var picked = _dialogs.PickGroupsHybrid("Add selected objects to groups");
         if (picked is null || picked.Count == 0) return;
 
-        var onPrem = picked.Where(g => g.Origin == GroupOrigin.OnPrem && g.Dn is not null).ToList();
-        var cloud = picked.Where(g => g.Origin == GroupOrigin.Cloud && g.CloudId is not null).ToList();
+        var onPrem = picked.Where(g => g.Channel == GroupChannel.OnPremAd && g.Dn is not null).ToList();
+        var cloud = picked.Where(g => g.Channel == GroupChannel.EntraGraph && g.CloudId is not null).ToList();
+        var exchange = picked.Where(g => g.Channel == GroupChannel.ExchangeOnline).ToList();
 
         var lines = new[] { $"Add {rows.Count} object(s) to {picked.Count} group(s):" }
-            .Concat(picked.Select(g => $"• {g.OriginLabel}: {g.Name}"));
+            .Concat(picked.Select(g => $"• {g.ChannelLabel}: {g.Name}"));
         if (!_dialogs.Confirm("Confirm", $"Add {rows.Count} object(s) to the selected group(s)?", lines))
             return;
 
@@ -329,8 +332,8 @@ public partial class MainViewModel : ObservableObject
             onPremResult = await _directory.BulkApplyAsync(rows, new[] { change });
         }
 
-        // No cloud groups: keep the original single-result behaviour.
-        if (cloud.Count == 0)
+        // No cloud or Exchange groups: keep the original single-result behaviour.
+        if (cloud.Count == 0 && exchange.Count == 0)
         {
             if (onPremResult is not null) _dialogs.ShowBulkResult(onPremResult);
             await List.ReloadAsync();
@@ -338,27 +341,44 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
-        // Cloud groups: resolve each row's Entra twin, then add it to every picked cloud group.
+        // Cloud / Exchange groups: resolve each row's Entra twin (Graph) and mailbox identity (Exchange), then add.
         var onPremByDn = onPremResult?.Items.ToDictionary(i => i.DistinguishedName, StringComparer.OrdinalIgnoreCase);
         var combined = new List<BulkItemResult>();
         for (int i = 0; i < rows.Count; i++)
         {
             var row = rows[i];
-            StatusMessage = $"Adding to cloud groups… ({i + 1}/{rows.Count})";
+            StatusMessage = $"Adding to cloud / Exchange groups… ({i + 1}/{rows.Count})";
             var errors = new List<string>();
 
             if (onPremByDn is not null && onPremByDn.TryGetValue(row.DistinguishedName, out var op) && !op.Success && op.Error is not null)
                 errors.Add("On-prem: " + op.Error);
 
-            var cloudId = await ResolveCloudIdForRowAsync(row);
-            if (cloudId is null)
-                errors.Add("Not found in Entra ID (may not be synced) — cloud groups skipped.");
-            else
-                foreach (var g in cloud)
-                {
-                    try { await _graph.AddMemberToGroupAsync(g.CloudId!, cloudId); }
-                    catch (Exception ex) { errors.Add($"{g.Name}: {GraphErrors.Friendly(ex)}"); }
-                }
+            if (cloud.Count > 0)
+            {
+                var cloudId = await ResolveCloudIdForRowAsync(row);
+                if (cloudId is null)
+                    errors.Add("Not found in Entra ID (may not be synced) — cloud groups skipped.");
+                else
+                    foreach (var g in cloud)
+                    {
+                        try { await _graph.AddMemberToGroupAsync(g.CloudId!, cloudId); }
+                        catch (Exception ex) { errors.Add($"{g.Name}: {GraphErrors.Friendly(ex)}"); }
+                    }
+            }
+
+            if (exchange.Count > 0)
+            {
+                var member = await ResolveExoMemberIdentityForRowAsync(row);
+                if (string.IsNullOrWhiteSpace(member))
+                    errors.Add("No mailbox/recipient identity (only users/mail-enabled groups) — Exchange distribution groups skipped.");
+                else
+                    foreach (var g in exchange)
+                    {
+                        var groupId = !string.IsNullOrWhiteSpace(g.Smtp) ? g.Smtp! : (g.CloudId ?? g.Name);
+                        try { await _exchange.AddDistributionGroupMemberAsync(groupId, member!); }
+                        catch (Exception ex) { errors.Add($"{g.Name} (Exchange): {ex.Message}"); }
+                    }
+            }
 
             combined.Add(new BulkItemResult(row.DistinguishedName, row.Name, errors.Count == 0, errors.Count == 0 ? null : string.Join("; ", errors)));
         }
@@ -389,6 +409,24 @@ public partial class MainViewModel : ObservableObject
             }
         }
         catch (Exception ex) { AppLog.Instance.Warn($"Cloud id resolution failed for {row.Name}: {ex.Message}"); return null; }
+    }
+
+    /// <summary>Resolves the recipient identity Exchange Online should treat as a distribution-group member for
+    /// a list row: a user's UPN, or a group's primary SMTP. Null for objects that can't be a member (e.g. computers).</summary>
+    private async Task<string?> ResolveExoMemberIdentityForRowAsync(AdObjectRow row)
+    {
+        switch (row.Type)
+        {
+            case AdObjectType.User:
+                var upn = row.Get("userPrincipalName");
+                return string.IsNullOrWhiteSpace(upn)
+                    ? await LoadCorrelationAsync(row.DistinguishedName, "userPrincipalName", formatted: false)
+                    : upn;
+            case AdObjectType.Group:
+                return await LoadCorrelationAsync(row.DistinguishedName, "mail", formatted: false);
+            default:
+                return null;
+        }
     }
 
     /// <summary>Loads one correlation attribute (raw or display-formatted) from an on-prem object; null if absent.</summary>

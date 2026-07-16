@@ -13,12 +13,14 @@ namespace UnifiedDirectoryManager.Services;
 public sealed class CloudProvisioningService
 {
     private readonly IGraphService _graph;
+    private readonly IExchangeService _exchange;
     private readonly EntraSyncService _entraSync;
     private readonly ISettingsStore _settingsStore;
 
-    public CloudProvisioningService(IGraphService graph, EntraSyncService entraSync, ISettingsStore settingsStore)
+    public CloudProvisioningService(IGraphService graph, IExchangeService exchange, EntraSyncService entraSync, ISettingsStore settingsStore)
     {
         _graph = graph;
+        _exchange = exchange;
         _entraSync = entraSync;
         _settingsStore = settingsStore;
     }
@@ -89,7 +91,7 @@ public sealed class CloudProvisioningService
         return found;
     }
 
-    /// <summary>Adds the (already-synced) user to each cloud group, reporting per-group success/failure.</summary>
+    /// <summary>Adds the (already-synced) user to each Entra (Graph) group, reporting per-group success/failure.</summary>
     public async Task<(int Ok, int Failed)> AddUserToGroupsAsync(
         string userId, IEnumerable<CloudGroupRef> groups, Action<string> report)
     {
@@ -98,6 +100,27 @@ public sealed class CloudProvisioningService
         {
             try { await _graph.AddMemberToGroupAsync(g.Id, userId); ok++; report($"   ✓ {g.Name}"); }
             catch (Exception ex) { failed++; report($"   ✗ {g.Name}: {GraphErrors.Friendly(ex)}"); }
+        }
+        return (ok, failed);
+    }
+
+    /// <summary>
+    /// Adds the (already-synced) user to each Exchange Online distribution list / mail-enabled security group via
+    /// Add-DistributionGroupMember — the only path, since Graph can't modify these. <paramref name="memberIdentity"/>
+    /// is the user's UPN / primary SMTP; each group is addressed by its primary SMTP (falling back to id/name).
+    /// Reports per-group success/failure. Requires the Exchange Online prerequisites; a freshly-synced user may
+    /// not yet be provisioned as an Exchange recipient, so a failure here is often transient and worth a retry.
+    /// </summary>
+    public async Task<(int Ok, int Failed)> AddUserToDistributionGroupsAsync(
+        string memberIdentity, IEnumerable<DistributionGroupRef> groups, Action<string> report)
+    {
+        int ok = 0, failed = 0;
+        foreach (var g in groups)
+        {
+            var groupId = !string.IsNullOrWhiteSpace(g.Smtp) ? g.Smtp
+                        : !string.IsNullOrWhiteSpace(g.Id) ? g.Id : g.Name;
+            try { await _exchange.AddDistributionGroupMemberAsync(groupId, memberIdentity); ok++; report($"   ✓ {g.Name} (Exchange)"); }
+            catch (Exception ex) { failed++; report($"   ✗ {g.Name} (Exchange): {ex.Message}"); }
         }
         return (ok, failed);
     }

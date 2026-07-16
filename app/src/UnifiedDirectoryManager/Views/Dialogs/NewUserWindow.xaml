@@ -157,10 +157,9 @@
             <DockPanel Grid.Row="1" Margin="0,8,0,0">
                 <TextBlock DockPanel.Dock="Top" Text="Groups (from template — editable)" FontWeight="SemiBold" Margin="0,0,0,4" />
                 <WrapPanel DockPanel.Dock="Bottom" Margin="0,4,0,0">
-                    <Button Content="Add groups…" Command="{Binding AddGroupsCommand}" Margin="0,0,6,0" />
-                    <Button Content="Add cloud groups…" Command="{Binding AddCloudGroupsCommand}" />
+                    <Button Content="Add groups…" Command="{Binding AddGroupsCommand}" />
                 </WrapPanel>
-                <Border BorderBrush="#DDD" BorderThickness="1" MaxHeight="150">
+                <Border BorderBrush="#DDD" BorderThickness="1" MaxHeight="180">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="4">
                             <ItemsControl ItemsSource="{Binding OnPremGroups}">
@@ -176,13 +175,27 @@
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
                             <TextBlock Text="Cloud (Entra ID) groups" Foreground="#888" FontSize="11" Margin="0,6,0,2"
-                                       Visibility="{Binding SyncMandatory, Converter={StaticResource BoolToVis}}" />
+                                       Visibility="{Binding HasCloudGroups, Converter={StaticResource BoolToVis}}" />
                             <ItemsControl ItemsSource="{Binding CloudGroups}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
                                         <DockPanel Margin="0,1">
                                             <Button DockPanel.Dock="Right" Content="✕" Width="22" MinWidth="22" Padding="0"
                                                     Command="{Binding DataContext.RemoveCloudGroupCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                    CommandParameter="{Binding}" />
+                                            <CheckBox IsChecked="{Binding Include}" Content="{Binding Name}" VerticalAlignment="Center" />
+                                        </DockPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <TextBlock Text="Exchange distribution groups" Foreground="#888" FontSize="11" Margin="0,6,0,2"
+                                       Visibility="{Binding HasDistributionGroups, Converter={StaticResource BoolToVis}}" />
+                            <ItemsControl ItemsSource="{Binding DistributionGroups}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <DockPanel Margin="0,1">
+                                            <Button DockPanel.Dock="Right" Content="✕" Width="22" MinWidth="22" Padding="0"
+                                                    Command="{Binding DataContext.RemoveDistributionGroupCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                     CommandParameter="{Binding}" />
                                             <CheckBox IsChecked="{Binding Include}" Content="{Binding Name}" VerticalAlignment="Center" />
                                         </DockPanel>
