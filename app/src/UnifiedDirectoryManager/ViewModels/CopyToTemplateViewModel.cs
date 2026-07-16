@@ -15,12 +15,25 @@ public partial class TemplateCopyAttrRow : ObservableObject
     public string Value { get; init; } = string.Empty;
 }
 
-/// <summary>One copyable group membership (on-prem by DN, or cloud by object id).</summary>
+/// <summary>One checkable group membership carried through the create flows. <see cref="Channel"/> decides how
+/// it's applied: on-prem (LDAP, <see cref="Id"/> = DN), Entra Graph (<see cref="Id"/> = object id), or Exchange
+/// Online distribution (<see cref="Id"/> = object id, <see cref="Smtp"/> = the Add-DistributionGroupMember identity).</summary>
 public partial class TemplateCopyGroupRow : ObservableObject
 {
     [ObservableProperty] private bool _include = true;
     public string Name { get; init; } = string.Empty;
     public string Id { get; init; } = string.Empty; // on-prem DN, or Entra group id
+    public GroupChannel Channel { get; init; } = GroupChannel.OnPremAd;
+    public string? Smtp { get; init; } // Exchange distribution groups only (primary SMTP)
+
+    /// <summary>Short label for the group's directory/backend, shown alongside the name.</summary>
+    public string ChannelLabel => Channel switch
+    {
+        GroupChannel.OnPremAd => "On-prem",
+        GroupChannel.EntraGraph => "Cloud",
+        GroupChannel.ExchangeOnline => "Exchange",
+        _ => "?",
+    };
 }
 
 /// <summary>
@@ -133,7 +146,18 @@ public partial class CopyToTemplateViewModel : ObservableObject
                     // Only cloud-only groups belong here — synced groups are already listed above under on-prem
                     // (and can't be added to in the cloud), so including them would double-count and mislead.
                     foreach (var g in groups.Where(g => !g.IsSynced))
-                        CloudGroups.Add(new TemplateCopyGroupRow { Name = g.DisplayName, Id = g.Id });
+                    {
+                        // Distribution lists / mail-enabled security groups apply via Exchange Online, not Graph.
+                        var viaExchange = string.Equals(g.GroupKind, "Distribution", StringComparison.OrdinalIgnoreCase)
+                                       || string.Equals(g.GroupKind, "Mail-enabled security", StringComparison.OrdinalIgnoreCase);
+                        CloudGroups.Add(new TemplateCopyGroupRow
+                        {
+                            Name = g.DisplayName,
+                            Id = g.Id,
+                            Channel = viaExchange ? GroupChannel.ExchangeOnline : GroupChannel.EntraGraph,
+                            Smtp = viaExchange ? g.Mail : null,
+                        });
+                    }
                     HasCloudGroups = CloudGroups.Count > 0;
                 }
                 catch (Exception ex) { AppLog.Instance.Warn("Could not load cloud groups for copy-to-template: " + ex.Message); }
@@ -169,7 +193,10 @@ public partial class CopyToTemplateViewModel : ObservableObject
             EnabledByDefault = EnabledByDefault,
             MustChangePasswordAtNextLogon = MustChangePassword,
             GroupDns = OnPremGroups.Where(g => g.Include).Select(g => g.Id).ToList(),
-            CloudGroups = CloudGroups.Where(g => g.Include).Select(g => new CloudGroupRef { Id = g.Id, Name = g.Name }).ToList(),
+            CloudGroups = CloudGroups.Where(g => g.Include && g.Channel != GroupChannel.ExchangeOnline)
+                                     .Select(g => new CloudGroupRef { Id = g.Id, Name = g.Name }).ToList(),
+            DistributionGroups = CloudGroups.Where(g => g.Include && g.Channel == GroupChannel.ExchangeOnline)
+                                            .Select(g => new DistributionGroupRef { Id = g.Id, Name = g.Name, Smtp = g.Smtp ?? string.Empty }).ToList(),
         };
         foreach (var row in Attributes.Where(r => r.Include))
             template.AttributeDefaults[row.LdapName] = row.Value;

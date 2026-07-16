@@ -7,9 +7,13 @@ using UnifiedDirectoryManager.Services;
 namespace UnifiedDirectoryManager.ViewModels;
 
 /// <summary>
-/// Searchable picker that spans on-prem AD groups and Entra ID (cloud) groups, so an object can be added
-/// to a mix of both in one action. Cloud results appear only when signed in to Entra; otherwise it behaves
-/// like the on-prem group picker. Mirrors <see cref="ObjectPickerViewModel"/>'s search → basket → commit flow.
+/// Unified, searchable group picker that spans all three directories in one basket: on-prem AD groups,
+/// Entra ID security / Microsoft 365 groups (Graph), and Exchange Online distribution lists / mail-enabled
+/// security groups. Each cloud result is classified by its group kind into the right apply channel
+/// (<see cref="GroupChannel.EntraGraph"/> vs <see cref="GroupChannel.ExchangeOnline"/>) so the caller knows
+/// how to add the member later — one Graph search surfaces both, so no separate Exchange search is needed for
+/// discovery. Cloud results appear only when signed in to Entra; otherwise it behaves like the on-prem picker.
+/// Mirrors <see cref="ObjectPickerViewModel"/>'s search → basket → commit flow.
 /// </summary>
 public partial class HybridGroupPickerViewModel : ObservableObject
 {
@@ -18,7 +22,7 @@ public partial class HybridGroupPickerViewModel : ObservableObject
 
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private bool _isBusy;
-    [ObservableProperty] private string _status = "Type a name and search on-prem AD and Entra ID groups.";
+    [ObservableProperty] private string _status = "Type a name and search on-prem AD, Entra ID, and Exchange distribution groups.";
     [ObservableProperty] private GroupRef? _selectedResult;
 
     public ObservableCollection<GroupRef> Results { get; } = new();
@@ -46,7 +50,7 @@ public partial class HybridGroupPickerViewModel : ObservableObject
         {
             var onPrem = await _directory.SearchByNameAsync(SearchText, AdObjectType.Group);
             foreach (var g in onPrem)
-                Results.Add(new GroupRef(GroupOrigin.OnPrem, g.Name, g.DistinguishedName, null,
+                Results.Add(new GroupRef(GroupChannel.OnPremAd, g.Name, g.DistinguishedName, null, null,
                     DirectoryService.ParentDn(g.DistinguishedName)));
             notes.Add($"{onPrem.Count} on-prem");
         }
@@ -57,12 +61,19 @@ public partial class HybridGroupPickerViewModel : ObservableObject
             try
             {
                 // Exclude synced groups: they already appear in the on-prem AD results (the manageable copy),
-                // and their Entra twin's membership can't be changed in the cloud.
+                // and their Entra twin's membership can't be changed in the cloud. Classify each cloud group by
+                // kind: distribution lists / mail-enabled security groups can only be modified through Exchange
+                // Online (Add-DistributionGroupMember), everything else through Graph.
                 var cloud = (await _graph.SearchGroupsAsync(SearchText)).Where(g => !g.IsSynced).ToList();
                 foreach (var g in cloud)
-                    Results.Add(new GroupRef(GroupOrigin.Cloud, g.DisplayName, null, g.Id,
-                        $"{g.GroupKind} · {g.Origin}"));
-                notes.Add($"{cloud.Count} cloud-only");
+                {
+                    var viaExchange = string.Equals(g.GroupKind, "Distribution", StringComparison.OrdinalIgnoreCase)
+                                   || string.Equals(g.GroupKind, "Mail-enabled security", StringComparison.OrdinalIgnoreCase);
+                    Results.Add(viaExchange
+                        ? new GroupRef(GroupChannel.ExchangeOnline, g.DisplayName, null, g.Id, g.Mail, $"{g.GroupKind} · {g.Origin}")
+                        : new GroupRef(GroupChannel.EntraGraph, g.DisplayName, null, g.Id, null, $"{g.GroupKind} · {g.Origin}"));
+                }
+                notes.Add($"{cloud.Count} cloud");
             }
             catch (Exception ex) { notes.Add("cloud failed: " + ex.Message); }
         }

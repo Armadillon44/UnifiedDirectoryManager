@@ -19,8 +19,11 @@ public sealed class ImportedUserRow
     public string? ManagerDn { get; set; }
     public string ManagerDisplay { get; set; } = string.Empty;
 
-    /// <summary>Resolved Entra ID groups for this row.</summary>
+    /// <summary>Resolved Entra ID (Graph) groups for this row.</summary>
     public List<CloudGroupRef> CloudGroups { get; } = new();
+
+    /// <summary>Resolved Exchange Online distribution / mail-enabled security groups for this row.</summary>
+    public List<DistributionGroupRef> DistributionGroups { get; } = new();
 
     public bool IssueTap { get; set; }
 
@@ -52,6 +55,7 @@ public sealed class BulkCreateRequest
     public IReadOnlyList<string> Proxies { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> OnPremGroupDns { get; init; } = Array.Empty<string>();
     public IReadOnlyList<CloudGroupRef> CloudGroups { get; init; } = Array.Empty<CloudGroupRef>();
+    public IReadOnlyList<DistributionGroupRef> DistributionGroups { get; init; } = Array.Empty<DistributionGroupRef>();
     public bool IssueTap { get; init; }
     public int TapLifetimeMinutes { get; init; } = 1440;
     public bool TapOneTimeUse { get; init; }
@@ -63,7 +67,7 @@ public sealed class BulkCreateRequest
     /// <summary>The routable UPN used to correlate the synced user in Entra (for cloud groups / TAP).</summary>
     public string? Upn { get; init; }
 
-    public bool NeedsCloud => CloudGroups.Count > 0 || IssueTap;
+    public bool NeedsCloud => CloudGroups.Count > 0 || DistributionGroups.Count > 0 || IssueTap;
 }
 
 /// <summary>Per-user outcome of a bulk create, including the generated passphrase and TAP (shown once, in the report).</summary>

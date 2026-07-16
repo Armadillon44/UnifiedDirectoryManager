@@ -151,6 +151,13 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         return RunOpAsync(new { op = "remove-dl-member", group = groupIdentity, member = memberIdentity }, cancellationToken);
     }
 
+    public Task AddDistributionGroupMemberAsync(string groupIdentity, string memberIdentity, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(groupIdentity)) throw new ArgumentException("A group is required.", nameof(groupIdentity));
+        if (string.IsNullOrWhiteSpace(memberIdentity)) throw new ArgumentException("A member is required.", nameof(memberIdentity));
+        return RunOpAsync(new { op = "add-dl-member", group = groupIdentity, member = memberIdentity }, cancellationToken);
+    }
+
     // --- session plumbing (all callers hold _gate) ---
 
     /// <summary>Runs one operation against the reused session, reconnecting once if the session lapsed. Throws
@@ -621,6 +628,22 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 } catch {
                                     if ($_.Exception.Message -match "isn't a member|is not a member|not a member of the group") {
                                         __emit @{ ok = $true; detail = "member was not in the group" }
+                                    } else {
+                                        __emit @{ ok = $false; error = $_.Exception.Message; detail = ($_ | Out-String) }
+                                    }
+                                }
+                            }
+                            'add-dl-member' {
+                                # Add a member to a distribution list / mail-enabled security group. Microsoft Graph
+                                # can't modify these, so this is the only path. -BypassSecurityGroupManagerCheck lets an
+                                # Exchange admin who isn't the group's ManagedBy owner make the change. Idempotent: if the
+                                # member is already in the group, treat it as success.
+                                try {
+                                    Add-DistributionGroupMember -Identity $r.group -Member $r.member -BypassSecurityGroupManagerCheck -Confirm:$false -ErrorAction Stop 6>$null
+                                    __emit @{ ok = $true }
+                                } catch {
+                                    if ($_.Exception.Message -match "already a member|is already a member of the group") {
+                                        __emit @{ ok = $true; detail = "member already in the group" }
                                     } else {
                                         __emit @{ ok = $false; error = $_.Exception.Message; detail = ($_ | Out-String) }
                                     }

@@ -13,6 +13,7 @@ public sealed class DialogService : IDialogService
     private readonly IDirectoryService _directory;
     private readonly ITemplateStore _templates;
     private readonly IScenarioStore _scenarios;
+    private readonly ISavedSearchStore _savedSearches;
     private readonly ISettingsStore _settingsStore;
     private readonly AppSettings _settings;
     private readonly IGraphService _graph;
@@ -26,12 +27,13 @@ public sealed class DialogService : IDialogService
     private readonly BulkUserCsvImporter _csvImporter;
 
     public DialogService(IDirectoryService directory, ITemplateStore templates, IScenarioStore scenarios,
-        ISettingsStore settingsStore, AppSettings settings, IGraphService graph, IExchangeService exchange,
-        IDomainLocator locator, ICredentialStore credentials, ScenarioRunner scenarioRunner)
+        ISavedSearchStore savedSearches, ISettingsStore settingsStore, AppSettings settings, IGraphService graph,
+        IExchangeService exchange, IDomainLocator locator, ICredentialStore credentials, ScenarioRunner scenarioRunner)
     {
         _directory = directory;
         _templates = templates;
         _scenarios = scenarios;
+        _savedSearches = savedSearches;
         _settingsStore = settingsStore;
         _settings = settings;
         _graph = graph;
@@ -40,7 +42,7 @@ public sealed class DialogService : IDialogService
         _credentials = credentials;
         _scenarioRunner = scenarioRunner;
         _entraSync = new EntraSyncService(credentials); // saved-sync-credential fallback comes from the store
-        _cloudProvisioning = new CloudProvisioningService(graph, _entraSync, settingsStore);
+        _cloudProvisioning = new CloudProvisioningService(graph, exchange, _entraSync, settingsStore);
         _bulkCreator = new BulkUserCreator(directory, _cloudProvisioning, settings);
         _csvImporter = new BulkUserCsvImporter(directory, graph);
     }
@@ -188,9 +190,11 @@ public sealed class DialogService : IDialogService
         vm.SetManager(r.ManagerDn, r.ManagerDisplay);
         vm.IssueTap = r.IssueTap; vm.TapLifetimeMinutes = r.TapLifetimeMinutes; vm.TapOneTimeUse = r.TapOneTimeUse;
         vm.OnPremGroups.Clear();
-        foreach (var g in r.OnPremGroups) vm.OnPremGroups.Add(new TemplateCopyGroupRow { Name = g.Name, Id = g.Id });
+        foreach (var g in r.OnPremGroups) vm.OnPremGroups.Add(new TemplateCopyGroupRow { Name = g.Name, Id = g.Id, Channel = GroupChannel.OnPremAd });
         vm.CloudGroups.Clear();
-        foreach (var g in r.CloudGroups) vm.CloudGroups.Add(new TemplateCopyGroupRow { Name = g.Name, Id = g.Id });
+        foreach (var g in r.CloudGroups) vm.CloudGroups.Add(new TemplateCopyGroupRow { Name = g.Name, Id = g.Id, Channel = GroupChannel.EntraGraph });
+        vm.DistributionGroups.Clear();
+        foreach (var g in r.DistributionGroups) vm.DistributionGroups.Add(new TemplateCopyGroupRow { Name = g.Name, Id = g.Id, Channel = GroupChannel.ExchangeOnline, Smtp = g.Smtp });
     }
 
     /// <summary>Reads the configured values back out of the capture window into a batch row.</summary>
@@ -207,9 +211,11 @@ public sealed class DialogService : IDialogService
             IssueTap = vm.IssueTap, TapLifetimeMinutes = vm.TapLifetimeMinutes, TapOneTimeUse = vm.TapOneTimeUse,
         };
         foreach (var g in vm.OnPremGroups.Where(g => g.Include))
-            row.OnPremGroups.Add(new TemplateCopyGroupRow { Name = g.Name, Id = g.Id });
+            row.OnPremGroups.Add(new TemplateCopyGroupRow { Name = g.Name, Id = g.Id, Channel = GroupChannel.OnPremAd });
         foreach (var g in vm.CloudGroups.Where(g => g.Include))
             row.CloudGroups.Add(new CloudGroupRef { Id = g.Id, Name = g.Name });
+        foreach (var g in vm.DistributionGroups.Where(g => g.Include))
+            row.DistributionGroups.Add(new DistributionGroupRef { Id = g.Id, Name = g.Name, Smtp = g.Smtp ?? string.Empty });
         return row;
     }
 
@@ -270,7 +276,7 @@ public sealed class DialogService : IDialogService
 
     public SearchQuery? ShowAdvancedSearch(string defaultBaseDn)
     {
-        var vm = new AdvancedSearchViewModel(this);
+        var vm = new AdvancedSearchViewModel(this, _savedSearches);
         if (!string.IsNullOrWhiteSpace(defaultBaseDn))
             vm.AddBase(defaultBaseDn);
         new AdvancedSearchWindow { DataContext = vm, Owner = Owner }.ShowDialog();

@@ -38,6 +38,7 @@ public partial class App : Application
         var credentials = new WindowsCredentialStore();
         var templates = new TemplateStore();
         var scenarios = new ScenarioStore();
+        var savedSearches = new SavedSearchStore();
         var settingsStore = new SettingsStore();
         var settings = settingsStore.Load();
 
@@ -58,7 +59,7 @@ public partial class App : Application
         // Scenario runner needs the cloud clients too (scenarios can include Entra ID + Exchange steps).
         var scenarioRunner = new ScenarioRunner(_directory, graph, exchange);
 
-        var dialogs = new DialogService(_directory, templates, scenarios, settingsStore, settings, graph, exchange, locator, credentials, scenarioRunner);
+        var dialogs = new DialogService(_directory, templates, scenarios, savedSearches, settingsStore, settings, graph, exchange, locator, credentials, scenarioRunner);
 
         // The app no longer gates on an on-prem connection at startup. Show the main window immediately,
         // then attempt a silent connect from the saved profile in the background; a failure surfaces as a

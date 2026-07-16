@@ -174,7 +174,18 @@ public partial class CopyUserViewModel : ObservableObject
                 {
                     var cloud = await _graph.GetUserGroupsByUpnAsync(srcUpn.RawValues[0]);
                     foreach (var g in cloud.Where(g => !g.IsSynced))
-                        CloudGroups.Add(new TemplateCopyGroupRow { Name = g.DisplayName, Id = g.Id });
+                    {
+                        // Distribution lists / mail-enabled security groups apply via Exchange Online, not Graph.
+                        var viaExchange = string.Equals(g.GroupKind, "Distribution", StringComparison.OrdinalIgnoreCase)
+                                       || string.Equals(g.GroupKind, "Mail-enabled security", StringComparison.OrdinalIgnoreCase);
+                        CloudGroups.Add(new TemplateCopyGroupRow
+                        {
+                            Name = g.DisplayName,
+                            Id = g.Id,
+                            Channel = viaExchange ? GroupChannel.ExchangeOnline : GroupChannel.EntraGraph,
+                            Smtp = viaExchange ? g.Mail : null,
+                        });
+                    }
                     HasCloudGroups = CloudGroups.Count > 0;
                 }
                 catch (Exception ex) { AppLog.Instance.Warn("Could not load source cloud groups for copy: " + ex.Message); }
@@ -439,12 +450,24 @@ public partial class CopyUserViewModel : ObservableObject
         }
         Step("✓ Found in Entra ID.");
 
+        // Split the copied cloud memberships by apply channel: Graph groups vs Exchange distribution groups.
+        var graphGroups = cloudGroups.Where(g => g.Channel != GroupChannel.ExchangeOnline).ToList();
+        var distributionGroups = cloudGroups.Where(g => g.Channel == GroupChannel.ExchangeOnline).ToList();
+
         int ok = 0, failed = 0;
-        if (cloudGroups.Count > 0)
+        if (graphGroups.Count > 0)
         {
             Step("• Adding cloud groups…");
-            var refs = cloudGroups.Select(g => new CloudGroupRef { Id = g.Id, Name = g.Name });
+            var refs = graphGroups.Select(g => new CloudGroupRef { Id = g.Id, Name = g.Name });
             (ok, failed) = await _cloudProvisioning.AddUserToGroupsAsync(cloudUser.Id, refs, Step);
+        }
+
+        int dok = 0, dfailed = 0;
+        if (distributionGroups.Count > 0)
+        {
+            Step("• Adding Exchange distribution groups…");
+            var refs = distributionGroups.Select(g => new DistributionGroupRef { Id = g.Id, Name = g.Name, Smtp = g.Smtp ?? string.Empty });
+            (dok, dfailed) = await _cloudProvisioning.AddUserToDistributionGroupsAsync(Upn.Trim(), refs, Step);
         }
 
         if (IssueTap)
@@ -455,7 +478,8 @@ public partial class CopyUserViewModel : ObservableObject
         }
 
         var summary = "User created";
-        if (cloudGroups.Count > 0) summary += $"; added to {ok} cloud group(s)" + (failed > 0 ? $", {failed} failed" : "");
+        if (graphGroups.Count > 0) summary += $"; added to {ok} cloud group(s)" + (failed > 0 ? $", {failed} failed" : "");
+        if (distributionGroups.Count > 0) summary += $"; added to {dok} distribution group(s)" + (dfailed > 0 ? $", {dfailed} failed" : "");
         if (TapCode.Length > 0) summary += "; Temporary Access Pass issued (copy it now)";
         Status = summary + ".";
         Step("Done.");

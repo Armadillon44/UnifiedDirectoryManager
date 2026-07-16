@@ -90,22 +90,22 @@
                 <Button Content="Add attribute" HorizontalAlignment="Left" Margin="0,6,0,0"
                         Command="{Binding AddAttributeCommand}" />
 
-                <TextBlock Text="Groups (on-prem AD)" FontWeight="SemiBold" Margin="0,12,0,4" />
-                <ListBox x:Name="GroupsList" ItemsSource="{Binding Groups}" DisplayMemberPath="Name" MaxHeight="120" />
+                <TextBlock Text="Groups" FontWeight="SemiBold" Margin="0,12,0,4" />
+                <TextBlock TextWrapping="Wrap" Foreground="#999" FontSize="11" Margin="0,0,0,4"
+                           Text="One list for every kind of group: on-prem AD, Entra ID (cloud), and Exchange Online distribution groups. Cloud and Exchange groups are added after creation, so selecting any makes a post-create Entra Connect sync mandatory in the New User wizard (it waits for the user to sync, then adds them)." />
+                <ListBox x:Name="GroupsList" ItemsSource="{Binding Groups}" MaxHeight="150">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock>
+                                <Run Text="{Binding Name, Mode=OneWay}" /><Run Text="  ·  " Foreground="#999" /><Run Text="{Binding ChannelLabel, Mode=OneWay}" Foreground="#999" />
+                            </TextBlock>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
                 <WrapPanel Margin="0,6,0,0">
-                    <Button Content="Pick groups…" Command="{Binding PickGroupsCommand}" />
+                    <Button Content="Add groups…" Command="{Binding PickGroupsCommand}" />
                     <Button Content="Remove selected" Command="{Binding RemoveGroupCommand}"
                             CommandParameter="{Binding SelectedItem, ElementName=GroupsList}" />
-                </WrapPanel>
-
-                <TextBlock Text="Cloud groups (Entra ID)" FontWeight="SemiBold" Margin="0,12,0,4" />
-                <TextBlock TextWrapping="Wrap" Foreground="#999" FontSize="11" Margin="0,0,0,4"
-                           Text="Added after creation. Selecting any makes a post-create Entra Connect sync mandatory in the New User wizard (it waits for the user to sync, then adds them)." />
-                <ListBox x:Name="CloudGroupsList" ItemsSource="{Binding CloudGroups}" DisplayMemberPath="Name" MaxHeight="120" />
-                <WrapPanel Margin="0,6,0,0">
-                    <Button Content="Pick cloud groups…" Command="{Binding PickCloudGroupsCommand}" />
-                    <Button Content="Remove selected" Command="{Binding RemoveCloudGroupCommand}"
-                            CommandParameter="{Binding SelectedItem, ElementName=CloudGroupsList}" />
                 </WrapPanel>
 
                 <DockPanel Margin="0,16,0,0">
