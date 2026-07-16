@@ -161,6 +161,36 @@ Build conditions by friendly attribute name + operator (equals / contains / star
 multi-select rows and run **Bulk Edit** to set attributes, enable/disable, or add/remove group
 membership across all selected objects.
 
+## Exchange Online (ExOL)
+
+For synced/cloud users, the **ExOL** tab on the user pane manages the Exchange Online mailbox — actions
+Microsoft Graph can't do — and the same operations are available as scenario steps:
+
+- **Convert** the mailbox **Regular ↔ Shared** (so a departing user's mailbox survives unlicensing).
+- **Forwarding** — set/clear internal forwarding (with an optional "also deliver to mailbox" copy).
+- **Delegation** — grant/change/remove **Full Access**, **Send As**, **Send on Behalf** for other recipients.
+- **Scenario steps:** convert to shared/regular, set/clear forwarding, and **delegate the mailbox to the
+  user's manager** (Full Access, auto-mapped) — e.g. a Terminate-User flow: disable → convert to shared →
+  set forwarding → delegate to manager → remove license. Removing a license from a mailbox that is still a
+  *regular* mailbox warns you first (an unlicensed regular mailbox is deleted after ~30 days).
+
+### Exchange Online prerequisites
+
+Mailbox actions run **out-of-process** via the machine's PowerShell 7 and the Exchange Online module — the
+app does **not** bundle PowerShell. On each machine that will use ExOL features:
+
+1. **PowerShell 7 (`pwsh`)** installed (found on `PATH` or at `%ProgramFiles%\PowerShell\7\pwsh.exe`).
+2. The **`ExchangeOnlineManagement`** module installed, e.g.
+   `Install-Module ExchangeOnlineManagement -Scope AllUsers` (or `CurrentUser`).
+3. In Entra, the app registration needs the **delegated `Exchange.Manage`** permission on *Office 365
+   Exchange Online* with **admin consent** — this is the permission the module's token flow requires (the
+   REST-API `Exchange.ManageV2` permission is **not** sufficient). After granting it, sign out/in of Entra
+   in the app so the token is reissued with the new scope.
+4. The signing-in admin needs an Exchange RBAC role — **Recipient Management** (or Exchange Administrator).
+
+If `pwsh` or the module is missing, the ExOL tab surfaces a clear message on first use. The first mailbox
+look-up per session takes a few seconds while the Exchange Online session is established, then is reused.
+
 ## Build & run
 
 Prerequisites: .NET 10 SDK and the .NET 10 Windows Desktop runtime.

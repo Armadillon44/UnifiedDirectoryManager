@@ -236,7 +236,18 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             psi.ArgumentList.Add(a);
 
         var p = new Process { StartInfo = psi };
-        p.Start();
+        try
+        {
+            p.Start();
+        }
+        catch (Exception ex)
+        {
+            try { p.Dispose(); } catch { /* ignore */ }
+            throw new ExchangeException(
+                "Couldn't start PowerShell 7 (pwsh). Exchange Online features require PowerShell 7 and the "
+                + "ExchangeOnlineManagement module installed on this machine (see the README ▸ Exchange Online "
+                + "prerequisites). (" + ex.Message + ")", ex);
+        }
         // stdin encoding can't be set via ProcessStartInfo reliably on all hosts; wrap it as UTF-8 (no BOM).
         // (Base64 payloads are ASCII anyway, so this only matters for safety.)
         _stderr.Clear();
@@ -485,7 +496,7 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         try {
             Import-Module ExchangeOnlineManagement -ErrorAction Stop
         } catch {
-            __emit @{ ok = $false; error = ("Import ExchangeOnlineManagement failed: " + $_.Exception.Message) }
+            __emit @{ ok = $false; error = ("The ExchangeOnlineManagement module could not be loaded. Install it, e.g. Install-Module ExchangeOnlineManagement -Scope CurrentUser. Details: " + $_.Exception.Message) }
             exit 1
         }
         [Console]::Out.WriteLine('<<<UDM-READY>>>'); [Console]::Out.Flush()
