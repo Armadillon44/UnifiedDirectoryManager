@@ -101,6 +101,49 @@ public sealed class ExchangeService : IExchangeService, IDisposable
     public Task ClearForwardingAsync(string identity, CancellationToken cancellationToken = default)
         => RunOpAsync(new { op = "clear-forwarding", identity }, cancellationToken);
 
+    public async Task<IReadOnlyList<MailboxDelegate>> GetDelegatesAsync(string identity, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(identity)) return Array.Empty<MailboxDelegate>();
+        var data = await RunOpAsync(new { op = "list-delegates", identity }, cancellationToken).ConfigureAwait(false);
+        var list = new List<MailboxDelegate>();
+        if (data is { ValueKind: JsonValueKind.Array } arr)
+            foreach (var e in arr.EnumerateArray()) list.Add(MapDelegate(e));
+        else if (data is { ValueKind: JsonValueKind.Object } one)
+            list.Add(MapDelegate(one));
+        return list;
+    }
+
+    public Task AddDelegateAsync(string identity, string delegateIdentity, DelegateAccess access, bool autoMapping, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(delegateIdentity)) throw new ArgumentException("A delegate is required.", nameof(delegateIdentity));
+        if (access == DelegateAccess.None) throw new ArgumentException("At least one permission is required.", nameof(access));
+        return RunOpAsync(new
+        {
+            op = "add-delegate",
+            identity,
+            delegateId = delegateIdentity,
+            fullAccess = access.HasFlag(DelegateAccess.FullAccess),
+            sendAs = access.HasFlag(DelegateAccess.SendAs),
+            sendOnBehalf = access.HasFlag(DelegateAccess.SendOnBehalf),
+            autoMapping,
+        }, cancellationToken);
+    }
+
+    public Task RemoveDelegateAsync(string identity, string delegateIdentity, DelegateAccess access, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(delegateIdentity)) throw new ArgumentException("A delegate is required.", nameof(delegateIdentity));
+        if (access == DelegateAccess.None) throw new ArgumentException("At least one permission is required.", nameof(access));
+        return RunOpAsync(new
+        {
+            op = "remove-delegate",
+            identity,
+            delegateId = delegateIdentity,
+            fullAccess = access.HasFlag(DelegateAccess.FullAccess),
+            sendAs = access.HasFlag(DelegateAccess.SendAs),
+            sendOnBehalf = access.HasFlag(DelegateAccess.SendOnBehalf),
+        }, cancellationToken);
+    }
+
     // --- session plumbing (all callers hold _gate) ---
 
     /// <summary>Runs one operation against the reused session, reconnecting once if the session lapsed. Throws
@@ -360,6 +403,20 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         };
     }
 
+    private static MailboxDelegate MapDelegate(JsonElement d)
+    {
+        string S(string p) => d.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
+        bool B(string p) => d.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.True;
+        return new MailboxDelegate
+        {
+            Identity = S("Identity"),
+            DisplayName = S("DisplayName"),
+            FullAccess = B("FullAccess"),
+            SendAs = B("SendAs"),
+            SendOnBehalf = B("SendOnBehalf"),
+        };
+    }
+
     /// <summary>Logs the audience + delegated scopes (scp) + app roles from the EXO access token, to confirm
     /// which Exchange permission the token actually carries. Never logs the token itself.</summary>
     private static void LogTokenClaims(string jwt)
@@ -414,6 +471,14 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             [Console]::Out.Flush()
         }
         function __arg($b64) { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) | ConvertFrom-Json }
+        function __delAdd($map, $who, $perm) {
+            if ([string]::IsNullOrWhiteSpace([string]$who)) { return }
+            $rec = Get-Recipient -Identity $who -ErrorAction SilentlyContinue | Select-Object -First 1
+            $key = if ($rec) { [string]$rec.PrimarySmtpAddress } else { [string]$who }
+            $name = if ($rec) { [string]$rec.DisplayName } else { [string]$who }
+            if (-not $map.ContainsKey($key)) { $map[$key] = [ordered]@{ Identity = $key; DisplayName = $name; FullAccess = $false; SendAs = $false; SendOnBehalf = $false } }
+            $map[$key][$perm] = $true
+        }
 
         try {
             Import-Module ExchangeOnlineManagement -ErrorAction Stop
@@ -477,6 +542,31 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                     RecipientType = [string]$_.RecipientTypeDetails
                                 } })
                                 __emit @{ ok = $true; data = $data }
+                            }
+                            'list-delegates' {
+                                $map = @{}
+                                Get-MailboxPermission -Identity $r.identity -ErrorAction SilentlyContinue | Where-Object { ($_.AccessRights -contains 'FullAccess') -and (-not $_.IsInherited) -and (-not $_.Deny) -and ([string]$_.User -notlike 'NT AUTHORITY\*') } | ForEach-Object { __delAdd $map $_.User 'FullAccess' }
+                                Get-RecipientPermission -Identity $r.identity -ErrorAction SilentlyContinue | Where-Object { ($_.AccessRights -contains 'SendAs') -and ([string]$_.Trustee -notlike 'NT AUTHORITY\*') } | ForEach-Object { __delAdd $map $_.Trustee 'SendAs' }
+                                $mbx = Get-Mailbox -Identity $r.identity -ErrorAction SilentlyContinue
+                                if ($mbx) { foreach ($g in @($mbx.GrantSendOnBehalfTo)) { __delAdd $map $g 'SendOnBehalf' } }
+                                __emit @{ ok = $true; data = @($map.Values | Sort-Object { $_.DisplayName }) }
+                            }
+                            'add-delegate' {
+                                # Each permission is applied independently and idempotently: 'already exists' is treated
+                                # as success, and one sub-op failing doesn't skip the others (errors are aggregated).
+                                $errs = @()
+                                if ($r.fullAccess) { try { Add-MailboxPermission -Identity $r.identity -User $r.delegateId -AccessRights FullAccess -InheritanceType All -AutoMapping ([bool]$r.autoMapping) -Confirm:$false -ErrorAction Stop | Out-Null } catch { if ($_.Exception.Message -notmatch 'already') { $errs += 'Full Access: ' + $_.Exception.Message } } }
+                                if ($r.sendAs) { try { Add-RecipientPermission -Identity $r.identity -Trustee $r.delegateId -AccessRights SendAs -Confirm:$false -ErrorAction Stop | Out-Null } catch { if ($_.Exception.Message -notmatch 'already') { $errs += 'Send As: ' + $_.Exception.Message } } }
+                                if ($r.sendOnBehalf) { try { Set-Mailbox -Identity $r.identity -GrantSendOnBehalfTo @{ Add = $r.delegateId } -ErrorAction Stop 6>$null } catch { if ($_.Exception.Message -notmatch 'already') { $errs += 'Send on Behalf: ' + $_.Exception.Message } } }
+                                if ($errs.Count -gt 0) { __emit @{ ok = $false; error = ($errs -join '; ') } } else { __emit @{ ok = $true } }
+                            }
+                            'remove-delegate' {
+                                # Idempotent removal: 'not present' is success; sub-ops are independent + aggregated.
+                                $errs = @()
+                                if ($r.fullAccess) { try { Remove-MailboxPermission -Identity $r.identity -User $r.delegateId -AccessRights FullAccess -Confirm:$false -ErrorAction Stop | Out-Null } catch { if ($_.Exception.Message -notmatch 'not found|does not exist|doesn''t|isn''t|cannot be found|not have') { $errs += 'Full Access: ' + $_.Exception.Message } } }
+                                if ($r.sendAs) { try { Remove-RecipientPermission -Identity $r.identity -Trustee $r.delegateId -AccessRights SendAs -Confirm:$false -ErrorAction Stop | Out-Null } catch { if ($_.Exception.Message -notmatch 'not found|does not exist|doesn''t|isn''t|cannot be found|not have') { $errs += 'Send As: ' + $_.Exception.Message } } }
+                                if ($r.sendOnBehalf) { try { Set-Mailbox -Identity $r.identity -GrantSendOnBehalfTo @{ Remove = $r.delegateId } -ErrorAction Stop 6>$null } catch { if ($_.Exception.Message -notmatch 'not found|does not exist|doesn''t|isn''t|cannot be found|not have') { $errs += 'Send on Behalf: ' + $_.Exception.Message } } }
+                                if ($errs.Count -gt 0) { __emit @{ ok = $false; error = ($errs -join '; ') } } else { __emit @{ ok = $true } }
                             }
                             default { __emit @{ ok = $false; error = ("Unknown op: " + [string]$r.op) } }
                         }

@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using UnifiedDirectoryManager.Models;
@@ -40,6 +41,15 @@ public partial class ExchangeTabViewModel : ObservableObject
     /// mailbox's current state on load so re-pointing forwarding doesn't silently drop retention.</summary>
     [ObservableProperty] private bool _deliverAndForward;
 
+    /// <summary>Current delegates on the mailbox (Full Access / Send As / Send on Behalf, merged per delegate).</summary>
+    public ObservableCollection<MailboxDelegate> Delegates { get; } = new();
+
+    // Which permissions "Add delegate…" grants, and (Full Access only) whether to auto-map into Outlook.
+    [ObservableProperty] private bool _grantFullAccess = true;
+    [ObservableProperty] private bool _grantSendAs;
+    [ObservableProperty] private bool _grantSendOnBehalf;
+    [ObservableProperty] private bool _grantAutoMapping = true;
+
     public ExchangeTabViewModel(IExchangeService exchange, IGraphService graph, IDialogService dialogs)
     {
         _exchange = exchange;
@@ -69,6 +79,11 @@ public partial class ExchangeTabViewModel : ObservableObject
         Forwarding = "(none)";
         CanConvert = false;
         DeliverAndForward = false;
+        Delegates.Clear();
+        GrantFullAccess = true;
+        GrantSendAs = false;
+        GrantSendOnBehalf = false;
+        GrantAutoMapping = true;
     }
 
     private void RefreshStatus()
@@ -140,6 +155,52 @@ public partial class ExchangeTabViewModel : ObservableObject
             () => _exchange.ClearForwardingAsync(_identity!));
     }
 
+    [RelayCommand]
+    private async Task AddDelegateAsync()
+    {
+        if (IsBusy || !EnsureReady()) return;
+        var access = BuildGrantAccess();
+        if (access == DelegateAccess.None)
+        {
+            StatusMessage = "Select at least one permission to grant (Full Access / Send As / Send on Behalf).";
+            return;
+        }
+
+        var picked = _dialogs.PickMailboxRecipient($"Delegate access to “{TargetLabel}” — pick who gets access");
+        if (picked is null) return;
+
+        if (!_dialogs.Confirm("Add delegate", $"Grant “{picked.DisplayName}” access to “{TargetLabel}”?", DescribeAccess(access, GrantAutoMapping)))
+            return;
+
+        await RunWriteAsync("Adding delegate…", $"Granted {picked.DisplayName} access.",
+            () => _exchange.AddDelegateAsync(_identity!, picked.Identity, access, GrantAutoMapping), refreshOnFailure: true);
+    }
+
+    [RelayCommand]
+    private async Task RemoveDelegateAsync(MailboxDelegate? del)
+    {
+        if (del is null || IsBusy || !EnsureReady()) return;
+        var access = del.Access;
+        if (access == DelegateAccess.None) return;
+        if (!_dialogs.Confirm("Remove delegate", $"Remove “{del.DisplayName}”’s access to “{TargetLabel}”?", DescribeAccess(access, false)))
+            return;
+
+        await RunWriteAsync("Removing delegate…", $"Removed {del.DisplayName}’s access.",
+            () => _exchange.RemoveDelegateAsync(_identity!, del.Identity, access), refreshOnFailure: true);
+    }
+
+    private DelegateAccess BuildGrantAccess() =>
+        (GrantFullAccess ? DelegateAccess.FullAccess : 0)
+        | (GrantSendAs ? DelegateAccess.SendAs : 0)
+        | (GrantSendOnBehalf ? DelegateAccess.SendOnBehalf : 0);
+
+    private static IEnumerable<string> DescribeAccess(DelegateAccess access, bool autoMapping)
+    {
+        if (access.HasFlag(DelegateAccess.FullAccess)) yield return "Full Access" + (autoMapping ? " (auto-mapped in Outlook)" : "");
+        if (access.HasFlag(DelegateAccess.SendAs)) yield return "Send As";
+        if (access.HasFlag(DelegateAccess.SendOnBehalf)) yield return "Send on Behalf";
+    }
+
     /// <summary>Reads the mailbox and populates the display fields (or sets a not-found status).</summary>
     private async Task LoadCoreAsync()
     {
@@ -160,6 +221,12 @@ public partial class ExchangeTabViewModel : ObservableObject
             ? mb.ForwardingAddress + (mb.DeliverToMailboxAndForward ? " (also delivered to mailbox)" : " (forward only)")
             : "(none)";
         DeliverAndForward = mb.DeliverToMailboxAndForward; // mirror current state so re-pointing keeps retention
+
+        // Delegates are best-effort: a listing hiccup shouldn't blank the mailbox view.
+        Delegates.Clear();
+        try { foreach (var dg in await _exchange.GetDelegatesAsync(_identity!)) Delegates.Add(dg); }
+        catch (Exception ex) { AppLog.Instance.Warn("Could not list mailbox delegates: " + ex.Message); }
+
         HasResult = true;
         StatusMessage = $"Showing the Exchange Online mailbox for {(string.IsNullOrWhiteSpace(mb.DisplayName) ? _identity : mb.DisplayName)}.";
     }
@@ -193,7 +260,7 @@ public partial class ExchangeTabViewModel : ObservableObject
     /// <summary>Runs a write, then re-reads the mailbox — reporting a write failure ("Failed: …") distinctly
     /// from a post-write refresh failure (the change DID apply, but the view couldn't refresh), so a succeeded
     /// write is never mislabelled as failed.</summary>
-    private async Task RunWriteAsync(string busyStatus, string successStatus, Func<Task> write)
+    private async Task RunWriteAsync(string busyStatus, string successStatus, Func<Task> write, bool refreshOnFailure = false)
     {
         if (IsBusy) return;
         IsBusy = true;
@@ -205,7 +272,15 @@ public partial class ExchangeTabViewModel : ObservableObject
         catch (Exception ex)
         {
             AppLog.Instance.Error("Exchange Online write failed.", ex);
-            StatusMessage = "Failed: " + ex.Message;
+            var msg = "Failed: " + ex.Message;
+            // A delegate write can partially apply (several sub-permissions), so refresh the view on failure
+            // to reflect what actually took effect rather than hiding it behind a bare "Failed".
+            if (refreshOnFailure)
+            {
+                try { await LoadCoreAsync(); msg += " (view refreshed — some changes may have applied)"; }
+                catch { /* keep the failure message */ }
+            }
+            StatusMessage = msg;
             IsBusy = false;
             return;
         }

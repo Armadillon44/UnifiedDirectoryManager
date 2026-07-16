@@ -293,6 +293,31 @@
                                     <Button Content="Set forwarding…" Command="{Binding SetForwardingCommand}" Margin="0,0,6,0" />
                                     <Button Content="Clear forwarding" Command="{Binding ClearForwardingCommand}" />
                                 </WrapPanel>
+
+                                <TextBlock Text="Delegates" FontWeight="SemiBold" Margin="0,12,0,4" />
+                                <ItemsControl ItemsSource="{Binding Delegates}" Margin="0,0,0,6">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <DockPanel Margin="0,2">
+                                                <Button DockPanel.Dock="Right" Content="Remove" MinWidth="70"
+                                                        Command="{Binding DataContext.RemoveDelegateCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                        CommandParameter="{Binding}" />
+                                                <TextBlock VerticalAlignment="Center" TextWrapping="Wrap">
+                                                    <Run Text="{Binding DisplayName, Mode=OneWay}" FontWeight="SemiBold" /><Run Text="  —  " Foreground="#999" /><Run Text="{Binding AccessSummary, Mode=OneWay}" Foreground="#666" />
+                                                </TextBlock>
+                                            </DockPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <TextBlock Text="Grant to a new delegate:" Foreground="#666" Margin="0,2,0,2" />
+                                <WrapPanel Margin="0,0,0,4">
+                                    <CheckBox Content="Full Access" IsChecked="{Binding GrantFullAccess}" Margin="0,0,12,0" />
+                                    <CheckBox Content="Send As" IsChecked="{Binding GrantSendAs}" Margin="0,0,12,0" />
+                                    <CheckBox Content="Send on Behalf" IsChecked="{Binding GrantSendOnBehalf}" Margin="0,0,12,0" />
+                                    <CheckBox Content="Auto-map (Full Access)" IsChecked="{Binding GrantAutoMapping}" />
+                                </WrapPanel>
+                                <Button Content="Add delegate…" Command="{Binding AddDelegateCommand}" HorizontalAlignment="Left" />
                             </StackPanel>
                         </StackPanel>
                     </ScrollViewer>

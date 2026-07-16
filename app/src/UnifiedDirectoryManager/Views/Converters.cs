@@ -77,6 +77,7 @@ public sealed class ScenarioActionToLabelConverter : IValueConverter
             ScenarioActionType.ExchangeConvertToRegular => "Exchange: convert to regular mailbox",
             ScenarioActionType.ExchangeSetForwarding => "Exchange: set mailbox forwarding",
             ScenarioActionType.ExchangeClearForwarding => "Exchange: clear mailbox forwarding",
+            ScenarioActionType.ExchangeDelegateToManager => "Exchange: delegate mailbox to manager",
             ScenarioActionType.SaveOperationLog => "Save operation log",
             _ => value.ToString() ?? string.Empty,
         } : string.Empty;

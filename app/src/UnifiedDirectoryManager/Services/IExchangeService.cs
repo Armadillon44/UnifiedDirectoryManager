@@ -63,4 +63,21 @@ public interface IExchangeService
 
     /// <summary>Clears any internal forwarding on a mailbox (ForwardingAddress = null, DeliverToMailboxAndForward = false).</summary>
     Task ClearForwardingAsync(string identity, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Lists a mailbox's delegates — recipients granted Full Access, Send As, and/or Send on Behalf — merged
+    /// into one row per delegate (inherited and NT AUTHORITY\SELF entries excluded).
+    /// </summary>
+    Task<IReadOnlyList<MailboxDelegate>> GetDelegatesAsync(string identity, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Grants a delegate the given <paramref name="access"/> on a mailbox. <paramref name="autoMapping"/> applies to
+    /// Full Access only (auto-mount the mailbox in the delegate's Outlook). Each permission is applied
+    /// independently and idempotently — re-granting one the delegate already holds is tolerated as success
+    /// (Send As in particular errors on a duplicate ACE, which the implementation swallows).
+    /// </summary>
+    Task AddDelegateAsync(string identity, string delegateIdentity, DelegateAccess access, bool autoMapping, CancellationToken cancellationToken = default);
+
+    /// <summary>Removes the given <paramref name="access"/> permissions for a delegate on a mailbox.</summary>
+    Task RemoveDelegateAsync(string identity, string delegateIdentity, DelegateAccess access, CancellationToken cancellationToken = default);
 }

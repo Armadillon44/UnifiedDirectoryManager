@@ -230,6 +230,18 @@ public sealed class ScenarioRunner
                 detail = "Exchange: cleared mailbox forwarding";
                 break;
 
+            case ScenarioActionType.ExchangeDelegateToManager:
+            {
+                var mailboxId = await ResolveMailboxIdentityAsync(dn, target, ct); // guards user + exchange available
+                var managerDn = await CorrelationAsync(dn, "manager", formatted: false, ct);
+                if (string.IsNullOrWhiteSpace(managerDn)) { detail = "Exchange: delegate to manager (no manager set — skipped)"; break; }
+                var managerUpn = await CorrelationAsync(managerDn, "userPrincipalName", formatted: false, ct);
+                if (string.IsNullOrWhiteSpace(managerUpn)) { detail = "Exchange: delegate to manager (manager has no userPrincipalName — skipped)"; break; }
+                await _exchange.AddDelegateAsync(mailboxId, managerUpn, DelegateAccess.FullAccess, autoMapping: true, ct);
+                detail = $"Exchange: delegated mailbox to manager {managerUpn} (Full Access)";
+                break;
+            }
+
             default:
                 detail = step.Action.ToString();
                 break;

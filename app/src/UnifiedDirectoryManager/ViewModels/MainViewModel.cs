@@ -515,7 +515,8 @@ public partial class MainViewModel : ObservableObject
             cautions.Add("• Includes Entra ID (cloud) steps — requires being signed in to Entra ID; they act on each "
                        + "object's synced cloud twin (skipped per-object if no cloud match is found).");
         if (scenario.Steps.Any(s => s.Action is ScenarioActionType.ExchangeConvertToShared or ScenarioActionType.ExchangeConvertToRegular
-                or ScenarioActionType.ExchangeSetForwarding or ScenarioActionType.ExchangeClearForwarding))
+                or ScenarioActionType.ExchangeSetForwarding or ScenarioActionType.ExchangeClearForwarding
+                or ScenarioActionType.ExchangeDelegateToManager))
             cautions.Add("• Includes Exchange Online (mailbox) steps — requires being signed in to Entra ID and an "
                        + "Exchange admin role; they act on each user's mailbox by UPN.");
         if (cautions.Count > 0)
@@ -642,6 +643,7 @@ public partial class MainViewModel : ObservableObject
             : $"Exchange: forward to {(string.IsNullOrWhiteSpace(step.ForwardingTarget.Name) ? step.ForwardingTarget.Identity : step.ForwardingTarget.Name)}"
               + (step.DeliverAndForward ? " (deliver + forward)" : " (forward only)"),
         ScenarioActionType.ExchangeClearForwarding => "Exchange: clear mailbox forwarding",
+        ScenarioActionType.ExchangeDelegateToManager => "Exchange: delegate mailbox to manager (Full Access)",
         _ => step.Action.ToString(),
     };
 

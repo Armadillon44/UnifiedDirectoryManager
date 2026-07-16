@@ -50,6 +50,8 @@ public enum ScenarioActionType
     ExchangeSetForwarding,
     /// <summary>Clear any internal forwarding on the user's mailbox.</summary>
     ExchangeClearForwarding,
+    /// <summary>Grant the user's manager Full Access (auto-mapped) to the user's mailbox.</summary>
+    ExchangeDelegateToManager,
 
     /// <summary>
     /// Save a plain-text operation log of every step taken and change made during this run (e.g. the
