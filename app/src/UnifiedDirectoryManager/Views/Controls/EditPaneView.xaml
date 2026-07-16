@@ -294,13 +294,13 @@
                                     <Button Content="Clear forwarding" Command="{Binding ClearForwardingCommand}" />
                                 </WrapPanel>
 
-                                <TextBlock Text="Delegates" FontWeight="SemiBold" Margin="0,12,0,4" />
-                                <ItemsControl ItemsSource="{Binding Delegates}" Margin="0,0,0,6">
+                                <TextBlock Text="{Binding DelegatesHeader}" FontWeight="SemiBold" Margin="0,12,0,4" />
+                                <ItemsControl x:Name="DelegatesList" ItemsSource="{Binding Delegates}" Margin="0,0,0,6">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
                                             <DockPanel Margin="0,2">
                                                 <Button DockPanel.Dock="Right" Content="Remove" MinWidth="70"
-                                                        Command="{Binding DataContext.RemoveDelegateCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                        Command="{Binding DataContext.RemoveDelegateCommand, ElementName=DelegatesList}"
                                                         CommandParameter="{Binding}" />
                                                 <TextBlock VerticalAlignment="Center" TextWrapping="Wrap">
                                                     <Run Text="{Binding DisplayName, Mode=OneWay}" FontWeight="SemiBold" /><Run Text="  —  " Foreground="#999" /><Run Text="{Binding AccessSummary, Mode=OneWay}" Foreground="#666" />

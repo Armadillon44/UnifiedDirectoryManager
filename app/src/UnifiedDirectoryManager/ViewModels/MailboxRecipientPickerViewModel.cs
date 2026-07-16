@@ -16,7 +16,7 @@ public partial class MailboxRecipientPickerViewModel : ObservableObject
 
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private bool _isBusy;
-    [ObservableProperty] private string _status = "Search for the recipient to forward to (user, shared mailbox, or distribution group).";
+    [ObservableProperty] private string _status = "Search for a recipient (user, shared mailbox, or distribution group).";
     [ObservableProperty] private MailboxRecipient? _selectedResult;
 
     public ObservableCollection<MailboxRecipient> Results { get; } = new();

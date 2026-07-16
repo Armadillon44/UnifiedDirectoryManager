@@ -44,6 +44,9 @@ public partial class ExchangeTabViewModel : ObservableObject
     /// <summary>Current delegates on the mailbox (Full Access / Send As / Send on Behalf, merged per delegate).</summary>
     public ObservableCollection<MailboxDelegate> Delegates { get; } = new();
 
+    /// <summary>Header for the delegates list — makes the count / empty state explicit (e.g. "Delegates (2)").</summary>
+    [ObservableProperty] private string _delegatesHeader = "Delegates";
+
     // Which permissions "Add delegate…" grants, and (Full Access only) whether to auto-map into Outlook.
     [ObservableProperty] private bool _grantFullAccess = true;
     [ObservableProperty] private bool _grantSendAs;
@@ -80,6 +83,7 @@ public partial class ExchangeTabViewModel : ObservableObject
         CanConvert = false;
         DeliverAndForward = false;
         Delegates.Clear();
+        DelegatesHeader = "Delegates";
         GrantFullAccess = true;
         GrantSendAs = false;
         GrantSendOnBehalf = false;
@@ -226,6 +230,7 @@ public partial class ExchangeTabViewModel : ObservableObject
         Delegates.Clear();
         try { foreach (var dg in await _exchange.GetDelegatesAsync(_identity!)) Delegates.Add(dg); }
         catch (Exception ex) { AppLog.Instance.Warn("Could not list mailbox delegates: " + ex.Message); }
+        DelegatesHeader = Delegates.Count == 0 ? "Delegates — none configured" : $"Delegates ({Delegates.Count})";
 
         HasResult = true;
         StatusMessage = $"Showing the Exchange Online mailbox for {(string.IsNullOrWhiteSpace(mb.DisplayName) ? _identity : mb.DisplayName)}.";

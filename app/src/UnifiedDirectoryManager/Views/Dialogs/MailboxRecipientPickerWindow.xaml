@@ -12,7 +12,7 @@
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Row="0" Foreground="#666" Margin="0,0,0,8" TextWrapping="Wrap"
-                   Text="Search for the internal recipient to forward to — a user, shared mailbox, or distribution group. Pick one, then OK." />
+                   Text="Search for a recipient — a user, shared mailbox, or distribution group — then select one and click OK." />
 
         <DockPanel Grid.Row="1" Margin="0,0,0,8">
             <Button DockPanel.Dock="Right" Content="Search" Command="{Binding SearchCommand}" Margin="6,0,0,0" />
@@ -37,11 +37,13 @@
         </ListView>
 
         <DockPanel Grid.Row="3" Margin="0,10,0,0">
-            <TextBlock Text="{Binding Status}" Foreground="#666" VerticalAlignment="Center" TextWrapping="Wrap" />
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <!-- Buttons dock right FIRST so they always reserve their width; the status text then fills + wraps
+                 in whatever remains (previously the long status text squeezed OK down to an unclickable sliver). -->
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                 <Button Content="OK" IsDefault="True" Click="OnOk" MinWidth="90" Margin="0,0,6,0" />
                 <Button Content="Cancel" IsCancel="True" MinWidth="90" />
             </StackPanel>
+            <TextBlock Text="{Binding Status}" Foreground="#666" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0" />
         </DockPanel>
     </Grid>
 </Window>
