@@ -169,6 +169,8 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                     AppLog.Instance.Error("Exchange Online operation failed. Full PowerShell error record:" + Environment.NewLine + resp.Detail);
                 throw new ExchangeException(ExchangeErrors.Friendly(resp.Error));
             }
+            if (!string.IsNullOrWhiteSpace(resp.Detail))
+                AppLog.Instance.Info("Exchange op diagnostics: " + resp.Detail);
             return resp.Data;
         }
         finally { _gate.Release(); }
@@ -520,7 +522,7 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                         PrimarySmtpAddress = [string]$m.PrimarySmtpAddress
                                         RecipientTypeDetails = [string]$m.RecipientTypeDetails
                                         ForwardingAddress = [string]$m.ForwardingAddress
-                                        DeliverToMailboxAndForward = [bool]$m.DeliverToMailboxAndForward
+                                        DeliverToMailboxAndForward = ([string]$m.DeliverToMailboxAndForward -eq 'True')
                                         UserPrincipalName = [string]$m.UserPrincipalName
                                     } }
                                 }
@@ -544,12 +546,31 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 __emit @{ ok = $true; data = $data }
                             }
                             'list-delegates' {
+                                # NOTE: EXO v3 returns IsInherited/Deny as STRINGS ("False"/"True"), and in PowerShell
+                                # -not "False" is $false (any non-empty string is truthy). Compare stringified values
+                                # with -ne 'True' (correct whether the property is a bool or a string). AccessRights is a
+                                # single flags value (e.g. "FullAccess, ReadPermission"), so match it as a substring.
                                 $map = @{}
-                                Get-MailboxPermission -Identity $r.identity -ErrorAction SilentlyContinue | Where-Object { ($_.AccessRights -contains 'FullAccess') -and (-not $_.IsInherited) -and (-not $_.Deny) -and ([string]$_.User -notlike 'NT AUTHORITY\*') } | ForEach-Object { __delAdd $map $_.User 'FullAccess' }
-                                Get-RecipientPermission -Identity $r.identity -ErrorAction SilentlyContinue | Where-Object { ($_.AccessRights -contains 'SendAs') -and ([string]$_.Trustee -notlike 'NT AUTHORITY\*') } | ForEach-Object { __delAdd $map $_.Trustee 'SendAs' }
-                                $mbx = Get-Mailbox -Identity $r.identity -ErrorAction SilentlyContinue
-                                if ($mbx) { foreach ($g in @($mbx.GrantSendOnBehalfTo)) { __delAdd $map $g 'SendOnBehalf' } }
-                                __emit @{ ok = $true; data = @($map.Values | Sort-Object { $_.DisplayName }) }
+                                $diag = @()
+                                try {
+                                    $raw = @(Get-MailboxPermission -Identity $r.identity -ErrorAction Stop)
+                                    $fp = @($raw | Where-Object { (([string]$_.AccessRights) -like '*FullAccess*') -and ([string]$_.IsInherited -ne 'True') -and ([string]$_.Deny -ne 'True') -and ([string]$_.User -notlike 'NT AUTHORITY\*') })
+                                    $diag += "FullAccess raw=$($raw.Count) matched=$($fp.Count)"
+                                    $fp | ForEach-Object { __delAdd $map $_.User 'FullAccess' }
+                                } catch { $diag += "MbxPerm ERR: $($_.Exception.Message)" }
+                                try {
+                                    $rawS = @(Get-RecipientPermission -Identity $r.identity -ErrorAction Stop)
+                                    $sp = @($rawS | Where-Object { (([string]$_.AccessRights) -like '*SendAs*') -and ([string]$_.Trustee -notlike 'NT AUTHORITY\*') })
+                                    $diag += "SendAs raw=$($rawS.Count) matched=$($sp.Count)"
+                                    $sp | ForEach-Object { __delAdd $map $_.Trustee 'SendAs' }
+                                } catch { $diag += "RcptPerm ERR: $($_.Exception.Message)" }
+                                try {
+                                    $mbx = Get-Mailbox -Identity $r.identity -ErrorAction Stop
+                                    $sob = @($mbx.GrantSendOnBehalfTo)
+                                    $diag += "SendOnBehalf=$($sob.Count)"
+                                    foreach ($g in $sob) { __delAdd $map $g 'SendOnBehalf' }
+                                } catch { $diag += "Mbx(SoB) ERR: $($_.Exception.Message)" }
+                                __emit @{ ok = $true; data = @($map.Values | Sort-Object { $_.DisplayName }); detail = ($diag -join '; ') }
                             }
                             'add-delegate' {
                                 # Each permission is applied independently and idempotently: 'already exists' is treated
