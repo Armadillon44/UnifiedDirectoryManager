@@ -263,7 +263,7 @@ public sealed class DialogService : IDialogService
 
     public void ShowCloudObjectProperties(CloudObjectRow row)
     {
-        var vm = new CloudObjectDetailViewModel(_graph, this);
+        var vm = new CloudObjectDetailViewModel(_graph, _exchange, this);
         vm.SetTarget(row);
         new CloudObjectPropertiesWindow { DataContext = vm, Owner = Owner }.Show(); // non-modal
     }

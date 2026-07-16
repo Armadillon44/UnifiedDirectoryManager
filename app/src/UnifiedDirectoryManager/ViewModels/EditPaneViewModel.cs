@@ -127,7 +127,7 @@ public partial class EditPaneViewModel : ObservableObject
         _onError = onError;
         _graph = graph;
         _exchange = exchange;
-        Cloud = new CloudTabViewModel(graph, dialogs);
+        Cloud = new CloudTabViewModel(graph, exchange, dialogs);
         Exchange = new ExchangeTabViewModel(exchange, graph, dialogs);
     }
 

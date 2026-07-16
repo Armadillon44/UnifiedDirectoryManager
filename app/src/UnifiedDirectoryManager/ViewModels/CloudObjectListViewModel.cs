@@ -60,13 +60,13 @@ public partial class CloudObjectListViewModel : ObservableObject
 
     public IReadOnlyList<CloudObjectRow> CheckedRows => Rows.Where(r => r.IsChecked).ToList();
 
-    public CloudObjectListViewModel(IGraphService graph, IDialogService dialogs, ISettingsStore settingsStore, AppSettings settings)
+    public CloudObjectListViewModel(IGraphService graph, IExchangeService exchange, IDialogService dialogs, ISettingsStore settingsStore, AppSettings settings)
     {
         _graph = graph;
         _dialogs = dialogs;
         _settingsStore = settingsStore;
         _settings = settings;
-        Detail = new CloudObjectDetailViewModel(graph, dialogs);
+        Detail = new CloudObjectDetailViewModel(graph, exchange, dialogs);
 
         RowsView = CollectionViewSource.GetDefaultView(Rows);
         RowsView.Filter = RowPredicate;

@@ -74,7 +74,7 @@ public partial class MainViewModel : ObservableObject
 
         List = new ObjectListViewModel(directory, SetError, settingsStore, settings);
         Edit = new EditPaneViewModel(directory, dialogs, SetError, graph, exchange);
-        Cloud = new CloudObjectListViewModel(graph, dialogs, settingsStore, settings);
+        Cloud = new CloudObjectListViewModel(graph, exchange, dialogs, settingsStore, settings);
 
         List.SelectionChanged += (_, row) =>
         {

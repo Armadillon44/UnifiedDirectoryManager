@@ -28,10 +28,10 @@ public partial class CloudTabViewModel : ObservableObject
     /// <summary>The resolved cloud object's full detail (same view as the cloud section).</summary>
     public CloudObjectDetailViewModel Detail { get; }
 
-    public CloudTabViewModel(IGraphService graph, IDialogService dialogs)
+    public CloudTabViewModel(IGraphService graph, IExchangeService exchange, IDialogService dialogs)
     {
         _graph = graph;
-        Detail = new CloudObjectDetailViewModel(graph, dialogs);
+        Detail = new CloudObjectDetailViewModel(graph, exchange, dialogs);
         RefreshSignInDisplay();
     }
 
