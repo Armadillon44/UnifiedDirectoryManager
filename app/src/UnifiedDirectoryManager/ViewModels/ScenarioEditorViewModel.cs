@@ -43,9 +43,11 @@ public partial class ScenarioStepRow : ObservableObject
     /// <summary>Entra ID groups for Cloud Add/Remove-from-groups steps.</summary>
     public ObservableCollection<CloudGroupRef> CloudGroups { get; } = new();
 
-    /// <summary>Internal forwarding target for ExchangeSetForwarding. Carried through the editor round-trip
-    /// so it isn't lost on edit/save; the picker UI lands in Phase 3.</summary>
+    /// <summary>Internal forwarding target for ExchangeSetForwarding (set via the recipient picker).</summary>
     public ForwardingTargetRef? ForwardingTarget { get; set; }
+
+    /// <summary>Display text for the chosen forwarding target (or "(none)").</summary>
+    public string ForwardingTargetDisplay => ForwardingTarget is null ? "(none)" : ForwardingTarget.Name;
 
     public IReadOnlyList<ScenarioActionType> AllActions { get; } = Enum.GetValues<ScenarioActionType>();
 
@@ -107,6 +109,15 @@ public partial class ScenarioStepRow : ObservableObject
     {
         var dn = _dialogs.PickContainer(TargetOu);
         if (dn is not null) TargetOu = dn;
+    }
+
+    [RelayCommand]
+    private void PickForwardingTarget()
+    {
+        var picked = _dialogs.PickMailboxRecipient("Forward to…");
+        if (picked is null) return;
+        ForwardingTarget = new ForwardingTargetRef { Identity = picked.Identity, Name = picked.DisplayName };
+        OnPropertyChanged(nameof(ForwardingTargetDisplay));
     }
 
     /// <summary>Snapshots this row into a persistable step (only the relevant fields).</summary>

@@ -118,6 +118,16 @@
                                             <TextBox Text="{Binding TargetOu, UpdateSourceTrigger=PropertyChanged}" />
                                         </DockPanel>
 
+                                        <!-- Forwarding target (Exchange: set mailbox forwarding) -->
+                                        <StackPanel Margin="0,6,0,0" Visibility="{Binding ShowForwarding, Converter={StaticResource BoolToVis}}">
+                                            <DockPanel>
+                                                <TextBlock Text="Forward to:" VerticalAlignment="Center" Margin="0,0,6,0" Width="64" />
+                                                <Button DockPanel.Dock="Right" Content="Pick…" Command="{Binding PickForwardingTargetCommand}" Margin="6,0,0,0" />
+                                                <TextBlock Text="{Binding ForwardingTargetDisplay}" VerticalAlignment="Center" Foreground="#444" TextTrimming="CharacterEllipsis" />
+                                            </DockPanel>
+                                            <CheckBox Content="Also deliver a copy to the mailbox" IsChecked="{Binding DeliverAndForward}" Margin="70,4,0,0" />
+                                        </StackPanel>
+
                                         <!-- Save operation log (meta-step) -->
                                         <TextBlock Margin="0,6,0,0" Foreground="#666" FontSize="11" TextWrapping="Wrap"
                                                    Visibility="{Binding ShowLogNote, Converter={StaticResource BoolToVis}}"
