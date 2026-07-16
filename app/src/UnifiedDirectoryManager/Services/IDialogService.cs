@@ -23,6 +23,13 @@ public interface IDialogService
     /// <summary>Picks Entra ID groups to add an object to. Returns the picked groups, or null if cancelled.</summary>
     IReadOnlyList<CloudGroup>? PickCloudGroups(string title);
 
+    /// <summary>Picks a single internal Exchange recipient (user/shared mailbox/distribution group) to forward a mailbox to. Null if cancelled.</summary>
+    MailboxRecipient? PickMailboxRecipient(string title);
+
+    /// <summary>Edits a delegate's mailbox access (which permissions + auto-map), pre-checked to <paramref name="current"/>.
+    /// Returns the chosen permission set and auto-map preference, or null if cancelled.</summary>
+    (DelegateAccess Access, bool AutoMapping)? EditDelegateAccess(string delegateName, DelegateAccess current);
+
     /// <summary>Confirmation dialog listing the changes about to happen. Returns true to proceed.</summary>
     bool Confirm(string title, string heading, IEnumerable<string> lines);
 

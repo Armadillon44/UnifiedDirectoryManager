@@ -35,6 +35,9 @@
         <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <TextBlock Text="Working…  please wait" Foreground="#888" VerticalAlignment="Center" Margin="0,0,12,0"
                        Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}" />
+            <Button Content="Cancel" MinWidth="90" Margin="0,0,8,0" Command="{Binding CancelCommand}"
+                    IsEnabled="{Binding CanCancel}"
+                    Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}" />
             <Button Content="Close" IsDefault="True" MinWidth="90" Click="OnClose"
                     IsEnabled="{Binding IsDone}" />
         </StackPanel>

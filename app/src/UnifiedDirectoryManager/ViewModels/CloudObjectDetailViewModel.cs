@@ -15,6 +15,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
 {
     private readonly IGraphService _graph;
     private readonly IDialogService _dialogs;
+    private readonly IExchangeService _exchange; // for the license-removal mailbox guardrail
     private CloudObjectRow? _currentTarget; // guards stale async results on fast re-selection
 
     [ObservableProperty] private bool _hasTarget;
@@ -43,9 +44,10 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     public ObservableCollection<CloudGroup> Memberships { get; } = new();
     public ObservableCollection<CloudMember> Members { get; } = new();
 
-    public CloudObjectDetailViewModel(IGraphService graph, IDialogService dialogs)
+    public CloudObjectDetailViewModel(IGraphService graph, IExchangeService exchange, IDialogService dialogs)
     {
         _graph = graph;
+        _exchange = exchange;
         _dialogs = dialogs;
     }
 
@@ -435,6 +437,11 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         var lines = removable.Select(l => l.FriendlyName).ToList();
         if (inheritedOnly.Count > 0)
             lines.Add($"(skipping {inheritedOnly.Count} group-inherited license(s) — remove via the group)");
+
+        // Guardrail: unlicensing a REGULAR mailbox deletes it after ~30 days; a shared mailbox survives. If we can
+        // determine (best-effort) the user still has a regular mailbox, warn prominently in the confirm dialog.
+        await AddMailboxGuardrailAsync(row, lines);
+
         if (!_dialogs.Confirm("Remove license", heading, lines)) return;
 
         IsBusy = true;
@@ -447,6 +454,36 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         IsBusy = false;
         _dialogs.ShowBulkResult(new BulkResult(items));
         SetTarget(row); // re-read live license state
+    }
+
+    /// <summary>Best-effort: if the user still has a REGULAR mailbox, append a strong caution to the confirm
+    /// lines — removing an Exchange-providing license from a regular mailbox deletes it after ~30 days, whereas
+    /// a shared mailbox survives unlicensed. Skipped silently when Exchange can't be reached.</summary>
+    private async Task AddMailboxGuardrailAsync(CloudObjectRow row, List<string> lines)
+    {
+        if (!_exchange.IsConfigured || !_graph.IsSignedIn) return; // no connectable Exchange session to check with
+        var mailboxId = MailboxIdentityFor(row);
+        if (mailboxId is null) return;
+        try
+        {
+            var mb = await _exchange.GetMailboxAsync(mailboxId);
+            if (mb is not null && mb.Type == MailboxType.Regular)
+            {
+                lines.Add(string.Empty);
+                lines.Add("⚠ This user still has a REGULAR mailbox. If a removed license provides Exchange Online, "
+                        + "the mailbox will be DELETED after ~30 days. Convert it to a shared mailbox first "
+                        + "(ExOL tab ▸ Convert to Shared) to keep it after unlicensing.");
+            }
+        }
+        catch (Exception ex) { AppLog.Instance.Warn("License guardrail: couldn't check the mailbox type: " + ex.Message); }
+    }
+
+    private static string? MailboxIdentityFor(CloudObjectRow row)
+    {
+        var upn = row.Get("userPrincipalName");
+        if (!string.IsNullOrWhiteSpace(upn)) return upn;
+        var mail = row.Get("mail");
+        return string.IsNullOrWhiteSpace(mail) ? null : mail;
     }
 
     // --- Cloud group membership (users + devices; add/remove this object to/from Entra groups) ---

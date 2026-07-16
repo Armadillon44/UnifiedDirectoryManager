@@ -39,6 +39,20 @@ public enum ScenarioActionType
     /// <summary>Remove the object's cloud twin from every Entra ID group it belongs to (skips dynamic + on-prem-synced).</summary>
     CloudRemoveAllGroups,
 
+    // --- Exchange Online mailbox actions (pure-cloud). Require Entra sign-in (the Exchange token is
+    //     obtained from it) plus an Exchange admin role; they act on the user's mailbox by UPN. ---
+
+    /// <summary>Convert the user's mailbox to a shared mailbox (so it survives unlicensing).</summary>
+    ExchangeConvertToShared,
+    /// <summary>Convert the user's mailbox back to a regular (user) mailbox.</summary>
+    ExchangeConvertToRegular,
+    /// <summary>Set internal forwarding on the user's mailbox to another recipient.</summary>
+    ExchangeSetForwarding,
+    /// <summary>Clear any internal forwarding on the user's mailbox.</summary>
+    ExchangeClearForwarding,
+    /// <summary>Grant the user's manager Full Access (auto-mapped) to the user's mailbox.</summary>
+    ExchangeDelegateToManager,
+
     /// <summary>
     /// Save a plain-text operation log of every step taken and change made during this run (e.g. the
     /// groups removed by a Terminate-User scenario). A meta-step: it performs no directory change. The
@@ -52,6 +66,15 @@ public enum ScenarioActionType
 public sealed class CloudGroupRef
 {
     public string Id { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+}
+
+/// <summary>The internal recipient a mailbox forwards to, stored in a scenario step (identity + display name).</summary>
+public sealed class ForwardingTargetRef
+{
+    /// <summary>The recipient identity passed to Set-Mailbox -ForwardingAddress (its primary SMTP address).</summary>
+    public string Identity { get; set; } = string.Empty;
+    /// <summary>Display name, for the operation log and the editor.</summary>
     public string Name { get; set; } = string.Empty;
 }
 
@@ -77,6 +100,12 @@ public sealed class ScenarioStep
 
     /// <summary>Target OU/container DN for MoveToOu.</summary>
     public string TargetOu { get; set; } = string.Empty;
+
+    /// <summary>Internal forwarding target for ExchangeSetForwarding (null = none configured).</summary>
+    public ForwardingTargetRef? ForwardingTarget { get; set; }
+
+    /// <summary>For ExchangeSetForwarding: also deliver to the mailbox (true) or forward only (false).</summary>
+    public bool DeliverAndForward { get; set; }
 }
 
 /// <summary>

@@ -29,8 +29,13 @@ public partial class ScenarioProgressWindow : Window
 
     private void OnClosing(object? sender, CancelEventArgs e)
     {
-        // Don't let the operator close mid-run — the scenario is making real directory changes.
-        if (DataContext is ScenarioProgressViewModel { IsRunning: true }) e.Cancel = true;
+        // Don't close mid-run (the scenario is making real directory changes) — but treat the X as a request to
+        // cancel: start cancellation and keep the window open until the run actually stops, then it can be closed.
+        if (DataContext is ScenarioProgressViewModel { IsRunning: true } vm)
+        {
+            e.Cancel = true;
+            if (vm.CancelCommand.CanExecute(null)) vm.CancelCommand.Execute(null);
+        }
     }
 
     private void OnClose(object sender, RoutedEventArgs e) => Close();

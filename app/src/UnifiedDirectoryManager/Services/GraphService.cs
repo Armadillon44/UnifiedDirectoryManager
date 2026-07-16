@@ -110,6 +110,16 @@ public sealed class GraphService : IGraphService
         AppLog.Instance.Info("Signed out of Entra ID.");
     }
 
+    public async Task<string> GetAccessTokenAsync(string[] scopes, CancellationToken cancellationToken = default)
+    {
+        if (_credential is null) throw new InvalidOperationException("Configure Entra ID (tenant + client id) and sign in first.");
+        if (scopes is null || scopes.Length == 0) throw new ArgumentException("At least one scope is required.", nameof(scopes));
+
+        // Reuses the cached account silently when a usable token exists; falls back to interactive only if needed.
+        var token = await _credential.GetTokenAsync(new TokenRequestContext(scopes), cancellationToken);
+        return token.Token;
+    }
+
     public async Task<CloudUserInfo?> GetUserByUpnAsync(string upn, CancellationToken cancellationToken = default)
     {
         if (_graph is null) throw new InvalidOperationException("Sign in to Entra ID first.");

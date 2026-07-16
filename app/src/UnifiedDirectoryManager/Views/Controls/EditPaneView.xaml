@@ -236,6 +236,96 @@
                     </ScrollViewer>
                 </TabItem>
 
+                <TabItem Header="ExOL" Visibility="{Binding ShowExchangeTab, Converter={StaticResource BoolToVis}}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="6" DataContext="{Binding Exchange}">
+                            <!-- Header: Exchange Online mailbox + signed-in account (sign-in is configured in File ▸ Settings) -->
+                            <Border BorderBrush="#E0E0E0" BorderThickness="0,0,0,1" Padding="0,0,0,8" Margin="0,0,0,8">
+                                <StackPanel>
+                                    <TextBlock Text="Exchange Online mailbox" FontWeight="SemiBold" />
+                                    <TextBlock Foreground="#666" FontSize="11" Margin="0,2,0,0"
+                                               Text="{Binding SignedInAccount, TargetNullValue='Signed in as: (not signed in)', StringFormat='Signed in as: {0}'}" />
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Look-up action + status line (no auto-fetch: the first EXO connect can be slow) -->
+                            <WrapPanel>
+                                <Button Content="Look up mailbox" Command="{Binding LookUpMailboxCommand}" />
+                            </WrapPanel>
+                            <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" Foreground="#666" Margin="0,6,0,2" />
+
+                            <!-- Resolved mailbox (read-only) -->
+                            <Grid Visibility="{Binding HasResult, Converter={StaticResource BoolToVis}}" Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="Display name" Foreground="#666" Margin="0,2,12,2" />
+                                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding DisplayName}" Margin="0,2" TextWrapping="Wrap" />
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="Primary SMTP" Foreground="#666" Margin="0,2,12,2" />
+                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding PrimarySmtpAddress}" Margin="0,2" TextWrapping="Wrap" />
+                                <TextBlock Grid.Row="2" Grid.Column="0" Text="Mailbox type" Foreground="#666" Margin="0,2,12,2" />
+                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding MailboxTypeText}" Margin="0,2" FontWeight="SemiBold" />
+                                <TextBlock Grid.Row="3" Grid.Column="0" Text="Forwarding" Foreground="#666" Margin="0,2,12,2" />
+                                <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding Forwarding}" Margin="0,2" TextWrapping="Wrap" />
+                            </Grid>
+
+                            <!-- Mailbox actions (available once a mailbox is loaded). Each confirms first and re-reads. -->
+                            <StackPanel Visibility="{Binding HasResult, Converter={StaticResource BoolToVis}}" Margin="0,14,0,0">
+                                <!-- Convert only applies to Regular/Shared mailboxes; hidden for room/equipment (Unknown). -->
+                                <StackPanel Visibility="{Binding CanConvert, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Mailbox type" FontWeight="SemiBold" Margin="0,0,0,4" />
+                                    <WrapPanel>
+                                        <Button Content="Convert to Shared" Command="{Binding ConvertToSharedCommand}" Margin="0,0,6,0" />
+                                        <Button Content="Convert to Regular" Command="{Binding ConvertToRegularCommand}" />
+                                    </WrapPanel>
+                                </StackPanel>
+
+                                <TextBlock Text="Forwarding (internal)" FontWeight="SemiBold" Margin="0,12,0,4" />
+                                <CheckBox Content="Also deliver a copy to the mailbox" IsChecked="{Binding DeliverAndForward}" Margin="0,0,0,6" />
+                                <WrapPanel>
+                                    <Button Content="Set forwarding…" Command="{Binding SetForwardingCommand}" Margin="0,0,6,0" />
+                                    <Button Content="Clear forwarding" Command="{Binding ClearForwardingCommand}" />
+                                </WrapPanel>
+
+                                <TextBlock Text="{Binding DelegatesHeader}" FontWeight="SemiBold" Margin="0,12,0,4" />
+                                <ItemsControl x:Name="DelegatesList" ItemsSource="{Binding Delegates}" Margin="0,0,0,6">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Orientation="Horizontal" Margin="0,2">
+                                                <TextBlock VerticalAlignment="Center" MinWidth="230" TextWrapping="Wrap">
+                                                    <Run Text="{Binding DisplayName, Mode=OneWay}" FontWeight="SemiBold" /><Run Text="  —  " Foreground="#999" /><Run Text="{Binding AccessSummary, Mode=OneWay}" Foreground="#666" />
+                                                </TextBlock>
+                                                <Button Content="Change…" MinWidth="70" Margin="8,0,0,0"
+                                                        Command="{Binding DataContext.ChangeDelegateCommand, ElementName=DelegatesList}"
+                                                        CommandParameter="{Binding}" />
+                                                <Button Content="Remove" MinWidth="70" Margin="6,0,0,0"
+                                                        Command="{Binding DataContext.RemoveDelegateCommand, ElementName=DelegatesList}"
+                                                        CommandParameter="{Binding}" />
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <TextBlock Text="Grant to a new delegate:" Foreground="#666" Margin="0,2,0,2" />
+                                <WrapPanel Margin="0,0,0,4">
+                                    <CheckBox Content="Full Access" IsChecked="{Binding GrantFullAccess}" Margin="0,0,12,0" />
+                                    <CheckBox Content="Send As" IsChecked="{Binding GrantSendAs}" Margin="0,0,12,0" />
+                                    <CheckBox Content="Send on Behalf" IsChecked="{Binding GrantSendOnBehalf}" Margin="0,0,12,0" />
+                                    <CheckBox Content="Auto-map (Full Access)" IsChecked="{Binding GrantAutoMapping}" />
+                                </WrapPanel>
+                                <Button Content="Add delegate…" Command="{Binding AddDelegateCommand}" HorizontalAlignment="Left" />
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
                 <TabItem Header="Members" Visibility="{Binding IsGroup, Converter={StaticResource BoolToVis}}">
                     <DockPanel Margin="6">
                         <TextBlock DockPanel.Dock="Top" Text="Objects that belong to this group (click a column header to sort; Ctrl/Shift-click to select several)" Foreground="#666" Margin="0,0,0,4" TextWrapping="Wrap" />

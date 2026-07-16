@@ -60,7 +60,7 @@ public partial class MainViewModel : ObservableObject
     public bool EditDockBottom => EditDock == EditPaneDock.Bottom;
 
     public MainViewModel(IDirectoryService directory, IDialogService dialogs, IScenarioStore scenarios,
-        ISettingsStore settingsStore, AppSettings settings, IGraphService graph,
+        ISettingsStore settingsStore, AppSettings settings, IGraphService graph, IExchangeService exchange,
         ICredentialStore credentials)
     {
         _directory = directory;
@@ -73,8 +73,8 @@ public partial class MainViewModel : ObservableObject
         _editDock = Enum.TryParse<EditPaneDock>(settings.EditDock, out var dock) ? dock : EditPaneDock.Right;
 
         List = new ObjectListViewModel(directory, SetError, settingsStore, settings);
-        Edit = new EditPaneViewModel(directory, dialogs, SetError, graph);
-        Cloud = new CloudObjectListViewModel(graph, dialogs, settingsStore, settings);
+        Edit = new EditPaneViewModel(directory, dialogs, SetError, graph, exchange);
+        Cloud = new CloudObjectListViewModel(graph, exchange, dialogs, settingsStore, settings);
 
         List.SelectionChanged += (_, row) =>
         {
@@ -501,11 +501,18 @@ public partial class MainViewModel : ObservableObject
         lines.AddRange(scenario.Steps.Select((s, i) => $"   {i + 1}. {DescribeStep(s)}"));
 
         // Call out the consequences that aren't obvious from the step list — especially in a hybrid tenant.
+        // A Save-operation-log step records the removed groups (with DNs/ids) so they can be re-added; without
+        // it, nothing persists them. Word the remove-all-groups cautions accordingly.
+        var wantsLog = scenario.Steps.Any(s => s.Action == ScenarioActionType.SaveOperationLog);
         var cautions = new List<string>();
         if (scenario.Steps.Any(s => s.Action == ScenarioActionType.RemoveAllGroups))
-            cautions.Add("• Removes ALL on-prem group memberships — they are NOT recorded, so they can't be auto-restored.");
+            cautions.Add(wantsLog
+                ? "• Removes ALL on-prem group memberships — recorded in the operation log (with DNs) so they can be re-added, though membership is not auto-restored."
+                : "• Removes ALL on-prem group memberships — NOT recorded (add a Save-operation-log step to keep a re-addable record).");
         if (scenario.Steps.Any(s => s.Action == ScenarioActionType.CloudRemoveAllGroups))
-            cautions.Add("• Removes ALL cloud (Entra) group memberships — not recorded/auto-restorable; dynamic and on-prem-synced groups are skipped.");
+            cautions.Add(wantsLog
+                ? "• Removes ALL cloud (Entra) group memberships — recorded in the operation log; dynamic and on-prem-synced groups are skipped."
+                : "• Removes ALL cloud (Entra) group memberships — NOT recorded (add a Save-operation-log step); dynamic and on-prem-synced groups are skipped.");
         if (scenario.Steps.Any(s => s.Action == ScenarioActionType.MoveToOu && !string.IsNullOrWhiteSpace(s.TargetOu)))
             cautions.Add("• Moves the object. On a directory-synced (hybrid) object, the next Entra Connect sync may "
                        + "disable or SOFT-DELETE the cloud user and mailbox (recoverable for ~30 days).");
@@ -514,6 +521,11 @@ public partial class MainViewModel : ObservableObject
                 or ScenarioActionType.CloudRemoveAllGroups))
             cautions.Add("• Includes Entra ID (cloud) steps — requires being signed in to Entra ID; they act on each "
                        + "object's synced cloud twin (skipped per-object if no cloud match is found).");
+        if (scenario.Steps.Any(s => s.Action is ScenarioActionType.ExchangeConvertToShared or ScenarioActionType.ExchangeConvertToRegular
+                or ScenarioActionType.ExchangeSetForwarding or ScenarioActionType.ExchangeClearForwarding
+                or ScenarioActionType.ExchangeDelegateToManager))
+            cautions.Add("• Includes Exchange Online (mailbox) steps — requires being signed in to Entra ID and an "
+                       + "Exchange admin role; they act on each user's mailbox by UPN.");
         if (cautions.Count > 0)
         {
             lines.Add(string.Empty);
@@ -522,7 +534,6 @@ public partial class MainViewModel : ObservableObject
         }
 
         // Does this scenario ask for an operation log? If so, remind the operator where it will be saved.
-        var wantsLog = scenario.Steps.Any(s => s.Action == ScenarioActionType.SaveOperationLog);
         var defaultLogDir = OperationLog.ResolveDirectory(Settings);
         var defaultLogName = $"{OperationLog.SafeFileNamePart(scenario.Name)}-{DateTime.Now:yyyyMMdd-HHmmss}.log";
         if (wantsLog)
@@ -631,6 +642,14 @@ public partial class MainViewModel : ObservableObject
         ScenarioActionType.CloudAddToGroups => $"Cloud: add to {step.CloudGroups.Count} group(s)",
         ScenarioActionType.CloudRemoveFromGroups => $"Cloud: remove from {step.CloudGroups.Count} group(s)",
         ScenarioActionType.CloudRemoveAllGroups => "Cloud: remove from all groups",
+        ScenarioActionType.ExchangeConvertToShared => "Exchange: convert mailbox to shared",
+        ScenarioActionType.ExchangeConvertToRegular => "Exchange: convert mailbox to regular",
+        ScenarioActionType.ExchangeSetForwarding => step.ForwardingTarget is null || string.IsNullOrWhiteSpace(step.ForwardingTarget.Identity)
+            ? "Exchange: set mailbox forwarding (no target)"
+            : $"Exchange: forward to {(string.IsNullOrWhiteSpace(step.ForwardingTarget.Name) ? step.ForwardingTarget.Identity : step.ForwardingTarget.Name)}"
+              + (step.DeliverAndForward ? " (deliver + forward)" : " (forward only)"),
+        ScenarioActionType.ExchangeClearForwarding => "Exchange: clear mailbox forwarding",
+        ScenarioActionType.ExchangeDelegateToManager => "Exchange: delegate mailbox to manager (Full Access)",
         _ => step.Action.ToString(),
     };
 

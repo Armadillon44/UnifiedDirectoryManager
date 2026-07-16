@@ -13,6 +13,7 @@ namespace UnifiedDirectoryManager;
 public partial class App : Application
 {
     private IDirectoryService _directory = null!;
+    private ExchangeService? _exchange;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -46,17 +47,25 @@ public partial class App : Application
         if (!string.IsNullOrWhiteSpace(settings.EntraTenantId) && !string.IsNullOrWhiteSpace(settings.EntraClientId))
             graph.Configure(settings.EntraTenantId!, settings.EntraClientId!);
 
-        // Scenario runner needs the cloud client too (scenarios can include Entra ID steps).
-        var scenarioRunner = new ScenarioRunner(_directory, graph);
+        // Exchange Online layer (v2.0): hosts the ExchangeOnlineManagement module and reuses the Graph
+        // sign-in for its token. Configured (but not connected) from the saved tenant; connect is lazy.
+        // NOTE: -Organization is seeded with the tenant id; confirm the tenant-domain form during live testing.
+        var exchange = new ExchangeService(graph);
+        if (!string.IsNullOrWhiteSpace(settings.EntraTenantId))
+            exchange.Configure(settings.EntraTenantId!);
+        _exchange = exchange;
 
-        var dialogs = new DialogService(_directory, templates, scenarios, settingsStore, settings, graph, locator, credentials, scenarioRunner);
+        // Scenario runner needs the cloud clients too (scenarios can include Entra ID + Exchange steps).
+        var scenarioRunner = new ScenarioRunner(_directory, graph, exchange);
+
+        var dialogs = new DialogService(_directory, templates, scenarios, settingsStore, settings, graph, exchange, locator, credentials, scenarioRunner);
 
         // The app no longer gates on an on-prem connection at startup. Show the main window immediately,
         // then attempt a silent connect from the saved profile in the background; a failure surfaces as a
         // (non-blocking) warning bar and the app continues — useful for cloud-only / Entra-only sessions.
         try
         {
-            var mainVm = new MainViewModel(_directory, dialogs, scenarios, settingsStore, settings, graph, credentials);
+            var mainVm = new MainViewModel(_directory, dialogs, scenarios, settingsStore, settings, graph, exchange, credentials);
             var main = new MainWindow { DataContext = mainVm };
             MainWindow = main;
             ShutdownMode = ShutdownMode.OnMainWindowClose;
@@ -126,6 +135,8 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        // Tear down the Exchange Online session and its hosted runspace cleanly.
+        try { _exchange?.Dispose(); } catch (Exception ex) { AppLog.Instance.Warn("Exchange dispose failed: " + ex.Message); }
         AppLog.Instance.Info("Unified Directory Manager exiting.");
         base.OnExit(e);
     }

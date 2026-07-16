@@ -1,0 +1,49 @@
+<Window x:Class="UnifiedDirectoryManager.Views.Dialogs.MailboxRecipientPickerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Select recipient" Height="480" Width="620"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Foreground="#666" Margin="0,0,0,8" TextWrapping="Wrap"
+                   Text="Search for a recipient — a user, shared mailbox, or distribution group — then select one and click OK." />
+
+        <DockPanel Grid.Row="1" Margin="0,0,0,8">
+            <Button DockPanel.Dock="Right" Content="Search" Command="{Binding SearchCommand}" Margin="6,0,0,0" />
+            <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}">
+                <TextBox.InputBindings>
+                    <KeyBinding Key="Return" Command="{Binding SearchCommand}" />
+                </TextBox.InputBindings>
+            </TextBox>
+        </DockPanel>
+
+        <ListView Grid.Row="2" x:Name="ResultsList" ItemsSource="{Binding Results}"
+                  SelectedItem="{Binding SelectedResult}" SelectionMode="Single"
+                  VirtualizingStackPanel.IsVirtualizing="False"
+                  MouseDoubleClick="OnResultDoubleClick">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Recipient" Width="200" DisplayMemberBinding="{Binding DisplayName}" />
+                    <GridViewColumn Header="Address" Width="230" DisplayMemberBinding="{Binding PrimarySmtpAddress}" />
+                    <GridViewColumn Header="Type" Width="140" DisplayMemberBinding="{Binding RecipientType}" />
+                </GridView>
+            </ListView.View>
+        </ListView>
+
+        <DockPanel Grid.Row="3" Margin="0,10,0,0">
+            <!-- Buttons dock right FIRST so they always reserve their width; the status text then fills + wraps
+                 in whatever remains (previously the long status text squeezed OK down to an unclickable sliver). -->
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button Content="OK" IsDefault="True" Click="OnOk" MinWidth="90" Margin="0,0,6,0" />
+                <Button Content="Cancel" IsCancel="True" MinWidth="90" />
+            </StackPanel>
+            <TextBlock Text="{Binding Status}" Foreground="#666" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0" />
+        </DockPanel>
+    </Grid>
+</Window>
