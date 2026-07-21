@@ -32,6 +32,10 @@ public partial class TreeNodeViewModel : ObservableObject
     public bool IsContainerNode => CloudKind is null && !IsPlaceholder
         && Type is AdObjectType.OrganizationalUnit or AdObjectType.Container or AdObjectType.Domain;
 
+    /// <summary>True only for an on-prem organizational unit — gates the (destructive) right-click Delete action,
+    /// which is offered for OUs but never for containers or the domain root.</summary>
+    public bool IsOrganizationalUnit => CloudKind is null && !IsPlaceholder && Type == AdObjectType.OrganizationalUnit;
+
     public ObservableCollection<TreeNodeViewModel> Children { get; } = new();
 
     [ObservableProperty] private bool _isExpanded;

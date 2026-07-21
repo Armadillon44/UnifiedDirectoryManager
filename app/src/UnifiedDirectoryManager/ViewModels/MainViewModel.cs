@@ -522,6 +522,112 @@ public partial class MainViewModel : ObservableObject
         _dialogs.ShowOuProperties(node.DistinguishedName, node.Name);
     }
 
+    /// <summary>Permanently deletes an OU (right-click ▸ Delete ▸ "Yes, I'm sure…"), gated by a protection check
+    /// and a type-the-random-string confirmation. Deletes the whole subtree, so everything under the OU goes too.</summary>
+    private bool _deleting; // guards the delete flow against a second launch during the async protection check
+
+    public async Task DeleteOuAsync(TreeNodeViewModel? node)
+    {
+        if (node is null || !node.IsOrganizationalUnit || string.IsNullOrWhiteSpace(node.DistinguishedName)) return;
+        if (_deleting) return;
+        _deleting = true;
+        try
+        {
+            var dn = node.DistinguishedName;
+
+            // A protected OU can't be deleted until protection is removed — check first so the user isn't asked to
+            // type the confirmation string only to hit an access-denied error at the end.
+            bool isProtected;
+            try { isProtected = await _directory.GetDeletionProtectionAsync(dn); }
+            catch { isProtected = false; } // unreadable DACL: fall through and let the delete surface any real error
+            if (isProtected)
+            {
+                _dialogs.Alert("Protected from deletion",
+                    $"“{node.Name}” is protected from accidental deletion, so it can't be deleted.\n\n" +
+                    "Open its Properties, clear “Protect object from accidental deletion”, then try the delete again.");
+                return;
+            }
+
+            // Strong confirmation: the user must type a fresh random string exactly (case-sensitive).
+            var phrase = RandomConfirmationString();
+            var lines = new[]
+            {
+                $"OU: {node.Name}",
+                dn,
+                string.Empty,
+                "This permanently deletes the OU AND EVERYTHING INSIDE IT — every child OU, user, group, and computer.",
+                "This cannot be undone.",
+            };
+            if (!_dialogs.ConfirmWithPhrase("Delete OU", $"Permanently delete “{node.Name}” and all of its contents?", lines, phrase))
+                return;
+
+            var parent = FindNodeByDn(DirectoryService.ParentDn(dn));
+            // Right-click doesn't change the selection, so the delete target is often not the selected node. If the
+            // selection is anywhere inside the subtree being deleted, it must move to a live container afterward.
+            var selectionInSubtree = SelectedNode is { } sel && IsSelfOrDescendantDn(sel.DistinguishedName, dn);
+
+            try
+            {
+                await _directory.DeleteObjectAsync(dn);
+                parent?.Children.Remove(node);
+                Edit.Clear();
+                if (selectionInSubtree && parent is not null)
+                    SelectedNode = parent; // OnSelectedNodeChanged re-points the object list to the (live) parent
+                else
+                    await List.ReloadAsync();
+                StatusMessage = $"Deleted OU “{node.Name}”.";
+            }
+            catch (Exception ex)
+            {
+                // DeleteTree isn't atomic — a protected descendant (or missing rights on part of the subtree) can
+                // leave the OU PARTLY deleted. Refresh the OU's children from AD so the tree shows what remains,
+                // move off any now-deleted selection, and warn that the delete may be incomplete.
+                try { node.Invalidate(); await node.EnsureChildrenAsync(); } catch { /* best effort */ }
+                Edit.Clear();
+                if (selectionInSubtree && !ReferenceEquals(SelectedNode, node)) SelectedNode = node;
+                try { await List.ReloadAsync(); } catch { /* best effort */ }
+                _dialogs.Alert("Delete may be incomplete",
+                    $"Deleting “{node.Name}” didn't finish, so SOME of its contents may already be permanently deleted " +
+                    "(a child object may be protected from accidental deletion, or you may lack rights on part of the subtree). " +
+                    "The tree has been refreshed to show what remains.\n\n" + DirectoryService.Friendly(ex));
+            }
+        }
+        finally { _deleting = false; }
+    }
+
+    /// <summary>True when <paramref name="candidate"/> is <paramref name="ancestorDn"/> itself or a descendant of
+    /// it (DN-suffix test) — used to move a selection off a subtree that's being deleted.</summary>
+    private static bool IsSelfOrDescendantDn(string candidate, string ancestorDn) =>
+        !string.IsNullOrEmpty(candidate) &&
+        (string.Equals(candidate, ancestorDn, StringComparison.OrdinalIgnoreCase)
+         || candidate.EndsWith("," + ancestorDn, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>A fresh confirmation token: 10–12 alphanumeric characters (confusable glyphs omitted), that the
+    /// user must type exactly to authorize a destructive delete.</summary>
+    private static string RandomConfirmationString()
+    {
+        const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+        var length = System.Security.Cryptography.RandomNumberGenerator.GetInt32(10, 13); // 10–12 inclusive
+        return new string(System.Security.Cryptography.RandomNumberGenerator.GetItems<char>(alphabet, length));
+    }
+
+    /// <summary>Finds a tree node by distinguished name (case-insensitive) across all roots; null if not present.</summary>
+    private TreeNodeViewModel? FindNodeByDn(string dn)
+    {
+        if (string.IsNullOrWhiteSpace(dn)) return null;
+        foreach (var root in RootNodes)
+            if (FindNodeByDn(root, dn) is { } found) return found;
+        return null;
+    }
+
+    private static TreeNodeViewModel? FindNodeByDn(TreeNodeViewModel node, string dn)
+    {
+        if (string.Equals(node.DistinguishedName, dn, StringComparison.OrdinalIgnoreCase)) return node;
+        foreach (var child in node.Children)
+            if (FindNodeByDn(child, dn) is { } found) return found;
+        return null;
+    }
+
     // --- Scenarios ---
 
     [RelayCommand]
