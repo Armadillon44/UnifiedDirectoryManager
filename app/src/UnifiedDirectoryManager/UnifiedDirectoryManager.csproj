@@ -14,7 +14,7 @@
     <Platforms>AnyCPU;x64;arm64</Platforms>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <ApplicationIcon>AD.ico</ApplicationIcon>
-    <Version>2.1.0</Version>
+    <Version>2.1.1</Version>
     <Product>Unified Directory Manager</Product>
     <Description>Active Directory and Entra management tool</Description>
     <Company>LaCrosse Footwear, Inc.</Company>

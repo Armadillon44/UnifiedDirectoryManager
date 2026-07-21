@@ -24,6 +24,13 @@ public sealed record CloudGroup(
     /// <summary>True when the group's membership is rule-managed by Entra (can't add/remove members directly).</summary>
     public bool IsDynamic => string.Equals(MembershipKind, "Dynamic", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>True for group kinds that can only be managed through Exchange Online — distribution lists and
+    /// mail-enabled security groups. Microsoft Graph can't modify their membership, so the app routes them to
+    /// the Exchange (Add/Remove-DistributionGroupMember) path and labels their source "Exchange".</summary>
+    public bool IsExchangeManaged =>
+        string.Equals(GroupKind, "Distribution", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(GroupKind, "Mail-enabled security", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>Friendly classification for display — the group kind, annotated "(Teams)" when the
     /// Microsoft 365 group backs a Microsoft Teams team.</summary>
     public string KindLabel => IsTeam ? $"{GroupKind} (Teams)" : GroupKind;

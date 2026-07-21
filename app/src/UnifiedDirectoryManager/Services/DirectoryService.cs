@@ -351,6 +351,39 @@ public sealed class DirectoryService : IDirectoryService
         }, cancellationToken);
     }
 
+    public Task<ObjectBasicInfo> GetBasicInfoAsync(string distinguishedName, CancellationToken cancellationToken = default)
+    {
+        return Task.Run(() =>
+        {
+            using var entry = Required.CreateEntry(distinguishedName);
+            using var searcher = new DirectorySearcher(entry)
+            {
+                SearchScope = SearchScope.Base,
+                Filter = "(objectClass=*)",
+            };
+            // canonicalName is a constructed attribute — it must be requested by name (a "*" load omits it).
+            foreach (var p in new[] { "name", "distinguishedName", "canonicalName", "description" })
+                searcher.PropertiesToLoad.Add(p);
+
+            var result = searcher.FindOne() ?? throw new InvalidOperationException("Object not found: " + distinguishedName);
+            string P(string n) => result.Properties[n].Count > 0 ? result.Properties[n][0]?.ToString() ?? string.Empty : string.Empty;
+
+            var dn = P("distinguishedName");
+            // description is multi-valued in the schema (though edited as one line) — return every value so the
+            // caller can preserve the unshown ones on save.
+            var descValues = result.Properties["description"].Cast<object?>()
+                .Select(v => v?.ToString() ?? string.Empty)
+                .Where(s => s.Length > 0)
+                .ToList();
+            return new ObjectBasicInfo(
+                Name: P("name"),
+                DistinguishedName: string.IsNullOrEmpty(dn) ? distinguishedName : dn,
+                CanonicalName: P("canonicalName"),
+                Description: descValues.Count > 0 ? descValues[0] : null,
+                DescriptionValues: descValues);
+        }, cancellationToken);
+    }
+
     // ---------------------------------------------------------------- Writes
 
     public Task ApplyChangesAsync(string distinguishedName, IReadOnlyList<PendingChange> changes, CancellationToken cancellationToken = default)
@@ -388,17 +421,26 @@ public sealed class DirectoryService : IDirectoryService
 
                 case ChangeOp.Set:
                     if (change.Values.Count == 0)
-                        entry.Properties[change.LdapName].Clear();
+                    {
+                        // Empty Set == clear; skip when already absent so we don't emit a delete for a
+                        // non-existent attribute (which a DC can reject with noSuchAttribute).
+                        if (entry.Properties[change.LdapName].Count > 0) { entry.Properties[change.LdapName].Clear(); needCommit = true; }
+                    }
                     else if (change.Values.Count == 1)
+                    {
                         entry.Properties[change.LdapName].Value = change.Values[0];
+                        needCommit = true;
+                    }
                     else
+                    {
                         entry.Properties[change.LdapName].Value = change.Values.ToArray();
-                    needCommit = true;
+                        needCommit = true;
+                    }
                     break;
 
                 case ChangeOp.Clear:
-                    entry.Properties[change.LdapName].Clear();
-                    needCommit = true;
+                    // Idempotent: clearing an already-absent attribute is a no-op, not a modify-delete error.
+                    if (entry.Properties[change.LdapName].Count > 0) { entry.Properties[change.LdapName].Clear(); needCommit = true; }
                     break;
 
                 case ChangeOp.Enable:
@@ -573,6 +615,50 @@ public sealed class DirectoryService : IDirectoryService
             {
                 user.Dispose();
             }
+        }, cancellationToken);
+    }
+
+    public Task<(string Dn, string? ProtectionError)> CreateOrganizationalUnitAsync(
+        string parentDn, string name, bool protectFromDeletion, string? description,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.Run<(string, string?)>(() =>
+        {
+            var ouName = name?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(ouName))
+                throw new InvalidOperationException("An OU name is required.");
+
+            string newDn;
+            using (var parent = Required.CreateEntry(parentDn))
+            {
+                var ou = parent.Children.Add($"OU={EscapeRdn(ouName)}", "organizationalUnit");
+                try
+                {
+                    var desc = description?.Trim();
+                    if (!string.IsNullOrWhiteSpace(desc)) ou.Properties["description"].Value = desc;
+                    ou.CommitChanges();
+                    // Read back the canonical DN; the fallback uses the escaped RDN so it stays a valid DN.
+                    newDn = ou.Properties["distinguishedName"].Value?.ToString() ?? $"OU={EscapeRdn(ouName)},{parentDn}";
+                }
+                finally { ou.Dispose(); }
+            }
+
+            // The OU now exists. Accidental-deletion protection is a SEPARATE DACL write (reusing the shared
+            // apply path) that can fail on its own — e.g. Create-Child granted but WriteDacl denied. Treat that
+            // as a non-fatal warning so we never report failure over an OU that was actually created.
+            string? protectionError = null;
+            if (protectFromDeletion)
+            {
+                try { ApplyChangesCore(newDn, new[] { new PendingChange { Op = ChangeOp.Protect } }); }
+                catch (Exception ex)
+                {
+                    protectionError = Friendly(ex);
+                    AppLog.Instance.Warn($"Created OU {newDn} but could not apply accidental-deletion protection: {protectionError}");
+                }
+            }
+            AppLog.Instance.Info($"Created OU {newDn}"
+                + (protectFromDeletion && protectionError is null ? " (protected from accidental deletion)." : "."));
+            return (newDn, protectionError);
         }, cancellationToken);
     }
 
@@ -914,8 +1000,12 @@ public sealed class DirectoryService : IDirectoryService
             : Enumerable.Empty<string>();
 
     private static string EscapeRdn(string value) =>
+        // '\' first so the escapes we add below aren't doubled. '/' isn't an RFC 4514 DN special, but it IS the
+        // ADsPath component separator, so it must be escaped for the ADSI child bind (ADSI un-escapes it back,
+        // so the object is still named literally, e.g. "Sales/Marketing").
         value.Replace("\\", "\\\\").Replace(",", "\\,").Replace("+", "\\+").Replace("\"", "\\\"")
-             .Replace("<", "\\<").Replace(">", "\\>").Replace(";", "\\;").Replace("=", "\\=").Replace("#", "\\#");
+             .Replace("<", "\\<").Replace(">", "\\>").Replace(";", "\\;").Replace("=", "\\=").Replace("#", "\\#")
+             .Replace("/", "\\/");
 
     /// <summary>Turns directory exceptions into short, user-facing messages.</summary>
     internal static string Friendly(Exception ex)

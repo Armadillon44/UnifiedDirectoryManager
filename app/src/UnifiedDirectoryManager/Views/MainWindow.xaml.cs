@@ -69,6 +69,44 @@ public partial class MainWindow : Window
             _vm.SelectedNode = node;
     }
 
+    // --- Right-click ▸ Properties on an OU/container tree node ---
+
+    /// <summary>Suppresses the tree context menu on non-container nodes (cloud sections, "Loading…"),
+    /// so only OU/container/domain nodes offer Properties.</summary>
+    private void OnNodeContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is TreeNodeViewModel { IsContainerNode: true }) return;
+        e.Handled = true;
+    }
+
+    private void OnNodePropertiesClick(object sender, RoutedEventArgs e)
+    {
+        if (_vm is not null) _vm.ShowNodeProperties(NodeFromMenu(sender));
+    }
+
+    private void OnNodeDeleteClick(object sender, RoutedEventArgs e)
+    {
+        if (_vm is not null && NodeFromMenu(sender) is { } node) _ = _vm.DeleteOuAsync(node);
+    }
+
+    private void OnNodeCreateOuClick(object sender, RoutedEventArgs e)
+    {
+        if (_vm is not null && NodeFromMenu(sender) is { } node) _ = _vm.CreateOuUnderAsync(node);
+    }
+
+    /// <summary>Resolves the tree node a context-menu item acts on. The menu item inherits the node as its
+    /// DataContext (the ContextMenu sits on the node's row); if that's ever unset, walk up any nested menu
+    /// items to the owning ContextMenu and read its placement target.</summary>
+    private static TreeNodeViewModel? NodeFromMenu(object sender)
+    {
+        if ((sender as FrameworkElement)?.DataContext is TreeNodeViewModel n) return n;
+        var mi = sender as MenuItem;
+        while (mi?.Parent is MenuItem parentItem) mi = parentItem;
+        return (mi?.Parent as ContextMenu)?.PlacementTarget is FrameworkElement fe
+            ? fe.DataContext as TreeNodeViewModel
+            : null;
+    }
+
     // --- Drop target: dropping list rows onto an OU node moves them there ---
 
     private void OnTreeDragOver(object sender, DragEventArgs e)

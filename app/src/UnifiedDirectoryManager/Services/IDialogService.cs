@@ -92,6 +92,14 @@ public interface IDialogService
     /// <summary>Opens a (non-modal) read-only properties window for a cloud (Entra ID) object.</summary>
     void ShowCloudObjectProperties(CloudObjectRow row);
 
+    /// <summary>Opens the (modal) basic-properties dialog for an OU/container: name, DN (LDAP + canonical),
+    /// description, and the editable accidental-deletion protection flag.</summary>
+    void ShowOuProperties(string distinguishedName, string name);
+
+    /// <summary>Opens the (modal) "new OU" dialog to create an organizational unit under <paramref name="parentDn"/>.
+    /// Returns the new OU's distinguished name if one was created, or null if cancelled.</summary>
+    string? ShowNewOu(string parentDn);
+
     /// <summary>Advanced search builder. Returns the query to run, or null if cancelled.</summary>
     SearchQuery? ShowAdvancedSearch(string defaultBaseDn);
 

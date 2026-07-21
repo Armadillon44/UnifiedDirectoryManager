@@ -274,6 +274,20 @@ public sealed class DialogService : IDialogService
         new CloudObjectPropertiesWindow { DataContext = vm, Owner = Owner }.Show(); // non-modal
     }
 
+    public void ShowOuProperties(string distinguishedName, string name)
+    {
+        var vm = new OuPropertiesViewModel(_directory, distinguishedName, name);
+        new OuPropertiesWindow { DataContext = vm, Title = $"{name} — Properties", Owner = Owner }.ShowDialog(); // modal; loads on Loaded
+    }
+
+    public string? ShowNewOu(string parentDn)
+    {
+        var vm = new NewOuViewModel(_directory, this, parentDn);
+        var win = new NewOuWindow { DataContext = vm, Owner = Owner };
+        vm.Created += () => { win.DialogResult = true; win.Close(); }; // close the modal once the OU is created
+        return win.ShowDialog() == true ? vm.CreatedDistinguishedName : null;
+    }
+
     public SearchQuery? ShowAdvancedSearch(string defaultBaseDn)
     {
         var vm = new AdvancedSearchViewModel(this, _savedSearches);

@@ -8,6 +8,11 @@ the things ADUC never had: reusable **new-user templates**, GUI **advanced searc
 Built with **WPF on .NET 10**. Ships as a **self-contained, single-file `.exe`** for **win-x64** and
 **win-arm64** — no .NET install required on the target machine (Windows 10 / 11).
 
+> **v2.1.1 — OU management from the tree.** Right-click an OU (or the domain root) in the directory tree to
+> **create** a child OU, view/edit its **Properties** (name, DN in both LDAP + canonical form, description, and
+> the *protect from accidental deletion* flag), or **delete** it behind a two-step, type-to-confirm guard. Also
+> fixes the **Member Of** tab so distribution lists show their source as *Exchange* (and can be removed there).
+>
 > **v2.1.0 — Unified group picker + saved searches.**
 > - New-user templates and every create flow now use **one group picker** that spans **on-prem AD, Entra ID
 >   (cloud), and Exchange Online distribution groups** in a single bucket — each is applied through the right
@@ -43,6 +48,8 @@ templates, and logs live under `%APPDATA%\UnifiedDirectoryManager\` and follow y
 - **Users, computers, and groups** — browse the OU tree, filter/sort/search, choose columns, edit on a
   friendly-name UI backed by real `lDAPDisplayName` attributes, and manage group membership. **Every
   write is confirmed with a diff.**
+- **OU management (tree right-click)** — **create** OUs, view/edit **Properties** (DN in LDAP + canonical form,
+  description, accidental-deletion protection), and **delete** an OU behind a two-step, type-to-confirm guard.
 - **New-user templates + Bulk Create** — target OU, UPN suffix, country, token-driven attribute defaults,
   and groups from a **single unified picker** (on-prem AD + Entra cloud + Exchange distribution groups);
   provision many users in one phased pass with per-user passphrases and Temporary Access Passes.
