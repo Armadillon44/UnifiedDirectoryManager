@@ -51,6 +51,11 @@ public interface IDirectoryService
     /// <summary>Loads every populated attribute of one object (for the edit pane / attribute editor).</summary>
     Task<IReadOnlyList<AdAttribute>> LoadObjectAsync(string distinguishedName, CancellationToken cancellationToken = default);
 
+    /// <summary>Reads an object's basic identity for a lightweight properties view: name, the LDAP DN, the
+    /// canonical name (both naming formats), and description. Requests <c>canonicalName</c> explicitly since
+    /// it's a constructed attribute not returned by a wildcard load.</summary>
+    Task<ObjectBasicInfo> GetBasicInfoAsync(string distinguishedName, CancellationToken cancellationToken = default);
+
     /// <summary>Reads whether an object is protected from accidental deletion (Everyone:Deny Delete/DeleteTree).</summary>
     Task<bool> GetDeletionProtectionAsync(string distinguishedName, CancellationToken cancellationToken = default);
 

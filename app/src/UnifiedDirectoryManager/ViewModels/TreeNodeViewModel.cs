@@ -27,6 +27,11 @@ public partial class TreeNodeViewModel : ObservableObject
     public AdObjectType Type => Node.Type;
     public string DistinguishedName => Node.DistinguishedName;
 
+    /// <summary>True for an on-prem OU / container / domain node (the tree's folder nodes) — the targets for the
+    /// right-click Properties action. Cloud (Entra) section nodes and the "Loading…" placeholder are excluded.</summary>
+    public bool IsContainerNode => CloudKind is null && !IsPlaceholder
+        && Type is AdObjectType.OrganizationalUnit or AdObjectType.Container or AdObjectType.Domain;
+
     public ObservableCollection<TreeNodeViewModel> Children { get; } = new();
 
     [ObservableProperty] private bool _isExpanded;

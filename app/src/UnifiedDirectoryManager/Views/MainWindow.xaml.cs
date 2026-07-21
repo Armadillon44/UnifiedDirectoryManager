@@ -69,6 +69,27 @@ public partial class MainWindow : Window
             _vm.SelectedNode = node;
     }
 
+    // --- Right-click ▸ Properties on an OU/container tree node ---
+
+    /// <summary>Suppresses the tree context menu on non-container nodes (cloud sections, "Loading…"),
+    /// so only OU/container/domain nodes offer Properties.</summary>
+    private void OnNodeContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is TreeNodeViewModel { IsContainerNode: true }) return;
+        e.Handled = true;
+    }
+
+    private void OnNodePropertiesClick(object sender, RoutedEventArgs e)
+    {
+        if (_vm is null) return;
+        // The ContextMenu is attached to the TreeViewItem, so the menu item inherits the node as its DataContext;
+        // fall back to the menu's PlacementTarget if that ever isn't set.
+        var node = (sender as FrameworkElement)?.DataContext as TreeNodeViewModel;
+        if (node is null && sender is MenuItem { Parent: ContextMenu cm })
+            node = (cm.PlacementTarget as FrameworkElement)?.DataContext as TreeNodeViewModel;
+        _vm.ShowNodeProperties(node);
+    }
+
     // --- Drop target: dropping list rows onto an OU node moves them there ---
 
     private void OnTreeDragOver(object sender, DragEventArgs e)

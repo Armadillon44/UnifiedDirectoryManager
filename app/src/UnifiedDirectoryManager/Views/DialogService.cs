@@ -274,6 +274,12 @@ public sealed class DialogService : IDialogService
         new CloudObjectPropertiesWindow { DataContext = vm, Owner = Owner }.Show(); // non-modal
     }
 
+    public void ShowOuProperties(string distinguishedName, string name)
+    {
+        var vm = new OuPropertiesViewModel(_directory, distinguishedName, name);
+        new OuPropertiesWindow { DataContext = vm, Title = $"{name} — Properties", Owner = Owner }.ShowDialog(); // modal; loads on Loaded
+    }
+
     public SearchQuery? ShowAdvancedSearch(string defaultBaseDn)
     {
         var vm = new AdvancedSearchViewModel(this, _savedSearches);

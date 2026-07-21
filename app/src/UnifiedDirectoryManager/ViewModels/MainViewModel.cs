@@ -515,6 +515,13 @@ public partial class MainViewModel : ObservableObject
         else StatusMessage = $"Moved {ok} object(s).";
     }
 
+    /// <summary>Opens the basic-properties dialog for an OU/container tree node (right-click ▸ Properties).</summary>
+    public void ShowNodeProperties(TreeNodeViewModel? node)
+    {
+        if (node is null || !node.IsContainerNode || string.IsNullOrWhiteSpace(node.DistinguishedName)) return;
+        _dialogs.ShowOuProperties(node.DistinguishedName, node.Name);
+    }
+
     // --- Scenarios ---
 
     [RelayCommand]

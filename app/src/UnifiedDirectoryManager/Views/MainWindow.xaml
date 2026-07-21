@@ -135,7 +135,15 @@
                     </TreeView.ItemContainerStyle>
                     <TreeView.Resources>
                         <HierarchicalDataTemplate DataType="{x:Type vm:TreeNodeViewModel}" ItemsSource="{Binding Children}">
-                            <StackPanel Orientation="Horizontal">
+                            <!-- ContextMenuOpening suppresses the menu on cloud / "Loading…" nodes (non-container),
+                                 so only OU/container/domain nodes get right-click ▸ Properties. -->
+                            <StackPanel Orientation="Horizontal" Background="Transparent"
+                                        ContextMenuOpening="OnNodeContextMenuOpening">
+                                <StackPanel.ContextMenu>
+                                    <ContextMenu>
+                                        <MenuItem Header="Properties" Click="OnNodePropertiesClick" />
+                                    </ContextMenu>
+                                </StackPanel.ContextMenu>
                                 <TextBlock Text="{Binding Glyph}" Margin="0,0,4,0" />
                                 <TextBlock Text="{Binding Name}" />
                             </StackPanel>

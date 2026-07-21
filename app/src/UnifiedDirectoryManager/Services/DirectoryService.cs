@@ -351,6 +351,33 @@ public sealed class DirectoryService : IDirectoryService
         }, cancellationToken);
     }
 
+    public Task<ObjectBasicInfo> GetBasicInfoAsync(string distinguishedName, CancellationToken cancellationToken = default)
+    {
+        return Task.Run(() =>
+        {
+            using var entry = Required.CreateEntry(distinguishedName);
+            using var searcher = new DirectorySearcher(entry)
+            {
+                SearchScope = SearchScope.Base,
+                Filter = "(objectClass=*)",
+            };
+            // canonicalName is a constructed attribute — it must be requested by name (a "*" load omits it).
+            foreach (var p in new[] { "name", "distinguishedName", "canonicalName", "description" })
+                searcher.PropertiesToLoad.Add(p);
+
+            var result = searcher.FindOne() ?? throw new InvalidOperationException("Object not found: " + distinguishedName);
+            string P(string n) => result.Properties[n].Count > 0 ? result.Properties[n][0]?.ToString() ?? string.Empty : string.Empty;
+
+            var dn = P("distinguishedName");
+            var desc = P("description");
+            return new ObjectBasicInfo(
+                Name: P("name"),
+                DistinguishedName: string.IsNullOrEmpty(dn) ? distinguishedName : dn,
+                CanonicalName: P("canonicalName"),
+                Description: string.IsNullOrWhiteSpace(desc) ? null : desc);
+        }, cancellationToken);
+    }
+
     // ---------------------------------------------------------------- Writes
 
     public Task ApplyChangesAsync(string distinguishedName, IReadOnlyList<PendingChange> changes, CancellationToken cancellationToken = default)
