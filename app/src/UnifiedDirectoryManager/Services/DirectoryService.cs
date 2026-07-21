@@ -369,12 +369,18 @@ public sealed class DirectoryService : IDirectoryService
             string P(string n) => result.Properties[n].Count > 0 ? result.Properties[n][0]?.ToString() ?? string.Empty : string.Empty;
 
             var dn = P("distinguishedName");
-            var desc = P("description");
+            // description is multi-valued in the schema (though edited as one line) — return every value so the
+            // caller can preserve the unshown ones on save.
+            var descValues = result.Properties["description"].Cast<object?>()
+                .Select(v => v?.ToString() ?? string.Empty)
+                .Where(s => s.Length > 0)
+                .ToList();
             return new ObjectBasicInfo(
                 Name: P("name"),
                 DistinguishedName: string.IsNullOrEmpty(dn) ? distinguishedName : dn,
                 CanonicalName: P("canonicalName"),
-                Description: string.IsNullOrWhiteSpace(desc) ? null : desc);
+                Description: descValues.Count > 0 ? descValues[0] : null,
+                DescriptionValues: descValues);
         }, cancellationToken);
     }
 
@@ -415,17 +421,26 @@ public sealed class DirectoryService : IDirectoryService
 
                 case ChangeOp.Set:
                     if (change.Values.Count == 0)
-                        entry.Properties[change.LdapName].Clear();
+                    {
+                        // Empty Set == clear; skip when already absent so we don't emit a delete for a
+                        // non-existent attribute (which a DC can reject with noSuchAttribute).
+                        if (entry.Properties[change.LdapName].Count > 0) { entry.Properties[change.LdapName].Clear(); needCommit = true; }
+                    }
                     else if (change.Values.Count == 1)
+                    {
                         entry.Properties[change.LdapName].Value = change.Values[0];
+                        needCommit = true;
+                    }
                     else
+                    {
                         entry.Properties[change.LdapName].Value = change.Values.ToArray();
-                    needCommit = true;
+                        needCommit = true;
+                    }
                     break;
 
                 case ChangeOp.Clear:
-                    entry.Properties[change.LdapName].Clear();
-                    needCommit = true;
+                    // Idempotent: clearing an already-absent attribute is a no-op, not a modify-delete error.
+                    if (entry.Properties[change.LdapName].Count > 0) { entry.Properties[change.LdapName].Clear(); needCommit = true; }
                     break;
 
                 case ChangeOp.Enable:

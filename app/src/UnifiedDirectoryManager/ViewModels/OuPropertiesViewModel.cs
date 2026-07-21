@@ -16,6 +16,10 @@ public partial class OuPropertiesViewModel : ObservableObject
     private readonly IDirectoryService _directory;
     private readonly string _dn;
     private bool _originalProtected;
+    private string _originalDescription = string.Empty;
+    /// <summary>Description values beyond the first (the dialog shows/edits only the first, but description is
+    /// multi-valued in the schema) — carried through a save so unseen values aren't silently destroyed.</summary>
+    private IReadOnlyList<string> _descriptionExtras = Array.Empty<string>();
     private bool _loaded;
 
     [ObservableProperty] private string _name = string.Empty;
@@ -23,12 +27,16 @@ public partial class OuPropertiesViewModel : ObservableObject
     [ObservableProperty] private string _canonicalName = string.Empty;
     [ObservableProperty] private string _description = string.Empty;
     [ObservableProperty] private bool _protectFromDeletion;
-    [ObservableProperty] private bool _isBusy;
+    [ObservableProperty] [NotifyPropertyChangedFor(nameof(CanEdit))] private bool _isBusy;
     [ObservableProperty] private string _status = string.Empty;
 
-    /// <summary>True once the original state has been read — the Save button gates on it so a write can never
-    /// precede the load (which would otherwise risk toggling protection from a default value).</summary>
-    [ObservableProperty] private bool _isLoaded;
+    /// <summary>True once the original state has been read — gates Save so a write can never precede the load
+    /// (which would otherwise risk toggling protection from a default value).</summary>
+    [ObservableProperty] [NotifyPropertyChangedFor(nameof(CanEdit))] private bool _isLoaded;
+
+    /// <summary>Editable-fields gate: loaded and not mid-save. Disabling the inputs during the async write closes
+    /// the window where a toggle/edit could desync the saved baseline or be silently overwritten on completion.</summary>
+    public bool CanEdit => IsLoaded && !IsBusy;
 
     public OuPropertiesViewModel(IDirectoryService directory, string distinguishedName, string name)
     {
@@ -51,6 +59,8 @@ public partial class OuPropertiesViewModel : ObservableObject
             DistinguishedName = info.DistinguishedName;
             CanonicalName = string.IsNullOrWhiteSpace(info.CanonicalName) ? CanonicalFromDn(info.DistinguishedName) : info.CanonicalName;
             Description = info.Description ?? string.Empty;
+            _originalDescription = Description;
+            _descriptionExtras = info.DescriptionValues.Count > 1 ? info.DescriptionValues.Skip(1).ToList() : Array.Empty<string>();
 
             try { _originalProtected = await _directory.GetDeletionProtectionAsync(_dn); }
             catch { _originalProtected = false; } // unreadable DACL: show as unprotected rather than failing the load
@@ -68,18 +78,39 @@ public partial class OuPropertiesViewModel : ObservableObject
     private async Task SaveAsync()
     {
         if (!_loaded) return;
-        if (ProtectFromDeletion == _originalProtected) { Status = "No changes to apply."; return; }
+
+        // Snapshot the intended values before the async round-trip so a toggle/edit during it can't desync the
+        // baseline from what was actually written. Collapse newlines — description is single-line by convention.
+        var protect = ProtectFromDeletion;
+        var desc = Regex.Replace(Description, @"[\r\n]+", " ").Trim();
+
+        var changes = new List<PendingChange>();
+
+        // Description (compared trimmed so pure-whitespace edits don't trigger a spurious write). Carry any extra
+        // (unshown) values through, so editing/clearing the visible value never silently drops them.
+        if (!string.Equals(desc, _originalDescription.Trim(), StringComparison.Ordinal))
+        {
+            var values = new List<string>();
+            if (desc.Length > 0) values.Add(desc);
+            values.AddRange(_descriptionExtras);
+            changes.Add(values.Count == 0
+                ? new PendingChange { Op = ChangeOp.Clear, LdapName = "description", FriendlyName = "Description" }
+                : new PendingChange { Op = ChangeOp.Set, LdapName = "description", FriendlyName = "Description", Values = values });
+        }
+
+        if (protect != _originalProtected)
+            changes.Add(new PendingChange { Op = protect ? ChangeOp.Protect : ChangeOp.Unprotect });
+
+        if (changes.Count == 0) { Status = "No changes to apply."; return; }
+
         IsBusy = true;
         try
         {
-            await _directory.ApplyChangesAsync(_dn, new[]
-            {
-                new PendingChange { Op = ProtectFromDeletion ? ChangeOp.Protect : ChangeOp.Unprotect },
-            });
-            _originalProtected = ProtectFromDeletion;
-            Status = ProtectFromDeletion
-                ? "Protected from accidental deletion."
-                : "Accidental-deletion protection removed.";
+            await _directory.ApplyChangesAsync(_dn, changes);
+            _originalProtected = protect;
+            _originalDescription = desc;
+            Description = desc; // reflect the saved (normalized) value (the field is disabled during the save)
+            Status = "Changes saved.";
         }
         catch (Exception ex) { Status = "Save failed: " + DirectoryService.Friendly(ex); }
         finally { IsBusy = false; }

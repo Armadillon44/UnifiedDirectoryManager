@@ -10,4 +10,5 @@ public sealed record ObjectBasicInfo(
     string Name,
     string DistinguishedName,
     string CanonicalName,
-    string? Description);
+    string? Description,
+    IReadOnlyList<string> DescriptionValues);
