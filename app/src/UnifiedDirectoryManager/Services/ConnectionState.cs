@@ -31,7 +31,9 @@ public sealed class ConnectionState
     /// <summary>Builds an "LDAP://server[:port]/DN" path, or the server root when dn is null.</summary>
     public string LdapPath(string? dn)
     {
-        var tail = string.IsNullOrEmpty(dn) ? string.Empty : "/" + dn;
+        // '/' is legal inside a DN but is the ADsPath component separator, so an unescaped '/' (e.g. an OU named
+        // "Sales/Marketing") would misparse the LDAP:// path. Escape it to '\/' in the DN portion only.
+        var tail = string.IsNullOrEmpty(dn) ? string.Empty : "/" + dn.Replace("/", "\\/");
         return $"LDAP://{Server}{Port}{tail}";
     }
 

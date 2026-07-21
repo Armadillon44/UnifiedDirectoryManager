@@ -131,6 +131,7 @@
                     <TreeView.ItemContainerStyle>
                         <Style TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}">
                             <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+                            <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
                         </Style>
                     </TreeView.ItemContainerStyle>
                     <TreeView.Resources>
@@ -141,6 +142,8 @@
                                         ContextMenuOpening="OnNodeContextMenuOpening">
                                 <StackPanel.ContextMenu>
                                     <ContextMenu>
+                                        <MenuItem Header="Create OU here…" Click="OnNodeCreateOuClick"
+                                                  Visibility="{Binding CanCreateChildOu, Converter={StaticResource BoolToVis}}" />
                                         <MenuItem Header="Properties" Click="OnNodePropertiesClick" />
                                         <Separator Visibility="{Binding IsOrganizationalUnit, Converter={StaticResource BoolToVis}}" />
                                         <!-- Two-level guard: Delete only reveals "Yes, I'm sure…", which then requires

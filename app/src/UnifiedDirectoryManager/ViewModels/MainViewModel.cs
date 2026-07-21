@@ -522,6 +522,28 @@ public partial class MainViewModel : ObservableObject
         _dialogs.ShowOuProperties(node.DistinguishedName, node.Name);
     }
 
+    /// <summary>Creates a new OU under the right-clicked container (right-click ▸ "Create OU here…"), then refreshes
+    /// the parent in the tree, expands it, and selects the new OU.</summary>
+    public async Task CreateOuUnderAsync(TreeNodeViewModel? node)
+    {
+        if (node is null || !node.CanCreateChildOu || string.IsNullOrWhiteSpace(node.DistinguishedName)) return;
+
+        var newDn = _dialogs.ShowNewOu(node.DistinguishedName);
+        if (string.IsNullOrWhiteSpace(newDn)) return; // cancelled
+
+        // Reload the parent's children so the new OU appears, expand to show it, and select it.
+        node.Invalidate();
+        await node.EnsureChildrenAsync();
+        node.IsExpanded = true;
+        var created = node.Children.FirstOrDefault(c => string.Equals(c.DistinguishedName, newDn, StringComparison.OrdinalIgnoreCase));
+        if (created is not null)
+        {
+            SelectedNode = created;      // loads the new OU's contents in the list pane
+            created.IsSelected = true;   // and highlights it in the tree (two-way IsSelected binding)
+        }
+        StatusMessage = created is not null ? $"Created OU “{created.Name}”." : "Created OU.";
+    }
+
     /// <summary>Permanently deletes an OU (right-click ▸ Delete ▸ "Yes, I'm sure…"), gated by a protection check
     /// and a type-the-random-string confirmation. Deletes the whole subtree, so everything under the OU goes too.</summary>
     private bool _deleting; // guards the delete flow against a second launch during the async protection check

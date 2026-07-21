@@ -618,6 +618,50 @@ public sealed class DirectoryService : IDirectoryService
         }, cancellationToken);
     }
 
+    public Task<(string Dn, string? ProtectionError)> CreateOrganizationalUnitAsync(
+        string parentDn, string name, bool protectFromDeletion, string? description,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.Run<(string, string?)>(() =>
+        {
+            var ouName = name?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(ouName))
+                throw new InvalidOperationException("An OU name is required.");
+
+            string newDn;
+            using (var parent = Required.CreateEntry(parentDn))
+            {
+                var ou = parent.Children.Add($"OU={EscapeRdn(ouName)}", "organizationalUnit");
+                try
+                {
+                    var desc = description?.Trim();
+                    if (!string.IsNullOrWhiteSpace(desc)) ou.Properties["description"].Value = desc;
+                    ou.CommitChanges();
+                    // Read back the canonical DN; the fallback uses the escaped RDN so it stays a valid DN.
+                    newDn = ou.Properties["distinguishedName"].Value?.ToString() ?? $"OU={EscapeRdn(ouName)},{parentDn}";
+                }
+                finally { ou.Dispose(); }
+            }
+
+            // The OU now exists. Accidental-deletion protection is a SEPARATE DACL write (reusing the shared
+            // apply path) that can fail on its own — e.g. Create-Child granted but WriteDacl denied. Treat that
+            // as a non-fatal warning so we never report failure over an OU that was actually created.
+            string? protectionError = null;
+            if (protectFromDeletion)
+            {
+                try { ApplyChangesCore(newDn, new[] { new PendingChange { Op = ChangeOp.Protect } }); }
+                catch (Exception ex)
+                {
+                    protectionError = Friendly(ex);
+                    AppLog.Instance.Warn($"Created OU {newDn} but could not apply accidental-deletion protection: {protectionError}");
+                }
+            }
+            AppLog.Instance.Info($"Created OU {newDn}"
+                + (protectFromDeletion && protectionError is null ? " (protected from accidental deletion)." : "."));
+            return (newDn, protectionError);
+        }, cancellationToken);
+    }
+
     public async Task<BulkResult> BulkApplyAsync(
         IReadOnlyList<AdObjectRow> targets, IReadOnlyList<PendingChange> changes,
         IProgress<int>? progress = null, CancellationToken cancellationToken = default)
@@ -956,8 +1000,12 @@ public sealed class DirectoryService : IDirectoryService
             : Enumerable.Empty<string>();
 
     private static string EscapeRdn(string value) =>
+        // '\' first so the escapes we add below aren't doubled. '/' isn't an RFC 4514 DN special, but it IS the
+        // ADsPath component separator, so it must be escaped for the ADSI child bind (ADSI un-escapes it back,
+        // so the object is still named literally, e.g. "Sales/Marketing").
         value.Replace("\\", "\\\\").Replace(",", "\\,").Replace("+", "\\+").Replace("\"", "\\\"")
-             .Replace("<", "\\<").Replace(">", "\\>").Replace(";", "\\;").Replace("=", "\\=").Replace("#", "\\#");
+             .Replace("<", "\\<").Replace(">", "\\>").Replace(";", "\\;").Replace("=", "\\=").Replace("#", "\\#")
+             .Replace("/", "\\/");
 
     /// <summary>Turns directory exceptions into short, user-facing messages.</summary>
     internal static string Friendly(Exception ex)

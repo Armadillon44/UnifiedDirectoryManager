@@ -36,9 +36,18 @@ public partial class TreeNodeViewModel : ObservableObject
     /// which is offered for OUs but never for containers or the domain root.</summary>
     public bool IsOrganizationalUnit => CloudKind is null && !IsPlaceholder && Type == AdObjectType.OrganizationalUnit;
 
+    /// <summary>True where a child OU can be created — under the domain root or another OU (not under plain
+    /// containers like CN=Users, matching what AD/ADUC allow). Gates the "Create OU here" action.</summary>
+    public bool CanCreateChildOu => CloudKind is null && !IsPlaceholder
+        && Type is AdObjectType.Domain or AdObjectType.OrganizationalUnit;
+
     public ObservableCollection<TreeNodeViewModel> Children { get; } = new();
 
     [ObservableProperty] private bool _isExpanded;
+
+    /// <summary>Two-way bound to the TreeViewItem's IsSelected, so the view model can select a node in the tree
+    /// (e.g. highlight a just-created OU), not just react to the user's clicks.</summary>
+    [ObservableProperty] private bool _isSelected;
 
     /// <summary>Whether this node is ticked in the multi-select OU picker (ignored elsewhere).</summary>
     [ObservableProperty] private bool _isChecked;
