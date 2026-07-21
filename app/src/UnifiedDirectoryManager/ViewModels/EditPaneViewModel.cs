@@ -12,12 +12,14 @@ namespace UnifiedDirectoryManager.ViewModels;
 /// membership can be removed; on-prem-synced cloud groups will be rejected by Graph and reported per-group).</summary>
 public sealed partial class GroupMembership : ObservableObject
 {
-    public GroupMembership(string name, string dn, string source, bool isCloud, string kind = "")
+    public GroupMembership(string name, string dn, string source, bool isCloud, string kind = "", bool isExchange = false, string? smtp = null)
     {
         Name = name;
         Dn = dn;
         Source = source;
         IsCloud = isCloud;
+        IsExchange = isExchange;
+        Smtp = smtp;
         _kind = kind;
     }
 
@@ -25,6 +27,12 @@ public sealed partial class GroupMembership : ObservableObject
     public string Dn { get; }
     public string Source { get; }
     public bool IsCloud { get; }
+
+    /// <summary>True for an Exchange-managed cloud group (distribution list / mail-enabled security group):
+    /// membership must be changed via the Exchange module, not Graph. <see cref="Smtp"/> is its primary SMTP,
+    /// the identity Remove-DistributionGroupMember expects.</summary>
+    public bool IsExchange { get; }
+    public string? Smtp { get; }
 
     /// <summary>Friendly group classification. On-prem: scope+category from the groupType bitmask
     /// (e.g. "Security · Global", "Distribution · Universal") — filled asynchronously after load.
@@ -461,7 +469,8 @@ public partial class EditPaneViewModel : ObservableObject
         if (groups.Count == 0) return;
 
         var onPrem = groups.Where(g => !g.IsCloud).ToList();
-        var cloud = groups.Where(g => g.IsCloud).ToList();
+        var cloud = groups.Where(g => g.IsCloud && !g.IsExchange).ToList();   // Entra (Graph) groups
+        var exchange = groups.Where(g => g.IsExchange).ToList();               // distribution / mail-enabled security
 
         var heading = groups.Count == 1
             ? $"Remove “{Title}” from this group?"
@@ -482,7 +491,7 @@ public partial class EditPaneViewModel : ObservableObject
                 await _directory.ApplyChangesAsync(_dn!, new[] { change });
             }
 
-            // Cloud groups: resolve this object's Entra id, then remove it from each (the cloud group id is the row's Dn).
+            // Cloud (Graph) groups: resolve this object's Entra id, then remove it from each (the group id is the row's Dn).
             var cloudErrors = new List<string>();
             if (cloud.Count > 0)
             {
@@ -497,10 +506,25 @@ public partial class EditPaneViewModel : ObservableObject
                     }
             }
 
+            // Exchange-managed groups (distribution / mail-enabled security): Graph can't modify these, so use the
+            // Exchange module. The member identity is this user's UPN; the group is addressed by its primary SMTP.
+            if (exchange.Count > 0)
+            {
+                if (string.IsNullOrWhiteSpace(_cloudUpn))
+                    cloudErrors.Add("No mailbox identity for this object — Exchange distribution groups were skipped.");
+                else
+                    foreach (var g in exchange)
+                    {
+                        var groupId = !string.IsNullOrWhiteSpace(g.Smtp) ? g.Smtp! : g.Name;
+                        try { await _exchange.RemoveDistributionGroupMemberAsync(groupId, _cloudUpn!); }
+                        catch (Exception ex) { cloudErrors.Add($"{g.Name} (Exchange): {ex.Message}"); }
+                    }
+            }
+
             await ReloadAsync();
             ObjectChanged?.Invoke();
             if (cloudErrors.Count > 0)
-                _onError("Some cloud group removals didn't complete:\n" + string.Join("\n", cloudErrors));
+                _onError("Some cloud / Exchange group removals didn't complete:\n" + string.Join("\n", cloudErrors));
         }
         catch (Exception ex) { _onError(DirectoryService.Friendly(ex)); }
         finally { IsBusy = false; }
@@ -526,7 +550,11 @@ public partial class EditPaneViewModel : ObservableObject
             if (!string.Equals(_dn, forDn, StringComparison.OrdinalIgnoreCase)) return; // selection changed mid-load
             foreach (var g in groups.Where(g => !g.IsSynced))
                 if (MemberOf.All(m => !(m.IsCloud && string.Equals(m.Dn, g.Id, StringComparison.OrdinalIgnoreCase))))
-                    MemberOf.Add(new GroupMembership(g.DisplayName, g.Id, "Cloud", isCloud: true, kind: g.KindLabel));
+                    // Distribution lists / mail-enabled security groups are Exchange-managed — label their source
+                    // "Exchange" (matching the unified group picker), not the generic "Cloud", and carry the SMTP
+                    // so a removal from this tab can go through the Exchange module (Graph can't modify them).
+                    MemberOf.Add(new GroupMembership(g.DisplayName, g.Id, g.IsExchangeManaged ? "Exchange" : "Cloud",
+                        isCloud: true, kind: g.KindLabel, isExchange: g.IsExchangeManaged, smtp: g.Mail));
         }
         catch (Exception ex) { AppLog.Instance.Warn("Could not load cloud group memberships: " + ex.Message); }
     }
