@@ -84,6 +84,12 @@ public partial class EditPaneViewModel : ObservableObject
 
     private readonly List<AdAttribute> _editableFields = new();
     private string? _pendingManagerDn; // null = unchanged, "" = clear, otherwise new DN
+    private string? _pendingManagedByDn; // groups: null = unchanged, "" = clear, otherwise new DN
+
+    // Group scope/category, decoded from the groupType bitmask and edited via the two General-tab combos.
+    private GroupScope _originalGroupScope;
+    private GroupCategory _originalGroupCategory;
+    private bool _groupTypeKnown; // false when groupType is missing/unparseable (e.g. a built-in group)
 
     [ObservableProperty] private string _title = "No object selected";
     [ObservableProperty] private bool _hasObject;
@@ -96,6 +102,28 @@ public partial class EditPaneViewModel : ObservableObject
     /// <summary>Users who report to the selected user (the <c>directReports</c> back-link of <c>manager</c>).</summary>
     public ObservableCollection<DirectReportRow> DirectReports { get; } = new();
     [ObservableProperty] private string _managerDisplay = "(none)";
+
+    /// <summary>Groups: the object that manages/owns the group (<c>managedBy</c>), edited via a picker.</summary>
+    [ObservableProperty] private string _managedByDisplay = "(none)";
+
+    // Group scope + category, written back as the groupType bitmask. ShowGroupType is false when groupType
+    // couldn't be decoded (built-in/system groups), so the editor isn't offered for something we can't safely set.
+    [ObservableProperty] private GroupScope _groupScope;
+    [ObservableProperty] private GroupCategory _groupCategory;
+    [ObservableProperty] private bool _showGroupType;
+
+    public IReadOnlyList<OptionItem<GroupScope>> GroupScopeOptions { get; } = new[]
+    {
+        new OptionItem<GroupScope>(GroupScope.Global, "Global"),
+        new OptionItem<GroupScope>(GroupScope.DomainLocal, "Domain local"),
+        new OptionItem<GroupScope>(GroupScope.Universal, "Universal"),
+    };
+
+    public IReadOnlyList<OptionItem<GroupCategory>> GroupCategoryOptions { get; } = new[]
+    {
+        new OptionItem<GroupCategory>(GroupCategory.Security, "Security"),
+        new OptionItem<GroupCategory>(GroupCategory.Distribution, "Distribution"),
+    };
 
     /// <summary>The object's parent container/OU DN (shown in the General tab; changed via Move…).</summary>
     [ObservableProperty] private string _location = string.Empty;
@@ -152,6 +180,10 @@ public partial class EditPaneViewModel : ObservableObject
         AllAttributes.Clear();
         _editableFields.Clear();
         _pendingManagerDn = null;
+        _pendingManagedByDn = null;
+        ManagedByDisplay = "(none)";
+        _groupTypeKnown = false;
+        ShowGroupType = false;
         _originalProtected = false;
         IsProtectedFromDeletion = false;
         ShowCloudTab = false;
@@ -177,7 +209,7 @@ public partial class EditPaneViewModel : ObservableObject
 
             General.Clear(); Account.Clear(); Address.Clear(); Organization.Clear(); Email.Clear();
             ProxyAddresses.Clear(); MemberOf.Clear(); Members.Clear(); DirectReports.Clear(); AllAttributes.Clear();
-            _editableFields.Clear(); _pendingManagerDn = null;
+            _editableFields.Clear(); _pendingManagerDn = null; _pendingManagedByDn = null;
 
             var (general, account, address, org, email) = FieldLayout(type);
             Populate(General, general, map);
@@ -201,6 +233,25 @@ public partial class EditPaneViewModel : ObservableObject
             // Manager (DN-valued, edited via picker)
             ManagerDisplay = map.TryGetValue("manager", out var mgr) && mgr.DisplayValues.Count > 0
                 ? mgr.DisplayValues[0] : "(none)";
+
+            // Managed by (groups; DN-valued, edited via picker)
+            ManagedByDisplay = map.TryGetValue("managedBy", out var mgdBy) && mgdBy.DisplayValues.Count > 0
+                ? mgdBy.DisplayValues[0] : "(none)";
+
+            // Group scope + category, decoded from the groupType bitmask. Built-in/system groups whose groupType
+            // carries no recognised scope bit aren't offered the editor (we couldn't write a safe value back).
+            _groupTypeKnown = false;
+            if (type == AdObjectType.Group
+                && map.TryGetValue("groupType", out var gt) && gt.RawValues.Count > 0
+                && GroupTypeClassifier.TryParse(gt.RawValues[0], out var loadedScope, out var loadedCategory))
+            {
+                _originalGroupScope = loadedScope;
+                _originalGroupCategory = loadedCategory;
+                GroupScope = loadedScope;
+                GroupCategory = loadedCategory;
+                _groupTypeKnown = true;
+            }
+            ShowGroupType = _groupTypeKnown;
 
             // Direct reports (the read-only directReports back-link; add/remove writes the report's manager)
             if (map.TryGetValue("directReports", out var reports))
@@ -308,6 +359,8 @@ public partial class EditPaneViewModel : ObservableObject
         {
             if (attr.IsReadOnly) continue;
             if (attr.LdapName.Equals("manager", StringComparison.OrdinalIgnoreCase)) continue;
+            // On a group, managedBy is owned by the General-tab picker (as manager is for a user).
+            if (IsGroup && attr.LdapName.Equals("managedBy", StringComparison.OrdinalIgnoreCase)) continue;
             if (attr.LdapName.Equals("accountExpires", StringComparison.OrdinalIgnoreCase)) continue;
 
             if (attr.IsMultiValued)
@@ -329,6 +382,37 @@ public partial class EditPaneViewModel : ObservableObject
             byLdap["manager"] = string.IsNullOrEmpty(_pendingManagerDn)
                 ? new PendingChange { Op = ChangeOp.Clear, LdapName = "manager", FriendlyName = "Manager" }
                 : new PendingChange { Op = ChangeOp.Set, LdapName = "manager", FriendlyName = "Manager", Values = { _pendingManagerDn } };
+        }
+
+        // Managed by (groups, via picker)
+        if (_pendingManagedByDn is not null)
+        {
+            byLdap["managedBy"] = string.IsNullOrEmpty(_pendingManagedByDn)
+                ? new PendingChange { Op = ChangeOp.Clear, LdapName = "managedBy", FriendlyName = "Managed by" }
+                : new PendingChange { Op = ChangeOp.Set, LdapName = "managedBy", FriendlyName = "Managed by", Values = { _pendingManagedByDn } };
+        }
+
+        // Group scope / category → the groupType bitmask. groupType is flagged IsInteger, so the write is routed
+        // through the LDAP integer path (ModifyViaLdap) rather than DirectoryEntry, which is what this attribute needs.
+        if (_groupTypeKnown && (GroupScope != _originalGroupScope || GroupCategory != _originalGroupCategory))
+        {
+            // AD has no single step between Global and Domain local — reject it here with an explanation rather
+            // than letting the DC return a bare constraint violation. Everything else is left to AD's own rules.
+            if (GroupTypeClassifier.IsIllegalScopeChange(_originalGroupScope, GroupScope))
+            {
+                _dialogs.Alert("Group scope",
+                    $"Active Directory can't change a group directly from {GroupTypeClassifier.Label(_originalGroupScope)} " +
+                    $"to {GroupTypeClassifier.Label(GroupScope)}.\n\n" +
+                    "Change it to Universal and save, then change it again to the scope you want.");
+                return;
+            }
+            byLdap["groupType"] = new PendingChange
+            {
+                Op = ChangeOp.Set,
+                LdapName = "groupType",
+                FriendlyName = "Group type",
+                Values = { GroupTypeClassifier.Build(GroupScope, GroupCategory).ToString(System.Globalization.CultureInfo.InvariantCulture) },
+            };
         }
 
         // Account expiration
@@ -370,10 +454,13 @@ public partial class EditPaneViewModel : ObservableObject
         {
             if (attr.IsReadOnly) continue;
             if (attr.LdapName.Equals("manager", StringComparison.OrdinalIgnoreCase)) continue;
+            if (IsGroup && attr.LdapName.Equals("managedBy", StringComparison.OrdinalIgnoreCase)) continue;
             if (attr.LdapName.Equals("accountExpires", StringComparison.OrdinalIgnoreCase)) continue;
             if (attr.IsMultiValued ? attr.MultiValueEdited : attr.IsDirty) return true;
         }
         if (_pendingManagerDn is not null) return true;
+        if (_pendingManagedByDn is not null) return true;
+        if (_groupTypeKnown && (GroupScope != _originalGroupScope || GroupCategory != _originalGroupCategory)) return true;
         if (BuildAccountExpiresChange() is not null) return true;
         if (BuildCountryChanges().Any()) return true;
         if (IsProtectedFromDeletion != _originalProtected) return true;
@@ -677,6 +764,24 @@ public partial class EditPaneViewModel : ObservableObject
         ManagerDisplay = "(none — pending save)";
     }
 
+    /// <summary>Picks the group's <c>managedBy</c> owner. AD allows a user, group or computer here, so the picker
+    /// is opened across all of them rather than users only.</summary>
+    [RelayCommand]
+    private void PickManagedBy()
+    {
+        var picked = _dialogs.PickObjects("Select who manages this group", AdObjectType.Unknown, multiSelect: false);
+        if (picked is null || picked.Count == 0) return;
+        _pendingManagedByDn = picked[0].DistinguishedName;
+        ManagedByDisplay = picked[0].Name + " (pending save)";
+    }
+
+    [RelayCommand]
+    private void ClearManagedBy()
+    {
+        _pendingManagedByDn = string.Empty;
+        ManagedByDisplay = "(none — pending save)";
+    }
+
     /// <summary>Adds direct reports by setting each picked user's <c>manager</c> to this user. Applied immediately
     /// (it writes other objects, not the pane's pending edits), then reloads to refresh the directReports list.</summary>
     [RelayCommand]
@@ -950,6 +1055,8 @@ public partial class EditPaneViewModel : ObservableObject
             if (meta.IsReadOnly || present.Contains(meta.LdapName)) continue;
             if (meta.LdapName.StartsWith("msExch", StringComparison.OrdinalIgnoreCase)) continue;
             if (meta.LdapName.Equals("manager", StringComparison.OrdinalIgnoreCase)) continue;
+            // On a group, managedBy is edited by the General-tab picker, so don't offer a raw DN box for it too.
+            if (type == AdObjectType.Group && meta.LdapName.Equals("managedBy", StringComparison.OrdinalIgnoreCase)) continue;
             if (!IsRelevantCategory(meta.Category, type)) continue;
 
             shown.Add(new AdAttribute
@@ -990,8 +1097,10 @@ public partial class EditPaneViewModel : ObservableObject
 
         if (type == AdObjectType.Group)
         {
+            // groupType is deliberately absent: it's shown/edited as the Scope + Type combos on the General tab
+            // (a raw signed bitmask like -2147483646 is meaningless to an operator).
             return (
-                new[] { "cn", "sAMAccountName", "displayName", "description", "mail", "info", "groupType" },
+                new[] { "cn", "sAMAccountName", "displayName", "description", "mail", "info" },
                 Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>());
         }
 

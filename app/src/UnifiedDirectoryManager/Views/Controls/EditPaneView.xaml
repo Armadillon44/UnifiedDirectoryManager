@@ -69,6 +69,44 @@
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="6">
                             <ItemsControl ItemsSource="{Binding General}" ItemTemplate="{StaticResource FieldRow}" />
+
+                            <!-- Groups: scope + category (written back as the groupType bitmask) and Managed by. -->
+                            <StackPanel Visibility="{Binding IsGroup, Converter={StaticResource BoolToVis}}">
+                                <Grid Margin="0,2" Visibility="{Binding ShowGroupType, Converter={StaticResource BoolToVis}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="160" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Group scope" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" />
+                                    <ComboBox Grid.Column="1" ItemsSource="{Binding GroupScopeOptions}" DisplayMemberPath="Label"
+                                              SelectedValuePath="Value" SelectedValue="{Binding GroupScope}"
+                                              ToolTip="Global, Domain local or Universal. Active Directory can't convert directly between Global and Domain local — go via Universal." />
+                                </Grid>
+                                <Grid Margin="0,2" Visibility="{Binding ShowGroupType, Converter={StaticResource BoolToVis}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="160" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Group type" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" />
+                                    <ComboBox Grid.Column="1" ItemsSource="{Binding GroupCategoryOptions}" DisplayMemberPath="Label"
+                                              SelectedValuePath="Value" SelectedValue="{Binding GroupCategory}"
+                                              ToolTip="Security groups can be granted permissions; distribution groups are for mail only." />
+                                </Grid>
+                                <Grid Margin="0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="160" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Managed by" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" />
+                                    <TextBox Grid.Column="1" Text="{Binding ManagedByDisplay, Mode=OneWay}" IsReadOnly="True" />
+                                    <StackPanel Grid.Column="2" Orientation="Horizontal">
+                                        <Button Content="Pick…" Command="{Binding PickManagedByCommand}" />
+                                        <Button Content="Clear" Command="{Binding ClearManagedByCommand}" />
+                                    </StackPanel>
+                                </Grid>
+                            </StackPanel>
+
                             <Grid Margin="0,2">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="160" />
