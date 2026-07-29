@@ -53,10 +53,49 @@ Built with WPF on .NET 10. Ships as a self-contained single-file `.exe` for **wi
   - **Users:** General, Account, Address, Organization (with a **Manager** picker), Member Of, Email
     (`mail` + proxy addresses), Attribute Editor. The header has **Enable / Disable**, **Reset
     Password…**, and **Unlock** buttons; the Account tab shows a read-only **Lockout status** line.
-  - **Groups:** General, **Members** (view all members; add any users/computers/groups via the picker,
-    or remove selected), Member Of, Attribute Editor.
+  - **Groups:** General (including **Group scope**, **Group category**, and a ***Managed by*** picker),
+    **Members** (view all members; add any users/computers/groups via the picker, or remove selected),
+    Member Of, Attribute Editor.
   - **Computers:** General, Member Of, Attribute Editor.
 - **Toolbar** — New User, Templates, Advanced Search, Bulk Edit, Refresh, dock toggle.
+
+### Groups: create, modify, delete
+
+**Create** — right-click an OU (or the domain root) in the tree and choose **New Group here…**, or use
+**File ▸ New Group** and pick the OU with the **Browse…** button. The dialog takes the group name, a
+**logon name** derived from it (editable; group names keep their case, spaces, and hyphens rather than
+being flattened the way user logon names are), **scope** (Global / Domain local / Universal), **category**
+(Security / Distribution), description, an optional ***Managed by***, initial **members**, and *protect
+from accidental deletion*.
+
+The group is created by the first write, so the follow-up steps (*Managed by*, members, protection) are
+each reported as a **warning** if they fail rather than being treated as a failed create — the group
+exists either way, and the message says exactly which step didn't land.
+
+**Modify** — the **General** tab exposes **Group scope** and **Group category** as dropdowns, plus a
+***Managed by*** picker. Changing Global ↔ Domain local directly is rejected up front with an
+explanation (Active Directory requires an intermediate hop through Universal), rather than being sent to
+the directory to fail.
+
+**Delete** — select one or more groups in the list and use **Edit ▸ Delete Selected…** or the row
+right-click. Deleting a group is guarded the same way as an OU: a confirmation listing exactly what will
+be removed, then a **type-to-confirm** phrase.
+
+Before anything is deleted, each group is written to a **record** in the operation-log folder:
+
+- `group-<name>-<timestamp>.txt` — every populated attribute, with distinguished names alongside the
+  friendly names for `memberOf` / `managedBy` (a display name alone can't be restored).
+- `group-<name>-<timestamp>-members.csv` — the full membership including each member's **DN**, which is
+  what the pickers act on, so the membership can be re-added later.
+
+If the member list can't be confirmed complete — LDAP can't distinguish "this group has no members" from
+"you may not read this group's members", because the server omits the attribute in both cases — the
+record is stamped with a warning in **both** files instead of recording an authoritative-looking zero. A
+group whose record can't be written is skipped rather than deleted.
+
+Large groups are read correctly: Active Directory returns at most ~1500 values per attribute read and
+renames the property (`member;range=0-1499`), so membership is walked range by range instead of silently
+truncating.
 
 ### Target OU picker
 Both the New User wizard and the template editor have a **Browse…** button that opens a directory-tree
