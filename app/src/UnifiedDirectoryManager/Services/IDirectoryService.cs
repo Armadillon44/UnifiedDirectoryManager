@@ -19,6 +19,21 @@ public sealed record BulkResult(IReadOnlyList<BulkItemResult> Items)
 /// </summary>
 public sealed record UserCreateResult(string DistinguishedName, bool PasswordSet, bool Enabled);
 
+/// <summary>A member of a group: a display name plus the distinguished name (the DN is what makes a recorded
+/// membership re-addable, since the pickers act on DNs).</summary>
+public sealed record GroupMember(string Name, string DistinguishedName);
+
+/// <summary>
+/// A group's membership together with how far it can be trusted — necessary because LDAP cannot distinguish
+/// "this group has no members" from "you may not read this group's members": in both cases the server simply
+/// omits the attribute. Callers that are about to destroy the group must not treat those as the same thing.
+/// </summary>
+/// <param name="Members">The members read.</param>
+/// <param name="Truncated">True when the read is KNOWN to be incomplete (the range walk stopped early).</param>
+/// <param name="Unconfirmed">True when nothing came back and the emptiness could not be confirmed — an empty
+/// group and an unreadable <c>member</c> attribute look identical on the wire.</param>
+public sealed record GroupMembersResult(IReadOnlyList<GroupMember> Members, bool Truncated, bool Unconfirmed);
+
 /// <summary>
 /// Outcome of creating a group. The group EXISTS whenever this is returned — the optional error strings are
 /// non-fatal failures of the separate follow-up writes (each is its own LDAP operation that can fail on its own,
@@ -118,6 +133,16 @@ public interface IDirectoryService
     /// "Distribution · Universal") read from each group's <c>groupType</c> bitmask. Returns a DN→kind map;
     /// DNs that aren't found / aren't groups are simply absent. Used for the Member Of "Type" column.</summary>
     Task<IReadOnlyDictionary<string, string>> GetGroupTypesAsync(IReadOnlyList<string> distinguishedNames, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads a group's member list, following AD's range retrieval. A single attribute read returns at most ~1500
+    /// values and renames the property to <c>member;range=0-1499</c>, so reading <c>member</c> from
+    /// <see cref="LoadObjectAsync"/> silently yields NOTHING for a group larger than that — this walks the ranges
+    /// instead and is correct for a group of any size. Names are taken from each DN's RDN rather than resolved
+    /// individually, so reading a large group costs one search per ~1500 members instead of a bind per member.
+    /// The result reports whether it is complete — see <see cref="GroupMembersResult"/>.
+    /// </summary>
+    Task<GroupMembersResult> GetGroupMembersAsync(string groupDn, CancellationToken cancellationToken = default);
 
     /// <summary>Adds members (any object DNs) to a group's <c>member</c> attribute.</summary>
     Task AddMembersAsync(string groupDn, IReadOnlyList<string> memberDns, CancellationToken cancellationToken = default);

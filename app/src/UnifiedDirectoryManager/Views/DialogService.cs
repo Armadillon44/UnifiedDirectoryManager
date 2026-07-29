@@ -333,6 +333,13 @@ public sealed class DialogService : IDialogService
         return window.ShowDialog() == true;
     }
 
+    public bool? ConfirmDelete(string title, string heading, IEnumerable<string> lines,
+                               string? requiredPhrase, bool offerRecord, bool recordDefault)
+    {
+        var window = new DeleteConfirmWindow(title, heading, lines, requiredPhrase, offerRecord, recordDefault) { Owner = Owner };
+        return window.ShowDialog() == true ? window.SaveRecord : null;
+    }
+
     public PasswordResetRequest? PromptPasswordReset(string accountTitle)
     {
         var vm = new ResetPasswordViewModel { AccountTitle = accountTitle };

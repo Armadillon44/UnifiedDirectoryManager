@@ -120,6 +120,14 @@ public interface IDialogService
     /// <summary>Confirmation that requires the user to type an exact phrase before OK enables. Returns true to proceed.</summary>
     bool ConfirmWithPhrase(string title, string heading, IEnumerable<string> lines, string requiredPhrase);
 
+    /// <summary>
+    /// Delete confirmation that can also offer a "save a record first" checkbox and/or require a typed phrase
+    /// (<paramref name="requiredPhrase"/> null = no phrase). Returns null when cancelled, otherwise whether the
+    /// operator asked for records to be written.
+    /// </summary>
+    bool? ConfirmDelete(string title, string heading, IEnumerable<string> lines,
+                        string? requiredPhrase, bool offerRecord, bool recordDefault);
+
     /// <summary>Prompts for a new password (with confirm, generate, must-change and unlock options). Null if cancelled.</summary>
     PasswordResetRequest? PromptPasswordReset(string accountTitle);
 

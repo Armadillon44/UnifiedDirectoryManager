@@ -275,14 +275,20 @@ public partial class EditPaneViewModel : ObservableObject
                 }
             }
 
-            // Group members (objects inside this group) — only meaningful for groups
-            if (IsGroup && map.TryGetValue("member", out var member))
+            // Group members (objects inside this group) — read through the range-aware call, NOT the "member"
+            // attribute from the load above: AD renames that property past ~1500 values, so a large group would
+            // silently show an empty Members tab.
+            if (IsGroup)
             {
-                for (int i = 0; i < member.DisplayValues.Count; i++)
+                try
                 {
-                    var dn = i < member.RawValues.Count ? member.RawValues[i] : member.DisplayValues[i];
-                    Members.Add(new GroupMemberRow(member.DisplayValues[i], dn));
+                    var membership = await _directory.GetGroupMembersAsync(distinguishedName);
+                    foreach (var m in membership.Members)
+                        Members.Add(new GroupMemberRow(m.Name, m.DistinguishedName));
+                    if (membership.Truncated)
+                        AppLog.Instance.Warn($"Only part of the membership of {distinguishedName} could be read.");
                 }
+                catch (Exception ex) { AppLog.Instance.Warn("Could not read group members: " + DirectoryService.Friendly(ex)); }
             }
 
             PopulateAttributeEditor(attrs, type);

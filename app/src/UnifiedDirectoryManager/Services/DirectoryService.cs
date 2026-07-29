@@ -797,6 +797,78 @@ public sealed class DirectoryService : IDirectoryService
         return result;
     }
 
+    public Task<GroupMembersResult> GetGroupMembersAsync(string groupDn, CancellationToken cancellationToken = default)
+    {
+        return Task.Run(() =>
+        {
+            var dns = new List<string>();
+            var truncated = false;
+            var sawMemberProperty = false;
+            using var entry = Required.CreateEntry(groupDn);
+
+            // AD caps one attribute read at ~1500 values and answers a ranged request with the property RENAMED to
+            // "member;range=<start>-<end>", or "…-*" on the final chunk. Walk the chunks until the server says it's
+            // the last one; asking for "member" alone would silently return nothing for a large group.
+            var start = 0;
+            var chunks = 0;
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (++chunks > 2000) // ~3M members: the server isn't advancing the range — bail rather than spin
+                {
+                    AppLog.Instance.Warn($"Stopped reading members of {groupDn} after {chunks} range requests; the list is incomplete.");
+                    truncated = true;
+                    break;
+                }
+
+                using var searcher = new DirectorySearcher(entry)
+                {
+                    SearchScope = SearchScope.Base,
+                    Filter = "(objectClass=*)",
+                };
+                searcher.PropertiesToLoad.Add($"member;range={start}-*");
+                var result = searcher.FindOne();
+                if (result is null) break;
+
+                // Find whichever name the server used for this chunk (ranged, or plain "member" for a small group).
+                var prop = result.Properties.PropertyNames.Cast<string>()
+                    .FirstOrDefault(p => p.StartsWith("member;range=", StringComparison.OrdinalIgnoreCase))
+                    ?? (result.Properties.Contains("member") ? "member" : null);
+                // No member property at all. That is EITHER a genuinely empty group OR one whose `member` we may
+                // not read — LDAP omits the attribute identically in both cases, so this can't be called "empty".
+                if (prop is null) break;
+                sawMemberProperty = true;
+
+                var values = result.Properties[prop];
+                foreach (var v in values)
+                    if (v?.ToString() is { Length: > 0 } dn) dns.Add(dn);
+
+                // "…-*" marks the final chunk; a plain "member" answer is never ranged.
+                if (prop.Equals("member", StringComparison.OrdinalIgnoreCase)
+                    || prop.EndsWith("-*", StringComparison.Ordinal)
+                    || values.Count == 0) break;
+
+                // Continue from the END THE SERVER REPORTED ("member;range=0-1499" → next request starts at 1500).
+                // Deriving it from values.Count instead would loop forever if a server ever repeated a chunk.
+                var dash = prop.LastIndexOf('-');
+                if (dash < 0 || !int.TryParse(prop[(dash + 1)..], out var end) || end < start)
+                {
+                    // Couldn't work out where to continue — stop, but say the list is incomplete rather than
+                    // returning a partial one that looks whole.
+                    AppLog.Instance.Warn($"Could not parse the member range '{prop}' on {groupDn}; the list is incomplete.");
+                    truncated = true;
+                    break;
+                }
+                start = end + 1;
+            }
+
+            // Names come from each DN's RDN, NOT NameResolver.Resolve: resolving is a bind per member, which on a
+            // large group meant thousands of synchronous round-trips before the caller could even show a prompt.
+            var members = dns.Select(dn => new GroupMember(NameResolver.RdnFallback(dn), dn)).ToList();
+            return new GroupMembersResult(members, truncated, Unconfirmed: !sawMemberProperty && members.Count == 0);
+        }, cancellationToken);
+    }
+
     public Task AddMembersAsync(string groupDn, IReadOnlyList<string> memberDns, CancellationToken cancellationToken = default) =>
         Task.Run(() => ModifyMembers(groupDn, memberDns, add: true), cancellationToken);
 
