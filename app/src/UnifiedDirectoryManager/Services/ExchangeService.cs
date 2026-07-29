@@ -609,6 +609,39 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             [Console]::Out.Flush()
         }
         function __arg($b64) { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) | ConvertFrom-Json }
+
+        # Group-owner projection. ManagedBy entries arrive in three shapes and each needs different handling:
+        #   * a canonical name ("contoso.onmicrosoft.com/Users/Jane Doe") — take the last segment
+        #   * a plain display name, including role groups such as "Organization Management" — use as-is
+        #   * a bare GUID, when Exchange could not render a display name for that owner (typically an account
+        #     that has been deleted) — resolve it, and say so plainly if it can't be resolved
+        # Resolution is cached and hard-capped: it costs one round trip per distinct unresolved owner on a
+        # channel that serialises every call, and one slow list must not exhaust the operation timeout.
+        $script:__ownerCache = @{}
+        $script:__ownerBudget = 0
+        function __ownerNames($values) {
+            $out = @()
+            foreach ($v in @($values)) {
+                $s = [string]$v
+                if ([string]::IsNullOrWhiteSpace($s)) { continue }
+                if ($s.Contains('/')) { $out += ($s -split '/')[-1]; continue }
+                if ($s -notmatch '^\{?[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\}?$') { $out += $s; continue }
+                # Normalise to the bare GUID: the cache key and the lookup should not differ over braces.
+                $key = $s.Trim('{', '}')
+                if ($script:__ownerCache.ContainsKey($key)) { $out += $script:__ownerCache[$key]; continue }
+                # Budget spent: show the raw value rather than caching a guess.
+                if ($script:__ownerBudget -le 0) { $out += $s; continue }
+                $script:__ownerBudget--
+                $name = "Unresolved owner ($key)"
+                try {
+                    $rc = Get-Recipient -Identity $key -ErrorAction Stop | Select-Object -First 1
+                    if ($rc) { $name = [string]$rc.DisplayName }
+                } catch { }
+                $script:__ownerCache[$key] = $name
+                $out += $name
+            }
+            return $out
+        }
         function __delAdd($map, $who, $perm) {
             if ([string]::IsNullOrWhiteSpace([string]$who)) { return }
             $rec = Get-Recipient -Identity $who -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -804,15 +837,19 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 # parallel ManagedByWithDisplayNames. Fall back if the switch isn't bindable.
                                 try { $gl = @(Get-DistributionGroup @gp -IncludeManagedByWithDisplayNames) }
                                 catch [System.Management.Automation.ParameterBindingException] { $gl = @(Get-DistributionGroup @gp) }
+                                # Fresh cache per load so a renamed owner isn't shown from a stale session entry.
+                                $script:__ownerCache = @{}
+                                $script:__ownerBudget = 50
                                 $data = @($gl | ForEach-Object {
                                     $created = ''
                                     if ($_.WhenCreated) { $created = ([datetime]$_.WhenCreated).ToString('yyyy-MM-dd') }
+                                    # Prefer the display-name array, but fall back per GROUP only — a group whose
+                                    # ManagedByWithDisplayNames is empty still has raw values in ManagedBy, and
+                                    # __ownerNames resolves whatever shape each entry turns out to be.
                                     $owners = @()
                                     if ($_.ManagedByWithDisplayNames) { $owners = @($_.ManagedByWithDisplayNames) }
                                     elseif ($_.ManagedBy) { $owners = @($_.ManagedBy) }
-                                    # Owners stringify to a canonical name ("contoso.onmicrosoft.com/Users/Jane Doe");
-                                    # the last segment is the display name and the only useful part in a column.
-                                    $ownerText = (@($owners | ForEach-Object { (([string]$_) -split '/')[-1] }) -join '; ')
+                                    $ownerText = ((__ownerNames $owners) -join '; ')
                                     @{
                                         DisplayName = [string]$_.DisplayName
                                         PrimarySmtpAddress = [string]$_.PrimarySmtpAddress
