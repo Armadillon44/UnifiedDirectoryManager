@@ -226,6 +226,8 @@ public partial class ObjectListViewModel : ObservableObject
             ("sAMAccountName", true),
             ("displayName", true),
             ("description", true),
+            // Group scope/category ("Security · Global"); blank for non-group rows.
+            ("groupType", true),
             ("givenName", false),
             ("sn", false),
             ("manager", false),
