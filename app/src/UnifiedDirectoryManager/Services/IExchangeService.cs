@@ -48,6 +48,22 @@ public interface IExchangeService
     Task<IReadOnlyList<MailboxRecipient>> SearchRecipientsAsync(string text, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Lists mailboxes as list rows, optionally narrowed by <paramref name="search"/> (matched server-side
+    /// against display name, primary SMTP, and alias). At most <paramref name="max"/> rows are returned;
+    /// see <see cref="ExchangePage.Capped"/> — Exchange has no continuation token, so a capped result is the
+    /// only way to bound the call, and the cap must be surfaced rather than passed off as the full set.
+    /// </summary>
+    Task<ExchangePage> ListMailboxesAsync(string? search, int max, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Lists distribution groups and mail-enabled security groups as list rows, with the properties Microsoft
+    /// Graph can't expose (directory-sync state, owners, external-sender policy, join restriction). Same
+    /// search and capping semantics as <see cref="ListMailboxesAsync"/>. Microsoft 365 (unified) groups are
+    /// deliberately absent: <c>Get-DistributionGroup</c> doesn't return them and they are managed via Graph.
+    /// </summary>
+    Task<ExchangePage> ListDistributionGroupsAsync(string? search, int max, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Converts a mailbox to <paramref name="type"/> (Regular or Shared) via Set-Mailbox -Type. Throws for
     /// <see cref="MailboxType.Unknown"/>. Converting to Shared lets the account be unlicensed without losing
     /// the mailbox (the core termination use case).

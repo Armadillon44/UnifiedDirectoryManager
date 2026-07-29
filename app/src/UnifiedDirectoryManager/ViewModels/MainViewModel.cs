@@ -21,6 +21,7 @@ public partial class MainViewModel : ObservableObject
     private readonly IExchangeService _exchange;
     private readonly ICredentialStore _credentials;
     private TreeNodeViewModel? _cloudRoot;
+    private TreeNodeViewModel? _exchangeRoot;
     private bool _scenarioRunning; // guards against a second (fire-and-forget) scenario run overlapping
 
     public AppSettings Settings { get; }
@@ -172,10 +173,18 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    /// <summary>Adds (or removes) the "Entra ID (cloud)" tree root based on the current sign-in state.</summary>
+    /// <summary>
+    /// Adds (or removes) the two cloud tree roots — "Entra ID (cloud)" and "Exchange Online" — based on the
+    /// current sign-in state. Both hang off the same Entra sign-in: Exchange borrows its token from it.
+    ///
+    /// The Exchange section is shown whenever the admin is signed in, even if Exchange itself isn't configured
+    /// or PowerShell 7 / the module is missing, because those are only discoverable on first use. A missing
+    /// section is indistinguishable from a bug; the list pane explains what to fix instead.
+    /// </summary>
     public void EnsureCloudRoot()
     {
         if (_cloudRoot is not null) { RootNodes.Remove(_cloudRoot); _cloudRoot = null; }
+        if (_exchangeRoot is not null) { RootNodes.Remove(_exchangeRoot); _exchangeRoot = null; }
         if (!_graph.IsSignedIn) return;
 
         var children = new[]
@@ -189,6 +198,17 @@ public partial class MainViewModel : ObservableObject
             IsExpanded = true,
         };
         RootNodes.Add(_cloudRoot);
+
+        var exchangeChildren = new[]
+        {
+            new TreeNodeViewModel(CloudNodeKind.Mailboxes, "Mailboxes", _directory, SetError),
+            new TreeNodeViewModel(CloudNodeKind.DistributionGroups, "Distribution groups", _directory, SetError),
+        };
+        _exchangeRoot = new TreeNodeViewModel(CloudNodeKind.Exchange, "Exchange Online", _directory, SetError, exchangeChildren)
+        {
+            IsExpanded = true,
+        };
+        RootNodes.Add(_exchangeRoot);
     }
 
     partial void OnIsCloudViewChanged(bool value) => OnPropertyChanged(nameof(IsAdView));
@@ -200,11 +220,17 @@ public partial class MainViewModel : ObservableObject
         if (value.CloudKind is { } kind)
         {
             IsCloudView = true;
+            // Every cloud node kind is listed explicitly: the fall-through would quietly show the Entra Users
+            // list, so a section added without a case here would look like it works rather than failing.
             switch (kind)
             {
+                case CloudNodeKind.Tenant:
+                case CloudNodeKind.Users: _ = Cloud.LoadAsync(CloudListMode.Users); break;
                 case CloudNodeKind.Groups: _ = Cloud.LoadAsync(CloudListMode.Groups); break;
                 case CloudNodeKind.Devices: _ = Cloud.LoadAsync(CloudListMode.Devices); break;
-                default: _ = Cloud.LoadAsync(CloudListMode.Users); break; // Users + Tenant root
+                case CloudNodeKind.Exchange:
+                case CloudNodeKind.Mailboxes: _ = Cloud.LoadAsync(CloudListMode.Mailboxes); break;
+                case CloudNodeKind.DistributionGroups: _ = Cloud.LoadAsync(CloudListMode.DistributionGroups); break;
             }
             return;
         }
@@ -257,7 +283,27 @@ public partial class MainViewModel : ObservableObject
     private void OpenSettings()
     {
         _dialogs.ShowSettings(RefreshAfterReconnect);
-        EnsureCloudRoot(); // a sign-in/out in Settings may have added/removed the cloud section
+        EnsureCloudRoot();      // a sign-in/out in Settings may have added/removed the cloud sections
+        ReconfigureExchange();  // …and may have pointed the app at a different tenant
+    }
+
+    /// <summary>
+    /// Points the Exchange Online layer at the tenant currently in settings. Without this, Exchange keeps the
+    /// tenant it was given at startup and signing in to a different one needs an app restart.
+    ///
+    /// Runs off the UI thread: <see cref="IExchangeService.Configure"/> tears down any existing session when the
+    /// tenant actually changes, and that teardown blocks on the channel's gate with no timeout — on the UI
+    /// thread, with an operation in flight, it would freeze the window.
+    /// </summary>
+    private void ReconfigureExchange()
+    {
+        var tenant = Settings.EntraTenantId;
+        if (string.IsNullOrWhiteSpace(tenant)) return;
+        _ = Task.Run(() =>
+        {
+            try { _exchange.Configure(tenant!); }
+            catch (Exception ex) { AppLog.Instance.Warn("Re-configuring Exchange Online after Settings failed: " + ex.Message); }
+        });
     }
 
     /// <summary>Rebinds the UI to the (possibly new) connection after a reconnect from the Settings dialog.</summary>

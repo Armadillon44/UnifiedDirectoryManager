@@ -114,10 +114,12 @@ public partial class MainWindow : Window
 
     // --- Drop target: dropping list rows onto an OU node moves them there ---
 
+    // IsContainerNode (not just !IsPlaceholder) is the right test: it also excludes the cloud section nodes,
+    // whose DistinguishedName is a synthetic "cloud:<kind>" string that an LDAP move would choke on.
     private void OnTreeDragOver(object sender, DragEventArgs e)
     {
         var overOu = e.Data.GetDataPresent(ObjectListView.MoveDataFormat)
-                     && NodeFrom(e.OriginalSource as DependencyObject) is { IsPlaceholder: false };
+                     && NodeFrom(e.OriginalSource as DependencyObject) is { IsContainerNode: true };
         e.Effects = overOu ? DragDropEffects.Move : DragDropEffects.None;
         e.Handled = true;
     }
@@ -126,7 +128,7 @@ public partial class MainWindow : Window
     {
         if (_vm is null) return;
         if (e.Data.GetData(ObjectListView.MoveDataFormat) is not List<Models.AdObjectRow> rows || rows.Count == 0) return;
-        if (NodeFrom(e.OriginalSource as DependencyObject) is not { IsPlaceholder: false } node) return;
+        if (NodeFrom(e.OriginalSource as DependencyObject) is not { IsContainerNode: true } node) return;
         await _vm.MoveRowsToOuAsync(rows, node.DistinguishedName);
     }
 

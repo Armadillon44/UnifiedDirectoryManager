@@ -2,8 +2,8 @@ using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace UnifiedDirectoryManager.Models;
 
-/// <summary>The kind of Entra ID object a <see cref="CloudObjectRow"/> represents.</summary>
-public enum CloudObjectKind { User, Group, Device, Other }
+/// <summary>The kind of cloud object a <see cref="CloudObjectRow"/> represents.</summary>
+public enum CloudObjectKind { User, Group, Device, Mailbox, Other }
 
 /// <summary>
 /// A row in a cloud (Entra ID) object list. Mirrors <see cref="AdObjectRow"/>'s arbitrary-attribute
@@ -33,9 +33,18 @@ public sealed partial class CloudObjectRow : ObservableObject
         CloudObjectKind.User => "👤",
         CloudObjectKind.Group => "👥",
         CloudObjectKind.Device => "💻",
+        CloudObjectKind.Mailbox => "📬",
         _ => "•",
     };
 }
 
 /// <summary>One page of cloud objects plus the Graph <c>@odata.nextLink</c> for the next page (null = last).</summary>
 public sealed record CloudPage(IReadOnlyList<CloudObjectRow> Items, string? NextLink);
+
+/// <summary>
+/// One capped result set from Exchange Online. Exchange PowerShell has no skip/continuation token — a cmdlet
+/// either streams everything or stops at <c>-ResultSize</c> — so there is no next-page cursor to hand back.
+/// <see cref="Capped"/> is true when the cap was reached and results were therefore left behind, which callers
+/// must surface: silently showing the first N of an unknown total reads as "that's all of them".
+/// </summary>
+public sealed record ExchangePage(IReadOnlyList<CloudObjectRow> Items, bool Capped);

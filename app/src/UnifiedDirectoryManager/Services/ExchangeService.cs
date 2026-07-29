@@ -30,6 +30,11 @@ public sealed class ExchangeService : IExchangeService, IDisposable
     private static readonly TimeSpan OpTimeout = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(60);
 
+    /// <summary>Timeout for the list operations, which sweep many recipients rather than touching one. A
+    /// timeout kills the host process (see <see cref="ReadLineLockedAsync"/>), taking the session down for
+    /// every other feature, so a list is given room rather than being allowed to trip the single-object budget.</summary>
+    private static readonly TimeSpan ListTimeout = TimeSpan.FromSeconds(180);
+
     private readonly IGraphService _graph;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
@@ -82,6 +87,34 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         else if (data is { ValueKind: JsonValueKind.Object } one) // ConvertTo-Json renders a single result as an object
             list.Add(MapRecipient(one));
         return list;
+    }
+
+    public Task<ExchangePage> ListMailboxesAsync(string? search, int max, CancellationToken cancellationToken = default)
+        => ListAsync("list-mailboxes", search, max, MapMailboxRow, cancellationToken);
+
+    public Task<ExchangePage> ListDistributionGroupsAsync(string? search, int max, CancellationToken cancellationToken = default)
+        => ListAsync("list-distribution-groups", search, max, MapDistributionGroupRow, cancellationToken);
+
+    /// <summary>
+    /// Shared shape for the two list ops. Asks the host for one row more than the cap, so a result that exactly
+    /// fills the cap can be told apart from one that was truncated, then trims back and reports the truncation.
+    /// </summary>
+    private async Task<ExchangePage> ListAsync(
+        string op, string? search, int max, Func<JsonElement, CloudObjectRow> map, CancellationToken ct)
+    {
+        if (max < 1) max = 1;
+        var data = await RunOpAsync(
+            new { op, search = search ?? string.Empty, max = max + 1 }, ct, ListTimeout).ConfigureAwait(false);
+
+        var rows = new List<CloudObjectRow>();
+        if (data is { ValueKind: JsonValueKind.Array } arr)
+            foreach (var e in arr.EnumerateArray()) rows.Add(map(e));
+        else if (data is { ValueKind: JsonValueKind.Object } one) // ConvertTo-Json renders a single result as an object
+            rows.Add(map(one));
+
+        var capped = rows.Count > max;
+        if (capped) rows.RemoveRange(max, rows.Count - max);
+        return new ExchangePage(rows, capped);
     }
 
     public Task ConvertMailboxAsync(string identity, MailboxType type, CancellationToken cancellationToken = default)
@@ -162,20 +195,21 @@ public sealed class ExchangeService : IExchangeService, IDisposable
 
     /// <summary>Runs one operation against the reused session, reconnecting once if the session lapsed. Throws
     /// <see cref="ExchangeException"/> on failure; returns the response's <c>data</c> element (may be null).</summary>
-    private async Task<JsonElement?> RunOpAsync(object request, CancellationToken ct)
+    private async Task<JsonElement?> RunOpAsync(object request, CancellationToken ct, TimeSpan? timeout = null)
     {
+        var budget = timeout ?? OpTimeout;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             await EnsureConnectedLockedAsync(ct).ConfigureAwait(false);
             var json = JsonSerializer.Serialize(request);
-            var resp = await SendAndReadLockedAsync("OP", json, OpTimeout, ct).ConfigureAwait(false);
+            var resp = await SendAndReadLockedAsync("OP", json, budget, ct).ConfigureAwait(false);
             if (!resp.Ok && IsSessionExpired(resp.Error))
             {
                 AppLog.Instance.Warn("Exchange Online session looks expired; restarting the host and reconnecting once.");
                 KillLocked();
                 await EnsureConnectedLockedAsync(ct).ConfigureAwait(false);
-                resp = await SendAndReadLockedAsync("OP", json, OpTimeout, ct).ConfigureAwait(false);
+                resp = await SendAndReadLockedAsync("OP", json, budget, ct).ConfigureAwait(false);
             }
             if (!resp.Ok)
             {
@@ -420,6 +454,80 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         };
     }
 
+    private static CloudObjectRow MapMailboxRow(JsonElement d)
+    {
+        string S(string p) => d.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
+        bool B(string p) => d.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.True;
+
+        var smtp = S("PrimarySmtpAddress");
+        var oid = S("ExternalDirectoryObjectId");
+        var row = new CloudObjectRow
+        {
+            // Prefer the Entra object id so a row can be correlated with the Entra list; fall back to the SMTP
+            // address, which is what Exchange itself addresses the mailbox by.
+            Id = oid.Length > 0 ? oid : smtp,
+            DisplayName = S("DisplayName") is { Length: > 0 } n ? n : smtp,
+            Kind = CloudObjectKind.Mailbox,
+        };
+        row.Values["primarySmtpAddress"] = smtp;
+        row.Values["mailboxType"] = FriendlyRecipientType(S("RecipientTypeDetails"));
+        row.Values["userPrincipalName"] = S("UserPrincipalName");
+        row.Values["alias"] = S("Alias");
+        row.Values["dirSynced"] = B("IsDirSynced") ? "Synced" : "Cloud-only";
+        row.Values["hiddenFromAddressLists"] = B("HiddenFromAddressListsEnabled") ? "Yes" : "No";
+        row.Values["created"] = S("WhenMailboxCreated");
+        row.Values["id"] = oid;
+        return row;
+    }
+
+    private static CloudObjectRow MapDistributionGroupRow(JsonElement d)
+    {
+        string S(string p) => d.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
+        bool B(string p) => d.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.True;
+
+        var smtp = S("PrimarySmtpAddress");
+        var oid = S("ExternalDirectoryObjectId");
+        var row = new CloudObjectRow
+        {
+            Id = oid.Length > 0 ? oid : smtp,
+            DisplayName = S("DisplayName") is { Length: > 0 } n ? n : smtp,
+            Kind = CloudObjectKind.Group,
+        };
+        row.Values["primarySmtpAddress"] = smtp;
+        row.Values["groupType"] = FriendlyRecipientType(S("RecipientTypeDetails"));
+        row.Values["dirSynced"] = B("IsDirSynced") ? "Synced" : "Cloud-only";
+        row.Values["managedBy"] = S("ManagedBy");
+        // RequireSenderAuthenticationEnabled means "authenticated senders only", i.e. external mail is rejected.
+        // Phrase the column the way an operator thinks about it rather than mirroring the double negative.
+        row.Values["externalSenders"] = B("RequireSenderAuthenticationEnabled") ? "Blocked" : "Allowed";
+        row.Values["joinRestriction"] = S("MemberJoinRestriction");
+        row.Values["alias"] = S("Alias");
+        row.Values["hiddenFromAddressLists"] = B("HiddenFromAddressListsEnabled") ? "Yes" : "No";
+        row.Values["created"] = S("WhenCreated");
+        row.Values["id"] = oid;
+        return row;
+    }
+
+    /// <summary>Exchange's <c>RecipientTypeDetails</c> in the wording the rest of the app uses. Unknown values
+    /// pass through unchanged rather than being flattened to "Other" — a new Exchange type should still be legible.</summary>
+    private static string FriendlyRecipientType(string value) => value switch
+    {
+        "UserMailbox" => "User",
+        "SharedMailbox" => "Shared",
+        "RoomMailbox" => "Room",
+        "EquipmentMailbox" => "Equipment",
+        "SchedulingMailbox" => "Scheduling",
+        "DiscoveryMailbox" => "Discovery",
+        "TeamMailbox" => "Team",
+        "LinkedMailbox" => "Linked",
+        "GroupMailbox" => "Microsoft 365 group",
+        "MailUniversalDistributionGroup" => "Distribution",
+        "MailUniversalSecurityGroup" => "Mail-enabled security",
+        "MailNonUniversalGroup" => "Mail-enabled (non-universal)",
+        "RoomList" => "Room list",
+        _ => value,
+    };
+
     private static MailboxRecipient MapRecipient(JsonElement d)
     {
         string S(string p) => d.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
@@ -648,6 +756,78 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                         __emit @{ ok = $false; error = $_.Exception.Message; detail = ($_ | Out-String) }
                                     }
                                 }
+                            }
+                            'list-mailboxes' {
+                                # Exchange has no continuation token, so the caller caps with -ResultSize and asks for
+                                # one row more than it wants in order to detect truncation. Get-EXOMailbox (not
+                                # Get-Mailbox) because the classic cmdlet returns 200+ properties per object.
+                                $take = [int]$r.max
+                                $mp = @{ ResultSize = $take; ErrorAction = 'Stop' }
+                                if (-not [string]::IsNullOrWhiteSpace([string]$r.search)) {
+                                    # Double single quotes to close the filter, and strip wildcard characters:
+                                    # only the leading/trailing * added here are supported, and a * typed by the
+                                    # user would land mid-string, which these cmdlets reject.
+                                    $esc = ((([string]$r.search).Replace("'", "''")) -replace '[\*\?]', '')
+                                    $mp['Filter'] = "DisplayName -like '*$esc*' -or PrimarySmtpAddress -like '*$esc*' -or Alias -like '*$esc*'"
+                                }
+                                $mb = @(Get-EXOMailbox @mp -PropertySets Minimum,AddressList -Properties IsDirSynced,WhenMailboxCreated)
+                                $data = @($mb | ForEach-Object {
+                                    $created = ''
+                                    if ($_.WhenMailboxCreated) { $created = ([datetime]$_.WhenMailboxCreated).ToString('yyyy-MM-dd') }
+                                    @{
+                                        DisplayName = [string]$_.DisplayName
+                                        PrimarySmtpAddress = [string]$_.PrimarySmtpAddress
+                                        UserPrincipalName = [string]$_.UserPrincipalName
+                                        Alias = [string]$_.Alias
+                                        RecipientTypeDetails = [string]$_.RecipientTypeDetails
+                                        ExternalDirectoryObjectId = [string]$_.ExternalDirectoryObjectId
+                                        # EXO V3 returns flags as the STRINGS 'True'/'False' (see the note on
+                                        # list-delegates); compare stringified, never with -not.
+                                        IsDirSynced = ([string]$_.IsDirSynced -eq 'True')
+                                        HiddenFromAddressListsEnabled = ([string]$_.HiddenFromAddressListsEnabled -eq 'True')
+                                        WhenMailboxCreated = $created
+                                    }
+                                })
+                                __emit @{ ok = $true; data = $data }
+                            }
+                            'list-distribution-groups' {
+                                # Distribution lists + mail-enabled security groups. Get-DistributionGroup does not
+                                # return Microsoft 365 (unified) groups, which is correct here: those are Graph-managed.
+                                $take = [int]$r.max
+                                $gp = @{ ResultSize = $take; ErrorAction = 'Stop' }
+                                if (-not [string]::IsNullOrWhiteSpace([string]$r.search)) {
+                                    # Same escaping + wildcard-stripping rule as list-mailboxes.
+                                    $esc = ((([string]$r.search).Replace("'", "''")) -replace '[\*\?]', '')
+                                    $gp['Filter'] = "DisplayName -like '*$esc*' -or PrimarySmtpAddress -like '*$esc*' -or Alias -like '*$esc*'"
+                                }
+                                # ManagedBy comes back as raw GUIDs unless this switch is passed, which populates a
+                                # parallel ManagedByWithDisplayNames. Fall back if the switch isn't bindable.
+                                try { $gl = @(Get-DistributionGroup @gp -IncludeManagedByWithDisplayNames) }
+                                catch [System.Management.Automation.ParameterBindingException] { $gl = @(Get-DistributionGroup @gp) }
+                                $data = @($gl | ForEach-Object {
+                                    $created = ''
+                                    if ($_.WhenCreated) { $created = ([datetime]$_.WhenCreated).ToString('yyyy-MM-dd') }
+                                    $owners = @()
+                                    if ($_.ManagedByWithDisplayNames) { $owners = @($_.ManagedByWithDisplayNames) }
+                                    elseif ($_.ManagedBy) { $owners = @($_.ManagedBy) }
+                                    # Owners stringify to a canonical name ("contoso.onmicrosoft.com/Users/Jane Doe");
+                                    # the last segment is the display name and the only useful part in a column.
+                                    $ownerText = (@($owners | ForEach-Object { (([string]$_) -split '/')[-1] }) -join '; ')
+                                    @{
+                                        DisplayName = [string]$_.DisplayName
+                                        PrimarySmtpAddress = [string]$_.PrimarySmtpAddress
+                                        Alias = [string]$_.Alias
+                                        RecipientTypeDetails = [string]$_.RecipientTypeDetails
+                                        ExternalDirectoryObjectId = [string]$_.ExternalDirectoryObjectId
+                                        ManagedBy = $ownerText
+                                        MemberJoinRestriction = [string]$_.MemberJoinRestriction
+                                        IsDirSynced = ([string]$_.IsDirSynced -eq 'True')
+                                        RequireSenderAuthenticationEnabled = ([string]$_.RequireSenderAuthenticationEnabled -eq 'True')
+                                        HiddenFromAddressListsEnabled = ([string]$_.HiddenFromAddressListsEnabled -eq 'True')
+                                        WhenCreated = $created
+                                    }
+                                })
+                                __emit @{ ok = $true; data = $data }
                             }
                             default { __emit @{ ok = $false; error = ("Unknown op: " + [string]$r.op) } }
                         }

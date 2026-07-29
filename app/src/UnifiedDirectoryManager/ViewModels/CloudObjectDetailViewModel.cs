@@ -66,6 +66,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
             CloudObjectKind.User => "User",
             CloudObjectKind.Group => "Group",
             CloudObjectKind.Device => "Device",
+            CloudObjectKind.Mailbox => "Mailbox",
             _ => "Object",
         };
         IsUser = row.Kind == CloudObjectKind.User;
@@ -570,6 +571,9 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     {
         CloudObjectKind.Group => CloudListMode.Groups,
         CloudObjectKind.Device => CloudListMode.Devices,
+        // Without this arm a mailbox would borrow the Entra user headers, and every mailbox-specific key
+        // would miss the lookup and be labelled with its raw camelCase name.
+        CloudObjectKind.Mailbox => CloudListMode.Mailboxes,
         _ => CloudListMode.Users,
     };
 }

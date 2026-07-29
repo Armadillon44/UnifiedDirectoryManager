@@ -5,11 +5,14 @@ using UnifiedDirectoryManager.Services;
 
 namespace UnifiedDirectoryManager.ViewModels;
 
-/// <summary>A cloud (Entra ID) tree node's role (null on on-prem AD nodes).</summary>
-public enum CloudNodeKind { Tenant, Users, Groups, Devices }
+/// <summary>A cloud tree node's role (null on on-prem AD nodes). <see cref="Tenant"/>/<see cref="Users"/>/
+/// <see cref="Groups"/>/<see cref="Devices"/> are the Entra ID section; <see cref="Exchange"/>/
+/// <see cref="Mailboxes"/>/<see cref="DistributionGroups"/> are the Exchange Online section.</summary>
+public enum CloudNodeKind { Tenant, Users, Groups, Devices, Exchange, Mailboxes, DistributionGroups }
 
 /// <summary>A node in the directory tree. On-prem children load lazily on first expand; cloud nodes are
-/// a fixed structure (Entra ID ▸ Users/Groups/Devices) that loads objects into the content pane instead.</summary>
+/// a fixed structure (Entra ID ▸ Users/Groups/Devices, Exchange Online ▸ Mailboxes/Distribution groups)
+/// that loads objects into the content pane instead.</summary>
 public partial class TreeNodeViewModel : ObservableObject
 {
     private readonly IDirectoryService _directory;
@@ -86,6 +89,9 @@ public partial class TreeNodeViewModel : ObservableObject
         CloudNodeKind.Users => "👤",
         CloudNodeKind.Groups => "👥",
         CloudNodeKind.Devices => "💻",
+        CloudNodeKind.Exchange => "✉",
+        CloudNodeKind.Mailboxes => "📬",
+        CloudNodeKind.DistributionGroups => "📢",
         _ => Type switch
         {
             AdObjectType.Domain => "🌐",

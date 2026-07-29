@@ -13,15 +13,28 @@ namespace UnifiedDirectoryManager.ViewModels;
 public sealed record CloudFilterOption(string Name, Func<CloudObjectRow, bool> Match);
 
 /// <summary>
-/// The cloud (Entra ID) object list: loads Users / Groups / Devices one page at a time, with a
-/// server-side name search, client-side quick-filter + per-kind filter, a runtime column chooser,
-/// checkbox multi-select and CSV export. Selecting a row drives the read-only <see cref="Detail"/>
-/// pane; double-clicking raises <see cref="OpenRequested"/> (the host opens a properties window).
-/// Read-only — the bulk-action buttons in the view are intentionally disabled this round.
+/// The cloud object list. Serves both cloud sections: Entra ID (Users / Groups / Devices, paged through
+/// Microsoft Graph) and Exchange Online (Mailboxes / Distribution groups, read through the hosted
+/// PowerShell channel). Offers a server-side name search, a client-side quick-filter + per-kind filter, a
+/// runtime column chooser, checkbox multi-select and CSV export. Selecting a row drives the read-only
+/// <see cref="Detail"/> pane; double-clicking raises <see cref="OpenRequested"/>.
+///
+/// The two backends page differently and that difference is deliberately visible: Graph hands back a
+/// continuation link, while Exchange has none and is therefore capped, with the cap reported in
+/// <see cref="Status"/> rather than passed off as a complete result.
 /// </summary>
 public partial class CloudObjectListViewModel : ObservableObject
 {
+    /// <summary>Rows fetched per Exchange list load. Exchange can't continue from a cursor, so this is a hard
+    /// cap rather than a page size: narrowing with the search box is the way to see past it.</summary>
+    private const int ExchangeListCap = 200;
+
+    /// <summary>Higher cap for "Export all" — still bounded, because an unbounded sweep of a large tenant on
+    /// one 180-second round trip would time out and take the shared host process down with it.</summary>
+    private const int ExchangeExportCap = 5000;
+
     private readonly IGraphService _graph;
+    private readonly IExchangeService _exchange;
     private readonly IDialogService _dialogs;
     private readonly ISettingsStore _settingsStore;
     private readonly AppSettings _settings;
@@ -29,6 +42,7 @@ public partial class CloudObjectListViewModel : ObservableObject
     private string? _nextLink;
     private bool _columnsInitialized;
     private bool _suppressSelectAll;
+    private bool _exchangeCapped;
 
     public ObservableCollection<ColumnDefinition> Columns { get; } = new();
     public ObservableCollection<CloudObjectRow> Rows { get; } = new();
@@ -56,13 +70,28 @@ public partial class CloudObjectListViewModel : ObservableObject
     /// <summary>Raised when a row is activated (double-clicked) so the host can open a properties window.</summary>
     public event EventHandler<CloudObjectRow>? OpenRequested;
 
-    public void RequestOpen(CloudObjectRow row) => OpenRequested?.Invoke(this, row);
+    /// <summary>
+    /// Raises <see cref="OpenRequested"/> so the host opens a properties window — except in the Exchange lists,
+    /// which have no Exchange-backed properties view yet. The window is driven entirely by Microsoft Graph: it
+    /// would issue Graph reads that 403 for a distribution list and describe nothing for a mailbox, and it would
+    /// offer Graph-backed member edits and saves that Exchange objects cannot accept. Say so instead.
+    /// </summary>
+    public void RequestOpen(CloudObjectRow row)
+    {
+        if (IsExchangeMode)
+        {
+            Status = "Properties for Exchange Online objects aren't available yet.";
+            return;
+        }
+        OpenRequested?.Invoke(this, row);
+    }
 
     public IReadOnlyList<CloudObjectRow> CheckedRows => Rows.Where(r => r.IsChecked).ToList();
 
     public CloudObjectListViewModel(IGraphService graph, IExchangeService exchange, IDialogService dialogs, ISettingsStore settingsStore, AppSettings settings)
     {
         _graph = graph;
+        _exchange = exchange;
         _dialogs = dialogs;
         _settingsStore = settingsStore;
         _settings = settings;
@@ -74,7 +103,17 @@ public partial class CloudObjectListViewModel : ObservableObject
 
     partial void OnQuickFilterChanged(string value) => RowsView.Refresh();
     partial void OnSelectedFilterChanged(CloudFilterOption? value) => RowsView.Refresh();
-    partial void OnSelectedRowChanged(CloudObjectRow? value) => Detail.SetTarget(value);
+
+    // The detail pane reads through Microsoft Graph, which can't describe a mailbox and returns 403 for a
+    // distribution list. Leave it empty in the Exchange lists rather than showing a failure or a half-truth.
+    partial void OnSelectedRowChanged(CloudObjectRow? value)
+    {
+        Detail.SetTarget(IsExchangeMode ? null : value);
+        // SetTarget(null) restores the "select an object" prompt, which would tell an operator who just
+        // selected a row to do the thing they did. Say what is actually going on instead.
+        if (IsExchangeMode && value is not null)
+            Detail.EmptyHint = "Details for Exchange Online objects aren't available here yet.";
+    }
     partial void OnIsBusyChanged(bool value)
     {
         LoadMoreCommand.NotifyCanExecuteChanged();
@@ -87,13 +126,17 @@ public partial class CloudObjectListViewModel : ObservableObject
     /// <summary>The bulk user actions (Enable/Disable/Revoke) apply only in the Users list.</summary>
     public bool ShowUserActions => Mode == CloudListMode.Users;
 
+    /// <summary>True for the two Exchange Online lists, which read through the PowerShell channel rather than
+    /// Graph and are capped instead of paged.</summary>
+    private bool IsExchangeMode => Mode is CloudListMode.Mailboxes or CloudListMode.DistributionGroups;
+
     partial void OnSelectAllChanged(bool value)
     {
         if (_suppressSelectAll) return;
         foreach (var row in Rows) row.IsChecked = value;
     }
 
-    /// <summary>Switches the list to a mode (Users/Groups/Devices) and loads page 1.</summary>
+    /// <summary>Switches the list to a mode and loads the first page.</summary>
     public async Task LoadAsync(CloudListMode mode)
     {
         Mode = mode;
@@ -102,6 +145,8 @@ public partial class CloudObjectListViewModel : ObservableObject
             CloudListMode.Users => "Entra ID — Users",
             CloudListMode.Groups => "Entra ID — Groups",
             CloudListMode.Devices => "Entra ID — Devices",
+            CloudListMode.Mailboxes => "Exchange Online — Mailboxes",
+            CloudListMode.DistributionGroups => "Exchange Online — Distribution groups",
             _ => "Entra ID",
         };
 
@@ -127,10 +172,16 @@ public partial class CloudObjectListViewModel : ObservableObject
 
     private async Task LoadFirstPageAsync()
     {
-        if (!_graph.IsSignedIn)
+        if (NotReady() is { } reason)
         {
+            // Reset the paging state too, or "Load more" stays visible from the previous mode and one click
+            // replaces this explanation with a bare "0 object(s)".
             Rows.Clear();
-            Status = "Not signed in to Entra ID — sign in under File ▸ Settings ▸ Cloud.";
+            SelectedRow = null;
+            _nextLink = null;
+            HasMore = false;
+            _exchangeCapped = false;
+            Status = reason;
             return;
         }
 
@@ -140,11 +191,13 @@ public partial class CloudObjectListViewModel : ObservableObject
         Rows.Clear();
         SelectedRow = null;
         _nextLink = null;
-        Status = "Loading…";
+        _exchangeCapped = false;
+        Status = IsExchangeMode ? "Loading from Exchange Online…" : "Loading…";
         try
         {
-            var page = await FetchAsync(null);
+            var (page, capped) = await FetchAsync(null, ExchangeListCap);
             if (token != _loadToken) return; // a newer load / mode switch superseded this one
+            _exchangeCapped = capped;
             AppendPage(page);
             UpdateStatus();
         }
@@ -165,8 +218,9 @@ public partial class CloudObjectListViewModel : ObservableObject
         IsBusy = true;
         try
         {
-            var page = await FetchAsync(_nextLink);
+            var (page, capped) = await FetchAsync(_nextLink, ExchangeListCap);
             if (token != _loadToken) return; // superseded while paging
+            _exchangeCapped = capped;
             AppendPage(page);
             UpdateStatus();
         }
@@ -181,13 +235,47 @@ public partial class CloudObjectListViewModel : ObservableObject
 
     private bool CanLoadMore() => HasMore && !IsBusy;
 
-    private Task<CloudPage> FetchAsync(string? nextLink) => Mode switch
+    /// <summary>The reason the list can't load right now, or null when it can. Both cloud sections hang off the
+    /// same Entra sign-in (Exchange borrows its token from it), so that gate comes first.</summary>
+    private string? NotReady()
     {
-        CloudListMode.Users => _graph.ListUsersAsync(SearchText, nextLink),
-        CloudListMode.Groups => _graph.ListGroupsAsync(SearchText, nextLink),
-        CloudListMode.Devices => _graph.ListDevicesAsync(SearchText, nextLink),
-        _ => Task.FromResult(new CloudPage(Array.Empty<CloudObjectRow>(), null)),
-    };
+        if (!_graph.IsSignedIn) return "Not signed in to Entra ID — sign in under File ▸ Settings ▸ Cloud.";
+        if (IsExchangeMode && !_exchange.IsConfigured)
+            return "Exchange Online isn't configured — set the tenant under File ▸ Settings ▸ Cloud, then reopen this list.";
+        return null;
+    }
+
+    /// <summary>
+    /// One fetch for the current mode. <paramref name="nextLink"/> is Graph's continuation link and is ignored
+    /// by the Exchange modes, which have no cursor: they return everything they are going to return in one call,
+    /// bounded by <paramref name="exchangeMax"/>.
+    ///
+    /// Returns the cap flag rather than assigning it: this runs after an await, so a fetch that has been
+    /// superseded by a mode switch must not write shared state its caller's generation check would have rejected.
+    /// </summary>
+    private async Task<(CloudPage Page, bool Capped)> FetchAsync(string? nextLink, int exchangeMax)
+    {
+        switch (Mode)
+        {
+            case CloudListMode.Users:
+                return (await _graph.ListUsersAsync(SearchText, nextLink), false);
+            case CloudListMode.Groups:
+                return (await _graph.ListGroupsAsync(SearchText, nextLink), false);
+            case CloudListMode.Devices:
+                return (await _graph.ListDevicesAsync(SearchText, nextLink), false);
+            case CloudListMode.Mailboxes:
+            case CloudListMode.DistributionGroups:
+            {
+                if (nextLink is not null) return (new CloudPage(Array.Empty<CloudObjectRow>(), null), false); // no paging
+                var page = Mode == CloudListMode.Mailboxes
+                    ? await _exchange.ListMailboxesAsync(SearchText, exchangeMax)
+                    : await _exchange.ListDistributionGroupsAsync(SearchText, exchangeMax);
+                return (new CloudPage(page.Items, null), page.Capped);
+            }
+            default:
+                return (new CloudPage(Array.Empty<CloudObjectRow>(), null), false);
+        }
+    }
 
     private void AppendPage(CloudPage page)
     {
@@ -207,13 +295,17 @@ public partial class CloudObjectListViewModel : ObservableObject
     }
 
     private void UpdateStatus() =>
-        Status = $"{Rows.Count} object(s)" + (HasMore ? " (more available — Load more)" : string.Empty);
+        Status = $"{Rows.Count} object(s)"
+            + (HasMore ? " (more available — Load more)" : string.Empty)
+            // Exchange can't continue from where it stopped, so say plainly that rows were left behind and
+            // point at the only way to reach them. A bare count would read as "that's all of them".
+            + (IsExchangeMode && _exchangeCapped ? $" — capped at {ExchangeListCap}; narrow the search to see the rest" : string.Empty);
 
     /// <summary>Exports only the rows currently loaded into the list (respecting the active filter/sort).</summary>
     [RelayCommand]
     private void ExportCsv()
     {
-        var path = _dialogs.PromptSaveFile("CSV files (*.csv)|*.csv|All files (*.*)|*.*", $"entra-{Mode}.csv");
+        var path = _dialogs.PromptSaveFile("CSV files (*.csv)|*.csv|All files (*.*)|*.*", $"{ExportPrefix}-{Mode}.csv");
         if (path is null) return;
         try
         {
@@ -232,24 +324,28 @@ public partial class CloudObjectListViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanExportAll))]
     private async Task ExportAllCsvAsync()
     {
-        if (!_graph.IsSignedIn)
+        if (NotReady() is { } reason)
         {
-            Status = "Not signed in to Entra ID — sign in under File ▸ Settings ▸ Cloud.";
+            Status = reason;
             return;
         }
 
-        var path = _dialogs.PromptSaveFile("CSV files (*.csv)|*.csv|All files (*.*)|*.*", $"entra-{Mode}-all.csv");
+        var path = _dialogs.PromptSaveFile("CSV files (*.csv)|*.csv|All files (*.*)|*.*", $"{ExportPrefix}-{Mode}-all.csv");
         if (path is null) return;
 
         IsBusy = true;
         try
         {
             var all = new List<CloudObjectRow>();
+            // Tracked locally, not in _exchangeCapped: the export fetches under a different cap, and its
+            // outcome must not rewrite what the list itself is showing.
+            var exportCapped = false;
             string? next = null;
             do
             {
-                var page = await FetchAsync(next);
+                var (page, capped) = await FetchAsync(next, ExchangeExportCap);
                 all.AddRange(page.Items);
+                exportCapped |= capped;
                 next = page.NextLink;
                 Status = $"Fetching all… {all.Count} object(s) so far";
             }
@@ -259,7 +355,10 @@ public partial class CloudObjectListViewModel : ObservableObject
             // the full result set rather than only the loaded page.
             var filtered = all.Where(RowPredicate).ToList();
             File.WriteAllText(path, BuildCsv(filtered));
-            Status = $"Exported all {filtered.Count} object(s) to {path}";
+            // An Exchange export can still be truncated (at a much higher cap); say so rather than letting
+            // "Exported all" imply completeness.
+            Status = $"Exported all {filtered.Count} object(s) to {path}"
+                + (exportCapped ? $" — capped at {ExchangeExportCap}; narrow the search for a complete export" : string.Empty);
         }
         catch (Exception ex)
         {
@@ -270,6 +369,9 @@ public partial class CloudObjectListViewModel : ObservableObject
     }
 
     private bool CanExportAll() => !IsBusy;
+
+    /// <summary>Filename prefix for exports, so an Exchange export isn't named "entra-…".</summary>
+    private string ExportPrefix => IsExchangeMode ? "exchange" : "entra";
 
     /// <summary>CSV of the supplied rows (Name + visible columns).</summary>
     public string BuildCsv(IEnumerable<CloudObjectRow> rows)
@@ -374,6 +476,8 @@ public partial class CloudObjectListViewModel : ObservableObject
         CloudListMode.Users => _settings.VisibleCloudUserColumns,
         CloudListMode.Groups => _settings.VisibleCloudGroupColumns,
         CloudListMode.Devices => _settings.VisibleCloudDeviceColumns,
+        CloudListMode.Mailboxes => _settings.VisibleExchangeMailboxColumns,
+        CloudListMode.DistributionGroups => _settings.VisibleExchangeGroupColumns,
         _ => null,
     };
 
@@ -385,6 +489,8 @@ public partial class CloudObjectListViewModel : ObservableObject
             case CloudListMode.Users: _settings.VisibleCloudUserColumns = keys; break;
             case CloudListMode.Groups: _settings.VisibleCloudGroupColumns = keys; break;
             case CloudListMode.Devices: _settings.VisibleCloudDeviceColumns = keys; break;
+            case CloudListMode.Mailboxes: _settings.VisibleExchangeMailboxColumns = keys; break;
+            case CloudListMode.DistributionGroups: _settings.VisibleExchangeGroupColumns = keys; break;
             default: return;
         }
         _settingsStore.Save(_settings);
@@ -427,6 +533,22 @@ public partial class CloudObjectListViewModel : ObservableObject
                 FilterOptions.Add(new("Hybrid joined", r => r.Get("trustType").Contains("ServerAd", StringComparison.OrdinalIgnoreCase)));
                 FilterOptions.Add(new("Entra joined", r => r.Get("trustType").Contains("Entra", StringComparison.OrdinalIgnoreCase)));
                 FilterOptions.Add(new("Enabled", r => r.Get("accountEnabled") == "Yes"));
+                break;
+            case CloudListMode.Mailboxes:
+                FilterOptions.Add(new("User mailboxes", r => r.Get("mailboxType") == "User"));
+                FilterOptions.Add(new("Shared mailboxes", r => r.Get("mailboxType") == "Shared"));
+                FilterOptions.Add(new("Rooms and equipment", r => r.Get("mailboxType") is "Room" or "Equipment"));
+                FilterOptions.Add(new("Synced from on-prem", r => r.Get("dirSynced") == "Synced"));
+                FilterOptions.Add(new("Cloud-only", r => r.Get("dirSynced") == "Cloud-only"));
+                break;
+            case CloudListMode.DistributionGroups:
+                FilterOptions.Add(new("Distribution", r => r.Get("groupType") == "Distribution"));
+                FilterOptions.Add(new("Mail-enabled security", r => r.Get("groupType") == "Mail-enabled security"));
+                // Synced groups are read-only in Exchange Online, so this is the filter that answers
+                // "which of these can I actually change from here?".
+                FilterOptions.Add(new("Cloud-only (editable here)", r => r.Get("dirSynced") == "Cloud-only"));
+                FilterOptions.Add(new("Synced from on-prem", r => r.Get("dirSynced") == "Synced"));
+                FilterOptions.Add(new("External senders allowed", r => r.Get("externalSenders") == "Allowed"));
                 break;
         }
         SelectedFilter = FilterOptions[0];

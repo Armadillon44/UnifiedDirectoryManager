@@ -44,4 +44,8 @@ public sealed class AppSettings
     public List<string> VisibleCloudUserColumns { get; set; } = new();
     public List<string> VisibleCloudGroupColumns { get; set; } = new();
     public List<string> VisibleCloudDeviceColumns { get; set; } = new();
+
+    /// <summary>Visible-column keys for the Exchange Online Mailboxes / Distribution Groups lists.</summary>
+    public List<string> VisibleExchangeMailboxColumns { get; set; } = new();
+    public List<string> VisibleExchangeGroupColumns { get; set; } = new();
 }
