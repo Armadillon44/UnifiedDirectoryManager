@@ -100,6 +100,11 @@ public interface IDialogService
     /// Returns the new OU's distinguished name if one was created, or null if cancelled.</summary>
     string? ShowNewOu(string parentDn);
 
+    /// <summary>Opens the (modal) "new group" dialog. <paramref name="parentDn"/> pre-fills the target container
+    /// and may be null — the dialog lets the operator browse for one. Returns the new group's distinguished name
+    /// if one was created, or null if cancelled.</summary>
+    string? ShowNewGroup(string? parentDn);
+
     /// <summary>Advanced search builder. Returns the query to run, or null if cancelled.</summary>
     SearchQuery? ShowAdvancedSearch(string defaultBaseDn);
 
@@ -114,6 +119,14 @@ public interface IDialogService
 
     /// <summary>Confirmation that requires the user to type an exact phrase before OK enables. Returns true to proceed.</summary>
     bool ConfirmWithPhrase(string title, string heading, IEnumerable<string> lines, string requiredPhrase);
+
+    /// <summary>
+    /// Delete confirmation that can also offer a "save a record first" checkbox and/or require a typed phrase
+    /// (<paramref name="requiredPhrase"/> null = no phrase). Returns null when cancelled, otherwise whether the
+    /// operator asked for records to be written.
+    /// </summary>
+    bool? ConfirmDelete(string title, string heading, IEnumerable<string> lines,
+                        string? requiredPhrase, bool offerRecord, bool recordDefault);
 
     /// <summary>Prompts for a new password (with confirm, generate, must-change and unlock options). Null if cancelled.</summary>
     PasswordResetRequest? PromptPasswordReset(string accountTitle);

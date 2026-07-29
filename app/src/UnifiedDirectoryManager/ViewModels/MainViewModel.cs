@@ -544,6 +544,69 @@ public partial class MainViewModel : ObservableObject
         StatusMessage = created is not null ? $"Created OU “{created.Name}”." : "Created OU.";
     }
 
+    /// <summary>The membership suffix shown against a group in the delete confirmation. Never claims "0 members"
+    /// for a read that couldn't be confirmed — an empty group and an unreadable one look identical over LDAP.</summary>
+    private string MembershipNote(AdObjectRow row)
+    {
+        if (row.Type != AdObjectType.Group) return string.Empty;
+        if (!_pendingDeleteMembership.TryGetValue(row.DistinguishedName, out var m))
+            return "  — membership could NOT be read";
+        if (m.Truncated) return $"  — at least {m.Members.Count} member(s); the full list could NOT be read";
+        if (m.Unconfirmed) return "  — no members found (an empty group, or not readable with your permissions)";
+        return $"  — {m.Members.Count} member(s)";
+    }
+
+    /// <summary>Membership gathered for the delete currently being confirmed (keyed by DN).</summary>
+    private Dictionary<string, GroupMembersResult> _pendingDeleteMembership = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Creates a group under the right-clicked container (tree right-click ▸ "New Group here…").</summary>
+    public Task CreateGroupUnderAsync(TreeNodeViewModel? node)
+    {
+        if (node is null || !node.IsContainerNode || string.IsNullOrWhiteSpace(node.DistinguishedName))
+            return Task.CompletedTask;
+        return CreateGroupInAsync(node.DistinguishedName);
+    }
+
+    /// <summary>File ▸ New Group… — pre-fills the tree's selected container when there is one; the dialog itself
+    /// lets the operator browse for the target OU, so no prior selection is required.</summary>
+    [RelayCommand]
+    private Task NewGroupAsync() =>
+        CreateGroupInAsync(SelectedNode is { IsContainerNode: true } node ? node.DistinguishedName : null);
+
+    /// <summary>Shows the New Group dialog (optionally pre-filled with a target container), then brings the new
+    /// group into view. Groups are list objects, not tree nodes, so the refresh loads the group's parent container
+    /// into the list and selects the new row.</summary>
+    private async Task CreateGroupInAsync(string? parentDn)
+    {
+        var newDn = _dialogs.ShowNewGroup(parentDn);
+        if (string.IsNullOrWhiteSpace(newDn)) return; // cancelled
+
+        // Refresh against the container the group ACTUALLY landed in — the operator may have browsed to a
+        // different OU inside the dialog, so the DN we passed in isn't necessarily the parent.
+        var actualParent = DirectoryService.ParentDn(newDn);
+        if (!string.IsNullOrWhiteSpace(actualParent))
+        {
+            // Right-click never moves the tree selection, so point the tree at the same container the list is
+            // about to show. Otherwise the tree highlights one OU while the list shows another, and clicking the
+            // highlighted node raises no selection change to recover with.
+            if (FindNodeByDn(actualParent) is { IsPlaceholder: false } parentNode && !ReferenceEquals(SelectedNode, parentNode))
+            {
+                SelectedNode = parentNode;
+                parentNode.IsSelected = true;
+            }
+            // The new group has to be visible to be selected: widen a Users/Computers "Show:" filter (an advanced
+            // search leaves it pinned to its object type) and drop any quick-filter text.
+            if (List.Filter is ListFilter.Users or ListFilter.Computers) List.Filter = ListFilter.All;
+            List.QuickFilter = string.Empty;
+            await List.LoadContainerAsync(actualParent);
+        }
+        var created = List.Rows.FirstOrDefault(r => string.Equals(r.DistinguishedName, newDn, StringComparison.OrdinalIgnoreCase));
+        if (created is not null) List.SelectedRow = created;
+        StatusMessage = created is not null
+            ? $"Created group “{created.Name}”."
+            : $"Created group, but it isn't shown in the current view: {newDn}";
+    }
+
     /// <summary>Permanently deletes an OU (right-click ▸ Delete ▸ "Yes, I'm sure…"), gated by a protection check
     /// and a type-the-random-string confirmation. Deletes the whole subtree, so everything under the OU goes too.</summary>
     private bool _deleting; // guards the delete flow against a second launch during the async protection check
@@ -924,20 +987,108 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
+        // Protected objects can't be deleted until protection is cleared. IsProtected is already populated on
+        // every list row, so this costs nothing — skip them and offer to continue with the rest rather than
+        // failing the whole batch on an access-denied.
+        var blocked = rows.Where(r => r.IsProtected).ToList();
+        if (blocked.Count > 0)
+        {
+            rows = rows.Where(r => !r.IsProtected).ToList();
+            var blockedList = string.Join("\n", blocked.Select(r => $"   • {r.Name}"));
+            if (rows.Count == 0)
+            {
+                _dialogs.Alert("Delete",
+                    $"{(blocked.Count == 1 ? "That object is" : "Those objects are")} protected from accidental deletion:\n\n{blockedList}\n\n" +
+                    "Clear “Protect object from accidental deletion” on the object first.");
+                return;
+            }
+            if (!_dialogs.Confirm("Protected objects skipped",
+                    $"{blocked.Count} of the selected object(s) are protected from accidental deletion and will be SKIPPED. Continue with the other {rows.Count}?",
+                    blocked.Select(r => $"Skipped (protected): {r.Name}")))
+                return;
+        }
+
+        // For groups, gather the full membership up front: the count makes the confirmation meaningful and the
+        // same lists are reused for the records, so nothing is read twice.
+        var groups = rows.Where(r => r.Type == AdObjectType.Group).ToList();
+        var groupMembers = new Dictionary<string, GroupMembersResult>(StringComparer.OrdinalIgnoreCase);
+        if (groups.Count > 0)
+        {
+            StatusMessage = "Reading group membership…";
+            foreach (var g in groups)
+            {
+                try { groupMembers[g.DistinguishedName] = await _directory.GetGroupMembersAsync(g.DistinguishedName); }
+                catch (Exception ex) { AppLog.Instance.Warn($"Could not read members of {g.Name}: {DirectoryService.Friendly(ex)}"); }
+            }
+            StatusMessage = "Ready.";
+        }
+        _pendingDeleteMembership = groupMembers;
+
         var lines = new[] { "This is PERMANENT and cannot be undone:" }
-            .Concat(rows.Select(r => $"• {r.Type}: {r.Name}  ({r.DistinguishedName})"));
+            .Concat(rows.Select(r => $"• {r.Type}: {r.Name}  ({r.DistinguishedName})" + MembershipNote(r)))
+            .ToList();
 
-        // Single delete: a plain confirm. Bulk delete: require typing the count as an extra safeguard.
-        bool approved = rows.Count == 1
-            ? _dialogs.Confirm("Delete object", "Delete this object?", lines)
-            : _dialogs.ConfirmWithPhrase("Delete objects", $"Delete {rows.Count} objects? This is permanent.", lines, rows.Count.ToString());
-        if (!approved)
-            return;
+        // Bulk delete keeps the existing safeguard: type the count. A selection containing a group also offers to
+        // save a record (attributes + members) of each group before it goes.
+        var phrase = rows.Count == 1 ? null : rows.Count.ToString();
+        var heading = rows.Count == 1 ? "Delete this object?" : $"Delete {rows.Count} objects? This is permanent.";
+        bool saveRecords;
+        if (groups.Count > 0)
+        {
+            var answer = _dialogs.ConfirmDelete("Delete", heading, lines, phrase, offerRecord: true, recordDefault: true);
+            if (answer is null) return;
+            saveRecords = answer.Value;
+        }
+        else
+        {
+            var approved = phrase is null
+                ? _dialogs.Confirm("Delete object", heading, lines)
+                : _dialogs.ConfirmWithPhrase("Delete objects", heading, lines, phrase);
+            if (!approved) return;
+            saveRecords = false;
+        }
 
+        var recordDirectory = OperationLog.ResolveDirectory(Settings);
+        var stamp = DateTime.Now;
         var ok = 0;
         var errors = new List<string>();
+        var skipped = new List<string>();
+        string? lastRecordPath = null;
+
         foreach (var row in rows)
         {
+            // Write the record BEFORE deleting. If it can't be written we skip the delete: a record was asked for,
+            // and failing to produce one is not a reason to lose the group anyway.
+            if (saveRecords && row.Type == AdObjectType.Group)
+            {
+                try
+                {
+                    // A membership read that failed, or one we KNOW is truncated, must not become a record that
+                    // looks authoritative — that would silently lose exactly what the record exists to preserve.
+                    if (!groupMembers.TryGetValue(row.DistinguishedName, out var membership))
+                        throw new InvalidOperationException("its membership could not be read, so the record would be incomplete");
+                    if (membership.Truncated)
+                        throw new InvalidOperationException("only part of its membership could be read, so the record would be incomplete");
+
+                    var info = await _directory.GetBasicInfoAsync(row.DistinguishedName);
+                    var attrs = await _directory.LoadObjectAsync(row.DistinguishedName);
+                    var typeLabel = GroupTypeClassifier.Describe(
+                        attrs.FirstOrDefault(a => a.LdapName.Equals("groupType", StringComparison.OrdinalIgnoreCase))?.RawValues.FirstOrDefault());
+                    // An unconfirmed (possibly unreadable) membership is still recorded, but stamped so nobody
+                    // later reads "0 members" as fact.
+                    var caveat = membership.Unconfirmed
+                        ? "No members were returned. This is either an empty group OR its membership was not readable "
+                          + "with the permissions used — the two are indistinguishable, so do NOT treat this as proof the group was empty."
+                        : null;
+                    (lastRecordPath, _) = GroupDeletionRecord.Write(recordDirectory, info, typeLabel, attrs, membership.Members, stamp, caveat);
+                }
+                catch (Exception ex)
+                {
+                    skipped.Add($"{row.Name}: record could not be saved, so it was NOT deleted — {DirectoryService.Friendly(ex)}");
+                    continue;
+                }
+            }
+
             try { await _directory.DeleteObjectAsync(row.DistinguishedName); ok++; }
             catch (Exception ex) { errors.Add($"{row.Name}: {DirectoryService.Friendly(ex)}"); }
         }
@@ -945,10 +1096,22 @@ public partial class MainViewModel : ObservableObject
         Edit.Clear();
         await List.ReloadAsync();
 
-        if (errors.Count > 0)
-            _dialogs.Alert("Delete", $"Deleted {ok}; {errors.Count} failed:\n" + string.Join("\n", errors));
+        // Always say where the records went — including on the failure path, where a record may have been written
+        // for a group whose delete then failed (the file exists and the group doesn't match it).
+        var recordNote = lastRecordPath is not null
+            ? $"\n\nRecord(s) were saved to:\n{System.IO.Path.GetDirectoryName(lastRecordPath)}"
+            : string.Empty;
+        var problems = errors.Concat(skipped).ToList();
+        if (problems.Count > 0)
+            _dialogs.Alert("Delete",
+                $"Deleted {ok}; {problems.Count} not deleted:\n" + string.Join("\n", problems)
+                + (errors.Count > 0 && lastRecordPath is not null
+                    ? "\n\nNote: a record may have been written for a group whose deletion then failed — that group still exists."
+                    : string.Empty)
+                + recordNote);
         else
-            StatusMessage = $"Deleted {ok} object(s).";
+            StatusMessage = $"Deleted {ok} object(s)."
+                          + (lastRecordPath is not null ? $"  Record(s) saved to {System.IO.Path.GetDirectoryName(lastRecordPath)}." : string.Empty);
     }
 
     [RelayCommand]

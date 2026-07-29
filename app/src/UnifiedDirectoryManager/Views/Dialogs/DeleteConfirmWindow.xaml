@@ -1,0 +1,47 @@
+<Window x:Class="UnifiedDirectoryManager.Views.Dialogs.DeleteConfirmWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Delete" Height="480" Width="580"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="Heading" Grid.Row="0" TextWrapping="Wrap" FontWeight="SemiBold" Foreground="#B00020" Margin="0,0,0,8" />
+
+        <Border Grid.Row="1" BorderBrush="#DDD" BorderThickness="1" Padding="8">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <ItemsControl x:Name="Lines">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,1" />
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+        </Border>
+
+        <CheckBox x:Name="RecordCheck" Grid.Row="2" Margin="0,10,0,0"
+                  Content="Save a record of each group (attributes + members) before deleting"
+                  ToolTip="Writes a text file of the group's attributes and a CSV of its members, so the membership can be re-created later." />
+
+        <StackPanel x:Name="PhrasePanel" Grid.Row="3" Margin="0,10,0,0">
+            <TextBlock x:Name="Prompt" Margin="0,0,0,4" TextWrapping="Wrap" />
+            <TextBox x:Name="Input" TextChanged="OnInputChanged" />
+        </StackPanel>
+
+        <!-- Buttons dock first so a long heading/prompt can't squeeze them out. -->
+        <DockPanel Grid.Row="4" Margin="0,12,0,0">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button x:Name="OkButton" Content="Delete" IsDefault="True" Click="OnOk" MinWidth="90" />
+                <Button Content="Cancel" IsCancel="True" MinWidth="90" Margin="8,0,0,0" />
+            </StackPanel>
+            <TextBlock />
+        </DockPanel>
+    </Grid>
+</Window>

@@ -46,6 +46,11 @@ public static class AdValueFormatter
             case byte[] other:
                 return other.Length > 32 ? $"(binary, {other.Length} bytes)" : ToHex(other);
 
+            // groupType is a bitmask whose security bit makes AD return it negative — show the classification
+            // ("Security · Global") rather than a meaningless -2147483646.
+            case int or long when ldapName.Equals("groupType", StringComparison.OrdinalIgnoreCase):
+                return GroupTypeClassifier.Describe(unchecked((uint)Convert.ToInt64(raw)));
+
             case long l when FileTimeAttributes.Contains(ldapName):
                 return FormatFileTime(l);
 

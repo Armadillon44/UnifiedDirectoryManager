@@ -10,6 +10,7 @@
             <MenuItem Header="_File">
                 <MenuItem Header="_New User…" Command="{Binding NewUserCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="_Bulk Create Users…" Command="{Binding BulkCreateUsersCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
+                <MenuItem Header="New _Group…" Command="{Binding NewGroupCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="_Open Selected…" Command="{Binding OpenSelectedCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="_Refresh" Command="{Binding RefreshCommand}" />
                 <Separator Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
@@ -144,6 +145,9 @@
                                     <ContextMenu>
                                         <MenuItem Header="Create OU here…" Click="OnNodeCreateOuClick"
                                                   Visibility="{Binding CanCreateChildOu, Converter={StaticResource BoolToVis}}" />
+                                        <!-- Groups are legal in plain containers (CN=Users) as well as OUs, so this
+                                             is gated on IsContainerNode rather than the OU-only CanCreateChildOu. -->
+                                        <MenuItem Header="New Group here…" Click="OnNodeNewGroupClick" />
                                         <MenuItem Header="Properties" Click="OnNodePropertiesClick" />
                                         <Separator Visibility="{Binding IsOrganizationalUnit, Converter={StaticResource BoolToVis}}" />
                                         <!-- Two-level guard: Delete only reveals "Yes, I'm sure…", which then requires

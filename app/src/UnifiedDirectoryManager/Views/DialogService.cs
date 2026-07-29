@@ -288,6 +288,14 @@ public sealed class DialogService : IDialogService
         return win.ShowDialog() == true ? vm.CreatedDistinguishedName : null;
     }
 
+    public string? ShowNewGroup(string? parentDn)
+    {
+        var vm = new NewGroupViewModel(_directory, this, parentDn);
+        var win = new NewGroupWindow { DataContext = vm, Owner = Owner };
+        vm.Created += () => { win.DialogResult = true; win.Close(); }; // close the modal once the group is created
+        return win.ShowDialog() == true ? vm.CreatedDistinguishedName : null;
+    }
+
     public SearchQuery? ShowAdvancedSearch(string defaultBaseDn)
     {
         var vm = new AdvancedSearchViewModel(this, _savedSearches);
@@ -323,6 +331,13 @@ public sealed class DialogService : IDialogService
     {
         var window = new ConfirmPhraseWindow(title, heading, lines, requiredPhrase) { Owner = Owner };
         return window.ShowDialog() == true;
+    }
+
+    public bool? ConfirmDelete(string title, string heading, IEnumerable<string> lines,
+                               string? requiredPhrase, bool offerRecord, bool recordDefault)
+    {
+        var window = new DeleteConfirmWindow(title, heading, lines, requiredPhrase, offerRecord, recordDefault) { Owner = Owner };
+        return window.ShowDialog() == true ? window.SaveRecord : null;
     }
 
     public PasswordResetRequest? PromptPasswordReset(string accountTitle)

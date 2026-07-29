@@ -8,6 +8,19 @@ the things ADUC never had: reusable **new-user templates**, GUI **advanced searc
 Built with **WPF on .NET 10**. Ships as a **self-contained, single-file `.exe`** for **win-x64** and
 **win-arm64** — no .NET install required on the target machine (Windows 10 / 11).
 
+> **v2.2.0 — Group management ([issue #3](../../issues/3)).** Create, modify, and delete groups:
+> - **Create** from the tree right-click (*New Group here…*) or **File ▸ New Group** (which asks for the OU):
+>   scope (Global / Domain local / Universal), category (Security / Distribution), description, *Managed by*,
+>   initial members, and *protect from accidental deletion*. The logon name is derived from the group name and
+>   stays editable.
+> - **Modify** a group's **scope**, **category**, and ***Managed by*** from the edit pane. Illegal scope changes
+>   (Global ↔ Domain local) are caught before the write instead of failing at the directory.
+> - **Delete** one *or many* groups behind a two-step, type-to-confirm guard. Every deletion first writes a
+>   **record**: all attributes to a text file, and the full membership — with distinguished names, so it can be
+>   re-added — to a CSV. If the membership can't be confirmed complete, the record says so rather than recording
+>   an authoritative-looking zero.
+> - New **Group type** column in the object list (e.g. *Security · Global*).
+>
 > **v2.1.1 — OU management from the tree.** Right-click an OU (or the domain root) in the directory tree to
 > **create** a child OU, view/edit its **Properties** (name, DN in both LDAP + canonical form, description, and
 > the *protect from accidental deletion* flag), or **delete** it behind a two-step, type-to-confirm guard. Also
@@ -48,6 +61,9 @@ templates, and logs live under `%APPDATA%\UnifiedDirectoryManager\` and follow y
 - **Users, computers, and groups** — browse the OU tree, filter/sort/search, choose columns, edit on a
   friendly-name UI backed by real `lDAPDisplayName` attributes, and manage group membership. **Every
   write is confirmed with a diff.**
+- **Group management** — **create** groups (tree right-click or File ▸ New Group), **modify** scope,
+  category, and *Managed by*, and **delete** one or many groups behind a type-to-confirm guard that first
+  saves a full record of the group and its members.
 - **OU management (tree right-click)** — **create** OUs, view/edit **Properties** (DN in LDAP + canonical form,
   description, accidental-deletion protection), and **delete** an OU behind a two-step, type-to-confirm guard.
 - **New-user templates + Bulk Create** — target OU, UPN suffix, country, token-driven attribute defaults,
