@@ -1,7 +1,7 @@
 # Exchange Online navigation + cloud group creation
 
-Status: **planned, not started.** Target branch `release/2.3.0` (new features → minor bump), branched from
-`master` at v2.2.0. Decisions D2 to D4 below are still open.
+Status: **planned, not started. All decisions locked.** Target branch `release/2.3.0` (new features → minor
+bump), branched from `master` at v2.2.0.
 
 Four asks:
 
@@ -15,14 +15,16 @@ Exchange Online write path gets wired in alongside.
 
 ---
 
-## Decisions needed before we start
+## Locked decisions
 
-| # | Decision | Recommendation |
-|---|---|---|
-| ~~D1~~ | ~~Release train.~~ **Decided: ship 2.2.0 first.** Done — [v2.2.0](https://github.com/Armadillon44/UnifiedDirectoryManager/releases/tag/v2.2.0) released, issue #3 closed, this work lands on `release/2.3.0`. | — |
-| D2 | Mail-enabled security groups. Not in the ask, but it is the same cmdlet as a distribution group (`New-DistributionGroup -Type Security`) and the same dialog. | **Include it.** Roughly 10 lines of extra work; leaving it out means a fourth group type the app can list but not create. |
-| D3 | What the Exchange Online ▸ Distribution Groups list is *for*, given Entra ID ▸ Groups already lists DLs. | Entra list stays the read-only inventory; the **Exchange list is the authority and write surface**. It shows what Graph cannot: `IsDirSynced`, `ManagedBy`, `RequireSenderAuthenticationEnabled`, `MemberJoinRestriction`, member count, and it is where Add/Remove member lives. |
-| D4 | Scope of "basic information" for mailboxes. | Identity, type, addresses, delivery/forwarding, quotas, hold, archive, protocol flags. Size and item count behind an explicit button (see G6). |
+All four are decided. Nothing below is open for renegotiation mid-implementation.
+
+| # | Decision |
+|---|---|
+| **D1** | **Ship 2.2.0 first.** Done: [v2.2.0](https://github.com/Armadillon44/UnifiedDirectoryManager/releases/tag/v2.2.0) released, issue #3 closed. This work lands on `release/2.3.0`. |
+| **D2** | **Four group types in one dialog, including mail-enabled security.** Security and Microsoft 365 route to Graph; Distribution and mail-enabled security route to Exchange (`New-DistributionGroup -Type Distribution` / `-Type Security`). The two Exchange types differ only by `-Type`, so the marginal cost is one radio button and its validation branch. |
+| **D3** | **The Exchange list is the authority and write surface; the Entra list stays a read-only inventory.** The Exchange ▸ Distribution Groups list shows what Graph cannot expose (`IsDirSynced`, `ManagedBy`, `RequireSenderAuthenticationEnabled`, `MemberJoinRestriction`, member count), and add/remove member lives there. Rows carry **both** the primary SMTP address and `ExternalDirectoryObjectId`, so double-clicking an Exchange DL can still open its Entra detail (see G8). |
+| **D4** | **Full basic mailbox set, size on demand.** Identity, type, addresses and proxy addresses, delivery and forwarding, quotas, litigation hold, retention policy, archive state, and the protocol flags — two cheap directory-backed calls on open. Size, item count, and last logon sit behind an explicit button, one mailbox at a time, never fanned out across a list (see G6). |
 
 ---
 
@@ -110,7 +112,7 @@ of two backends:
 | Security | Graph | `POST /groups` with `mailEnabled:false, securityEnabled:true, groupTypes:[]` |
 | Microsoft 365 | Graph | `POST /groups` with `groupTypes:["Unified"], mailEnabled:true, securityEnabled:false` |
 | Distribution | Exchange | `New-DistributionGroup -Type Distribution` |
-| Mail-enabled security (D2) | Exchange | `New-DistributionGroup -Type Security` |
+| Mail-enabled security | Exchange | `New-DistributionGroup -Type Security` |
 
 Graph returns **400 "Cannot Create a mail-enabled security groups and or distribution list"** for the bottom two, so
 the routing is not an optimisation, it is required. Match that error on a substring; the typo is in the live service
