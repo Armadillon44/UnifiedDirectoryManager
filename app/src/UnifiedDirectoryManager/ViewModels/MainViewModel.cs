@@ -544,6 +544,54 @@ public partial class MainViewModel : ObservableObject
         StatusMessage = created is not null ? $"Created OU “{created.Name}”." : "Created OU.";
     }
 
+    /// <summary>Creates a group under the right-clicked container (tree right-click ▸ "New Group here…").</summary>
+    public Task CreateGroupUnderAsync(TreeNodeViewModel? node)
+    {
+        if (node is null || !node.IsContainerNode || string.IsNullOrWhiteSpace(node.DistinguishedName))
+            return Task.CompletedTask;
+        return CreateGroupInAsync(node.DistinguishedName);
+    }
+
+    /// <summary>File ▸ New Group… — pre-fills the tree's selected container when there is one; the dialog itself
+    /// lets the operator browse for the target OU, so no prior selection is required.</summary>
+    [RelayCommand]
+    private Task NewGroupAsync() =>
+        CreateGroupInAsync(SelectedNode is { IsContainerNode: true } node ? node.DistinguishedName : null);
+
+    /// <summary>Shows the New Group dialog (optionally pre-filled with a target container), then brings the new
+    /// group into view. Groups are list objects, not tree nodes, so the refresh loads the group's parent container
+    /// into the list and selects the new row.</summary>
+    private async Task CreateGroupInAsync(string? parentDn)
+    {
+        var newDn = _dialogs.ShowNewGroup(parentDn);
+        if (string.IsNullOrWhiteSpace(newDn)) return; // cancelled
+
+        // Refresh against the container the group ACTUALLY landed in — the operator may have browsed to a
+        // different OU inside the dialog, so the DN we passed in isn't necessarily the parent.
+        var actualParent = DirectoryService.ParentDn(newDn);
+        if (!string.IsNullOrWhiteSpace(actualParent))
+        {
+            // Right-click never moves the tree selection, so point the tree at the same container the list is
+            // about to show. Otherwise the tree highlights one OU while the list shows another, and clicking the
+            // highlighted node raises no selection change to recover with.
+            if (FindNodeByDn(actualParent) is { IsPlaceholder: false } parentNode && !ReferenceEquals(SelectedNode, parentNode))
+            {
+                SelectedNode = parentNode;
+                parentNode.IsSelected = true;
+            }
+            // The new group has to be visible to be selected: widen a Users/Computers "Show:" filter (an advanced
+            // search leaves it pinned to its object type) and drop any quick-filter text.
+            if (List.Filter is ListFilter.Users or ListFilter.Computers) List.Filter = ListFilter.All;
+            List.QuickFilter = string.Empty;
+            await List.LoadContainerAsync(actualParent);
+        }
+        var created = List.Rows.FirstOrDefault(r => string.Equals(r.DistinguishedName, newDn, StringComparison.OrdinalIgnoreCase));
+        if (created is not null) List.SelectedRow = created;
+        StatusMessage = created is not null
+            ? $"Created group “{created.Name}”."
+            : $"Created group, but it isn't shown in the current view: {newDn}";
+    }
+
     /// <summary>Permanently deletes an OU (right-click ▸ Delete ▸ "Yes, I'm sure…"), gated by a protection check
     /// and a type-the-random-string confirmation. Deletes the whole subtree, so everything under the OU goes too.</summary>
     private bool _deleting; // guards the delete flow against a second launch during the async protection check

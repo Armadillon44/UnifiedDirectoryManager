@@ -20,6 +20,32 @@ public sealed record BulkResult(IReadOnlyList<BulkItemResult> Items)
 public sealed record UserCreateResult(string DistinguishedName, bool PasswordSet, bool Enabled);
 
 /// <summary>
+/// Outcome of creating a group. The group EXISTS whenever this is returned — the optional error strings are
+/// non-fatal failures of the separate follow-up writes (each is its own LDAP operation that can fail on its own,
+/// e.g. Create-Child granted but WriteDacl denied), so callers must report the group as created and surface these
+/// as warnings rather than treating them as a failed create.
+/// </summary>
+public sealed record GroupCreateResult(
+    string DistinguishedName,
+    string? ProtectionError = null,
+    string? ManagedByError = null,
+    string? MembersError = null)
+{
+    /// <summary>The follow-up steps that didn't complete, phrased for the operator; empty when all succeeded.</summary>
+    public IReadOnlyList<string> Warnings
+    {
+        get
+        {
+            var list = new List<string>();
+            if (ManagedByError is not null) list.Add("“Managed by” was not set: " + ManagedByError);
+            if (MembersError is not null) list.Add("These members were not added: " + MembersError);
+            if (ProtectionError is not null) list.Add("Accidental-deletion protection was not applied: " + ProtectionError);
+            return list;
+        }
+    }
+}
+
+/// <summary>
 /// All Active Directory I/O. Binds with explicitly-supplied credentials only (never the machine
 /// context). Reads return display-ready data with friendly names; writes are committed as requested
 /// by callers that have already confirmed with the user.
@@ -55,6 +81,17 @@ public interface IDirectoryService
     /// canonical name (both naming formats), and description. Requests <c>canonicalName</c> explicitly since
     /// it's a constructed attribute not returned by a wildcard load.</summary>
     Task<ObjectBasicInfo> GetBasicInfoAsync(string distinguishedName, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates a group named <paramref name="name"/> under <paramref name="parentDn"/> (an OU or container) with the
+    /// given scope + category, then applies the optional follow-ups (managed-by, initial members, accidental-deletion
+    /// protection). The group is created by the first commit, so a follow-up failure is reported through
+    /// <see cref="GroupCreateResult"/> rather than thrown — see that type's remarks.
+    /// </summary>
+    Task<GroupCreateResult> CreateGroupAsync(
+        string parentDn, string name, string samAccountName, GroupScope scope, GroupCategory category,
+        string? description, string? managedByDn, bool protectFromDeletion,
+        IReadOnlyList<string>? initialMemberDns = null, CancellationToken cancellationToken = default);
 
     /// <summary>Creates an organizational unit named <paramref name="name"/> under <paramref name="parentDn"/>
     /// (a domain root or another OU), optionally setting a description and the accidental-deletion protection

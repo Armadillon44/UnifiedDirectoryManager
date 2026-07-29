@@ -100,6 +100,11 @@ public interface IDialogService
     /// Returns the new OU's distinguished name if one was created, or null if cancelled.</summary>
     string? ShowNewOu(string parentDn);
 
+    /// <summary>Opens the (modal) "new group" dialog. <paramref name="parentDn"/> pre-fills the target container
+    /// and may be null — the dialog lets the operator browse for one. Returns the new group's distinguished name
+    /// if one was created, or null if cancelled.</summary>
+    string? ShowNewGroup(string? parentDn);
+
     /// <summary>Advanced search builder. Returns the query to run, or null if cancelled.</summary>
     SearchQuery? ShowAdvancedSearch(string defaultBaseDn);
 

@@ -39,12 +39,13 @@
                   IsChecked="{Binding ProtectFromDeletion}" IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}"
                   Margin="0,2,0,0" />
 
+        <!-- Buttons dock FIRST so a long status message can't squeeze them to zero width. -->
         <DockPanel Grid.Row="5" Grid.ColumnSpan="2" Margin="0,12,0,0">
-            <TextBlock Text="{Binding Status}" Foreground="#666" VerticalAlignment="Center" TextWrapping="Wrap" />
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                 <Button Content="Create" IsDefault="True" Command="{Binding CreateCommand}" MinWidth="90" />
                 <Button Content="Cancel" IsCancel="True" MinWidth="90" Margin="8,0,0,0" />
             </StackPanel>
+            <TextBlock Text="{Binding Status}" Foreground="#666" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0" />
         </DockPanel>
     </Grid>
 </Window>

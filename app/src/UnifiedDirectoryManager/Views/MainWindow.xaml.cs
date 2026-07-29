@@ -94,6 +94,11 @@ public partial class MainWindow : Window
         if (_vm is not null && NodeFromMenu(sender) is { } node) _ = _vm.CreateOuUnderAsync(node);
     }
 
+    private void OnNodeNewGroupClick(object sender, RoutedEventArgs e)
+    {
+        if (_vm is not null && NodeFromMenu(sender) is { } node) _ = _vm.CreateGroupUnderAsync(node);
+    }
+
     /// <summary>Resolves the tree node a context-menu item acts on. The menu item inherits the node as its
     /// DataContext (the ContextMenu sits on the node's row); if that's ever unset, walk up any nested menu
     /// items to the owning ContextMenu and read its placement target.</summary>

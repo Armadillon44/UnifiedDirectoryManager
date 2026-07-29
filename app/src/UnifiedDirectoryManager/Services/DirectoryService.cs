@@ -618,6 +618,110 @@ public sealed class DirectoryService : IDirectoryService
         }, cancellationToken);
     }
 
+    public Task<GroupCreateResult> CreateGroupAsync(
+        string parentDn, string name, string samAccountName, GroupScope scope, GroupCategory category,
+        string? description, string? managedByDn, bool protectFromDeletion,
+        IReadOnlyList<string>? initialMemberDns = null, CancellationToken cancellationToken = default)
+    {
+        return Task.Run(() =>
+        {
+            var groupName = name?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(groupName))
+                throw new InvalidOperationException("A group name is required.");
+            var sam = samAccountName?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(sam))
+                throw new InvalidOperationException("A group logon name (sAMAccountName) is required.");
+
+            string newDn;
+            using (var parent = Required.CreateEntry(parentDn))
+            {
+                var group = parent.Children.Add($"CN={EscapeRdn(groupName)}", "group");
+                try
+                {
+                    // groupType MUST be set before the first commit — AD requires it at creation, and deferring it
+                    // to the generic integer path (it's flagged IsInteger) would create the group with a default
+                    // type first. Build() returns a SIGNED int because the security bit overflows Int32.
+                    group.Properties["groupType"].Value = GroupTypeClassifier.Build(scope, category);
+                    // Not schema-mandatory, but AD invents a junk backward-compatibility value if it's omitted.
+                    group.Properties["sAMAccountName"].Value = sam;
+                    var desc = description?.Trim();
+                    if (!string.IsNullOrWhiteSpace(desc)) group.Properties["description"].Value = desc;
+                    group.CommitChanges();
+                    // Read back the canonical DN; the fallback uses the escaped RDN so it stays a valid DN.
+                    // Fallback uses DN escaping (not the ADsPath variant) — the value is consumed as a DN and
+                    // LdapPath re-escapes '/' itself, so escaping it here too would double it.
+                    newDn = group.Properties["distinguishedName"].Value?.ToString() ?? $"CN={EscapeDnValue(groupName)},{parentDn}";
+                }
+                finally { group.Dispose(); }
+            }
+
+            // The group now EXISTS. Each step below is a separate write that can fail on its own, so a failure is
+            // recorded as a non-fatal warning — never report a failed create over an object that was created.
+            string? managedByError = null;
+            if (!string.IsNullOrWhiteSpace(managedByDn))
+            {
+                try
+                {
+                    ApplyChangesCore(newDn, new[]
+                    {
+                        new PendingChange { Op = ChangeOp.Set, LdapName = "managedBy", FriendlyName = "Managed by", Values = { managedByDn!.Trim() } },
+                    });
+                }
+                catch (Exception ex)
+                {
+                    managedByError = Friendly(ex);
+                    AppLog.Instance.Warn($"Created group {newDn} but could not set managedBy: {managedByError}");
+                }
+            }
+
+            string? membersError = null;
+            var members = initialMemberDns?.Where(d => !string.IsNullOrWhiteSpace(d)).ToList() ?? new List<string>();
+            var membersAdded = members.Count;
+            if (members.Count > 0)
+            {
+                try { ModifyMembers(newDn, members, add: true); }
+                catch (Exception ex)
+                {
+                    // The batch is ONE atomic LDAP modify, so a single member the group's scope forbids drops them
+                    // all. Retry per member so the legal ones land and the warning can name the offenders.
+                    AppLog.Instance.Warn($"Batch member add failed on {newDn} ({Friendly(ex)}); retrying one at a time.");
+                    var failed = new List<string>();
+                    foreach (var memberDn in members)
+                    {
+                        try { ModifyMembers(newDn, new[] { memberDn }, add: true); }
+                        catch (Exception single) { failed.Add($"{memberDn} — {Friendly(single)}"); }
+                    }
+                    membersAdded = members.Count - failed.Count;
+                    if (failed.Count > 0)
+                    {
+                        membersError = string.Join("; ", failed);
+                        AppLog.Instance.Warn($"Created group {newDn} but could not add {failed.Count} of {members.Count} member(s): {membersError}");
+                    }
+                }
+            }
+
+            string? protectionError = null;
+            if (protectFromDeletion)
+            {
+                try { ApplyChangesCore(newDn, new[] { new PendingChange { Op = ChangeOp.Protect } }); }
+                catch (Exception ex)
+                {
+                    protectionError = Friendly(ex);
+                    AppLog.Instance.Warn($"Created group {newDn} but could not apply accidental-deletion protection: {protectionError}");
+                }
+            }
+
+            // Report what actually landed, not what was requested — this Info line is the audit trail.
+            var memberNote = members.Count == 0 ? string.Empty
+                : membersError is null ? $", {members.Count} initial member(s)"
+                : $", {membersAdded} of {members.Count} initial member(s) added";
+            AppLog.Instance.Info($"Created {GroupTypeClassifier.Describe(unchecked((uint)GroupTypeClassifier.Build(scope, category)))} "
+                              + $"group {newDn} (sAMAccountName={sam}{memberNote})"
+                              + (protectFromDeletion && protectionError is null ? " (protected from accidental deletion)." : "."));
+            return new GroupCreateResult(newDn, protectionError, managedByError, membersError);
+        }, cancellationToken);
+    }
+
     public Task<(string Dn, string? ProtectionError)> CreateOrganizationalUnitAsync(
         string parentDn, string name, bool protectFromDeletion, string? description,
         CancellationToken cancellationToken = default)
@@ -637,8 +741,8 @@ public sealed class DirectoryService : IDirectoryService
                     var desc = description?.Trim();
                     if (!string.IsNullOrWhiteSpace(desc)) ou.Properties["description"].Value = desc;
                     ou.CommitChanges();
-                    // Read back the canonical DN; the fallback uses the escaped RDN so it stays a valid DN.
-                    newDn = ou.Properties["distinguishedName"].Value?.ToString() ?? $"OU={EscapeRdn(ouName)},{parentDn}";
+                    // Read back the canonical DN; the fallback uses DN escaping (LdapPath adds the '/' escape).
+                    newDn = ou.Properties["distinguishedName"].Value?.ToString() ?? $"OU={EscapeDnValue(ouName)},{parentDn}";
                 }
                 finally { ou.Dispose(); }
             }
@@ -999,13 +1103,16 @@ public sealed class DirectoryService : IDirectoryService
             ? r.Properties[prop].Cast<object?>().Select(o => o?.ToString() ?? string.Empty)
             : Enumerable.Empty<string>();
 
-    private static string EscapeRdn(string value) =>
-        // '\' first so the escapes we add below aren't doubled. '/' isn't an RFC 4514 DN special, but it IS the
-        // ADsPath component separator, so it must be escaped for the ADSI child bind (ADSI un-escapes it back,
-        // so the object is still named literally, e.g. "Sales/Marketing").
+    /// <summary>RFC 4514 escaping for a value inside a DN ('\' first so the escapes added after aren't doubled).
+    /// Deliberately does NOT touch '/', which is legal in a DN — <see cref="ConnectionState.LdapPath"/> adds the
+    /// ADsPath escape when it builds an LDAP:// path, so escaping it here as well would double it.</summary>
+    private static string EscapeDnValue(string value) =>
         value.Replace("\\", "\\\\").Replace(",", "\\,").Replace("+", "\\+").Replace("\"", "\\\"")
-             .Replace("<", "\\<").Replace(">", "\\>").Replace(";", "\\;").Replace("=", "\\=").Replace("#", "\\#")
-             .Replace("/", "\\/");
+             .Replace("<", "\\<").Replace(">", "\\>").Replace(";", "\\;").Replace("=", "\\=").Replace("#", "\\#");
+
+    /// <summary>Escaping for an RDN handed to ADSI's <c>Children.Add</c>: DN escaping plus '/', the ADsPath
+    /// component separator (ADSI un-escapes it, so the object is still named literally, e.g. "Sales/Marketing").</summary>
+    private static string EscapeRdn(string value) => EscapeDnValue(value).Replace("/", "\\/");
 
     /// <summary>Turns directory exceptions into short, user-facing messages.</summary>
     internal static string Friendly(Exception ex)

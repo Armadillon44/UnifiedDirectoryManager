@@ -22,6 +22,7 @@ public partial class ObjectListView : UserControl
 
     private Point _dragStart;
     private bool _maybeDrag;
+    private bool _pushingSelection; // true while a view→VM selection push is in flight (blocks the mirror back)
 
     public ObjectListView()
     {
@@ -31,10 +32,31 @@ public partial class ObjectListView : UserControl
 
     private void OnDataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
-        if (_vm is not null) _vm.ColumnsChanged -= OnColumnsChanged;
+        if (_vm is not null)
+        {
+            _vm.ColumnsChanged -= OnColumnsChanged;
+            _vm.SelectionChanged -= OnVmSelectionChanged;
+        }
         _vm = DataContext as ObjectListViewModel;
-        if (_vm is not null) _vm.ColumnsChanged += OnColumnsChanged;
+        if (_vm is not null)
+        {
+            _vm.ColumnsChanged += OnColumnsChanged;
+            _vm.SelectionChanged += OnVmSelectionChanged;
+        }
         RebuildColumns();
+    }
+
+    /// <summary>
+    /// Mirrors a selection made by the view model (e.g. selecting a just-created object) into the ListView, so the
+    /// row is actually highlighted and scrolled into view. Selection is otherwise view→VM only, which would leave
+    /// the VM pointing at a row the list shows as unselected.
+    /// </summary>
+    private void OnVmSelectionChanged(object? sender, AdObjectRow? row)
+    {
+        if (_pushingSelection || row is null) return;                                   // ignore our own echo
+        if (List.SelectedItems.Count == 1 && ReferenceEquals(List.SelectedItems[0], row)) return; // already there
+        List.SelectedItem = row;   // OnSelectionChanged then repopulates the VM's SelectedRows
+        List.ScrollIntoView(row);
     }
 
     private void OnColumnsChanged(object? sender, EventArgs e) => RebuildColumns();
@@ -140,15 +162,20 @@ public partial class ObjectListView : UserControl
     private void OnSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_vm is null) return;
-        _vm.SelectedRows.Clear();
-        foreach (var item in List.SelectedItems)
-            if (item is AdObjectRow row) _vm.SelectedRows.Add(row);
+        _pushingSelection = true; // suppress the VM→view mirror while we push view→VM
+        try
+        {
+            _vm.SelectedRows.Clear();
+            foreach (var item in List.SelectedItems)
+                if (item is AdObjectRow row) _vm.SelectedRows.Add(row);
 
-        // Drive the edit pane from the single (most-recent) selection.
-        if (List.SelectedItems.Count >= 1)
-            _vm.SelectedRow = List.SelectedItems[^1] as AdObjectRow;
-        else
-            _vm.SelectedRow = null;
+            // Drive the edit pane from the single (most-recent) selection.
+            if (List.SelectedItems.Count >= 1)
+                _vm.SelectedRow = List.SelectedItems[^1] as AdObjectRow;
+            else
+                _vm.SelectedRow = null;
+        }
+        finally { _pushingSelection = false; }
     }
 
     /// <summary>Compares rows by a column key (Name/Type property or an attribute value).</summary>
