@@ -296,6 +296,16 @@ public sealed class DialogService : IDialogService
         return win.ShowDialog() == true ? vm.CreatedDistinguishedName : null;
     }
 
+    public (string Id, string Name, bool FromExchange)? ShowNewCloudGroup(CloudGroupType? initialType)
+    {
+        var vm = new NewCloudGroupViewModel(_graph, _exchange, this, initialType);
+        var win = new NewCloudGroupWindow { DataContext = vm, Owner = Owner };
+        vm.Created += () => { win.DialogResult = true; win.Close(); }; // close the modal once the group is created
+        return win.ShowDialog() == true && vm.CreatedId is { Length: > 0 } id
+            ? (id, vm.CreatedName ?? string.Empty, vm.CreatedInExchange)
+            : null;
+    }
+
     public SearchQuery? ShowAdvancedSearch(string defaultBaseDn)
     {
         var vm = new AdvancedSearchViewModel(this, _savedSearches);

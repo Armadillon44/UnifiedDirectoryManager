@@ -1,0 +1,132 @@
+<Window x:Class="UnifiedDirectoryManager.Views.Dialogs.NewCloudGroupWindow"
+        x:Name="Root"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="New Cloud Group" Height="640" Width="600"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        FocusManager.FocusedElement="{Binding ElementName=NameBox}">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="Group type" Foreground="#666" Margin="0,0,10,8" VerticalAlignment="Center" />
+        <ComboBox Grid.Row="0" Grid.Column="1" ItemsSource="{Binding TypeOptions}" DisplayMemberPath="Label"
+                  SelectedValuePath="Value" SelectedValue="{Binding Type}" Margin="0,0,0,8"
+                  IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}"
+                  ToolTip="Security and Microsoft 365 groups are created in Entra ID. Distribution and mail-enabled security groups exist only in Exchange Online — Microsoft Graph cannot create them." />
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="Name" Foreground="#666" Margin="0,0,10,8" VerticalAlignment="Center" />
+        <TextBox x:Name="NameBox" Grid.Row="1" Grid.Column="1" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
+                 IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" Margin="0,0,0,8">
+            <TextBox.InputBindings>
+                <KeyBinding Key="Enter" Command="{Binding CreateCommand}" />
+            </TextBox.InputBindings>
+        </TextBox>
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="{Binding NicknameLabel}" Foreground="#666" Margin="0,0,10,8" VerticalAlignment="Center" />
+        <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding MailNickname, UpdateSourceTrigger=PropertyChanged}"
+                 IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" Margin="0,0,0,8"
+                 ToolTip="Follows the name until you edit it. Entra ID requires one even for a security group that isn't mail-enabled; Exchange generates one from the name if left empty, rewriting anything it doesn't accept." />
+
+        <TextBlock Grid.Row="3" Grid.Column="0" Text="Description" Foreground="#666" Margin="0,0,10,8" VerticalAlignment="Top" />
+        <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}"
+                 IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" TextWrapping="Wrap"
+                 AcceptsReturn="False" MinLines="2" MaxHeight="60" VerticalScrollBarVisibility="Auto" Margin="0,0,0,8" />
+
+        <TextBlock Grid.Row="4" Grid.Column="0" Text="Visibility" Foreground="#666" Margin="0,0,10,8" VerticalAlignment="Center"
+                   Visibility="{Binding ShowVisibility, Converter={StaticResource BoolToVis}}" />
+        <ComboBox Grid.Row="4" Grid.Column="1" ItemsSource="{Binding VisibilityOptions}" DisplayMemberPath="Label"
+                  SelectedValuePath="Value" SelectedValue="{Binding Visibility}" Margin="0,0,0,8"
+                  IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}"
+                  Visibility="{Binding ShowVisibility, Converter={StaticResource BoolToVis}}" />
+
+        <StackPanel Grid.Row="5" Grid.Column="1" Margin="0,0,0,4">
+            <CheckBox Content="Allow mail from external senders" IsChecked="{Binding AllowExternalSenders}"
+                      IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" Margin="0,2,0,4"
+                      Visibility="{Binding IsExchangeType, Converter={StaticResource BoolToVis}}"
+                      ToolTip="Off by default, matching Exchange: a new group accepts mail only from authenticated (internal) senders and silently rejects everything from outside." />
+            <CheckBox Content="Hide the membership list (permanent)" IsChecked="{Binding HiddenMembership}"
+                      IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" Margin="0,2,0,4"
+                      Visibility="{Binding ShowHiddenMembership, Converter={StaticResource BoolToVis}}"
+                      ToolTip="Can only be set when the group is created and can never be undone — the group would have to be deleted and recreated." />
+        </StackPanel>
+
+        <TextBlock Grid.Row="6" Grid.Column="1" Foreground="#8A6D00" TextWrapping="Wrap" Margin="0,0,0,6"
+                   Visibility="{Binding IsExchangeType, Converter={StaticResource BoolToVis}}"
+                   Text="A new Exchange group appears here immediately, but can take a while to show up in the Entra ID list." />
+
+        <DockPanel Grid.Row="7" Grid.Column="1" Margin="0,4,0,0">
+            <TextBlock DockPanel.Dock="Top" Text="Owners (optional)" Foreground="#666" Margin="0,0,0,4" />
+            <WrapPanel DockPanel.Dock="Bottom" Margin="0,4,0,0">
+                <Button Content="Add owners…" Command="{Binding AddOwnersCommand}"
+                        IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" />
+            </WrapPanel>
+            <Border BorderBrush="#DDD" BorderThickness="1" MinHeight="52">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding Owners}" Margin="4">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <DockPanel Margin="0,1">
+                                    <Button DockPanel.Dock="Right" Content="✕" Width="22" MinWidth="22" Padding="0"
+                                            Command="{Binding DataContext.RemoveOwnerCommand, ElementName=Root}"
+                                            CommandParameter="{Binding}" />
+                                    <TextBlock Text="{Binding Name}" ToolTip="{Binding Detail}" VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis" />
+                                </DockPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </Border>
+        </DockPanel>
+
+        <DockPanel Grid.Row="8" Grid.Column="1" Margin="0,8,0,0">
+            <TextBlock DockPanel.Dock="Top" Text="Members (optional)" Foreground="#666" Margin="0,0,0,4" />
+            <WrapPanel DockPanel.Dock="Bottom" Margin="0,4,0,0">
+                <Button Content="Add members…" Command="{Binding AddMembersCommand}"
+                        IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" />
+            </WrapPanel>
+            <Border BorderBrush="#DDD" BorderThickness="1" MinHeight="52">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding Members}" Margin="4">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <DockPanel Margin="0,1">
+                                    <Button DockPanel.Dock="Right" Content="✕" Width="22" MinWidth="22" Padding="0"
+                                            Command="{Binding DataContext.RemoveMemberCommand, ElementName=Root}"
+                                            CommandParameter="{Binding}" />
+                                    <TextBlock Text="{Binding Name}" ToolTip="{Binding Detail}" VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis" />
+                                </DockPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </Border>
+        </DockPanel>
+
+        <!-- Buttons dock FIRST so they always reserve their width; a long "Create failed: …" status then wraps
+             into whatever is left instead of squeezing them to zero. -->
+        <DockPanel Grid.Row="9" Grid.ColumnSpan="2" Margin="0,12,0,0">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button Content="Create" IsDefault="True" Command="{Binding CreateCommand}" MinWidth="90" />
+                <Button Content="Cancel" IsCancel="True" MinWidth="90" Margin="8,0,0,0" />
+            </StackPanel>
+            <TextBlock Text="{Binding Status}" Foreground="#666" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0" />
+        </DockPanel>
+    </Grid>
+</Window>

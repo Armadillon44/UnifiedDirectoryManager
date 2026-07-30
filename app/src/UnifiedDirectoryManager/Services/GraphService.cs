@@ -333,6 +333,119 @@ public sealed class GraphService : IGraphService
 
     // --- Writes (callers confirm first) ---
 
+    /// <summary>Graph binds relationships by absolute URL, and caps them at 20 PER REQUEST — both on create
+    /// (owners + members counted together) and on a members PATCH.</summary>
+    private const int BindLimit = 20;
+
+    public async Task<CloudGroupCreateResult> CreateGroupAsync(CloudGroupCreateRequest request, CancellationToken cancellationToken = default)
+    {
+        if (_graph is null) throw new InvalidOperationException("Sign in to Entra ID first.");
+        if (CloudGroupValidator.IsExchangeType(request.Type))
+            throw new ArgumentException("Distribution and mail-enabled security groups are read-only in Microsoft Graph; create them through Exchange Online.", nameof(request));
+
+        var unified = request.Type == CloudGroupType.Microsoft365;
+        var body = new Group
+        {
+            DisplayName = request.DisplayName.Trim(),
+            Description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description!.Trim(),
+            MailNickname = request.MailNickname.Trim(),
+            MailEnabled = unified,
+            SecurityEnabled = !unified,
+            GroupTypes = unified ? new List<string> { "Unified" } : new List<string>(),
+        };
+        // HiddenMembership is a Microsoft 365 concept and can never be changed afterwards. A security group's
+        // visibility isn't meaningful, so it is left unset there rather than sent as a no-op.
+        if (unified) body.Visibility = request.HiddenMembership ? "HiddenMembership" : request.Visibility;
+
+        var owners = Distinct(request.Owners);
+        var members = Distinct(request.Members);
+
+        // Owners are deliberately NOT part of the create body. Graph has a documented known issue with no
+        // workaround: a non-admin naming themselves in owners@odata.bind gets 400 "Request contains a property
+        // with duplicate values", and because that is a property of the request body it fails the WHOLE create —
+        // no group at all, from an error that names no principal. The issue is specific to Create/Update/Upsert;
+        // POST /owners/$ref afterwards is a separate operation and is not affected. Binding owners after the
+        // create also keeps an admin's explicitly-chosen owner, which a blanket "strip self" would have dropped,
+        // leaving the ownerless security group this is meant to avoid.
+        var membersOnCreate = members.Take(BindLimit).ToList();
+        if (membersOnCreate.Count > 0)
+            body.AdditionalData = new Dictionary<string, object>
+            {
+                ["members@odata.bind"] = membersOnCreate.Select(m => DirectoryUrl("directoryObjects", m.Id)).ToList(),
+            };
+
+        var created = await _graph.Groups.PostAsync(body, cancellationToken: cancellationToken);
+        var id = created?.Id;
+        if (string.IsNullOrEmpty(id))
+            throw new InvalidOperationException("Entra ID accepted the group but returned no object id.");
+
+        AppLog.Instance.Info($"Created cloud group '{body.DisplayName}' ({request.Type}) as {id}.");
+
+        // Owners (all of them) and any members past the per-request cap are follow-up writes. The group already
+        // exists, so a failure here is a warning, not a failed create.
+        var ownersError = await BindOverflowAsync("owners", id!, owners, cancellationToken).ConfigureAwait(false);
+        var membersError = await BindOverflowAsync("members", id!, members.Skip(membersOnCreate.Count).ToList(), cancellationToken).ConfigureAwait(false);
+        return new CloudGroupCreateResult(id!, body.DisplayName ?? request.DisplayName, ownersError, membersError);
+    }
+
+    /// <summary>
+    /// Adds the relationships that didn't fit on the create request, one reference at a time so a single bad
+    /// principal doesn't discard the whole batch (a PATCH of <c>members@odata.bind</c> is all-or-nothing).
+    /// Returns null on success, or a message naming what didn't get added.
+    /// </summary>
+    private async Task<string?> BindOverflowAsync(
+        string relationship, string groupId, IReadOnlyList<CloudGroupPrincipal> principals, CancellationToken ct)
+    {
+        if (principals.Count == 0) return null;
+        var failed = new List<string>();
+        foreach (var p in principals)
+        {
+            // The directory needs a moment after a create before it will accept references to the new group;
+            // Graph documents a transient 400 for exactly this window, so the first attempts are retried.
+            var attempt = 0;
+            while (true)
+            {
+                try
+                {
+                    var reference = new ReferenceCreate
+                    {
+                        OdataId = DirectoryUrl(relationship == "owners" ? "users" : "directoryObjects", p.Id),
+                    };
+                    if (relationship == "owners")
+                        await _graph!.Groups[groupId].Owners.Ref.PostAsync(reference, cancellationToken: ct).ConfigureAwait(false);
+                    else
+                        await _graph!.Groups[groupId].Members.Ref.PostAsync(reference, cancellationToken: ct).ConfigureAwait(false);
+                    break;
+                }
+                catch (Exception ex) when (attempt < 3 && IsReplicationDelay(ex))
+                {
+                    attempt++;
+                    await Task.Delay(TimeSpan.FromSeconds(attempt * 2), ct).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Instance.Warn($"Adding {relationship} {p.Id} to cloud group {groupId} failed: {GraphErrors.Friendly(ex)}");
+                    failed.Add(p.DisplayName);
+                    break;
+                }
+            }
+        }
+        return failed.Count == 0 ? null : string.Join(", ", failed);
+    }
+
+    /// <summary>The documented transient failure while a freshly-created object replicates across directory replicas.</summary>
+    private static bool IsReplicationDelay(Exception ex) =>
+        GraphErrors.Friendly(ex).Contains("don't exist", StringComparison.OrdinalIgnoreCase)
+        || GraphErrors.Friendly(ex).Contains("does not exist", StringComparison.OrdinalIgnoreCase);
+
+    private static string DirectoryUrl(string segment, string id) => $"https://graph.microsoft.com/v1.0/{segment}/{id}";
+
+    private static List<CloudGroupPrincipal> Distinct(IReadOnlyList<CloudGroupPrincipal> source) =>
+        source.Where(p => !string.IsNullOrWhiteSpace(p.Id))
+              .GroupBy(p => p.Id, StringComparer.OrdinalIgnoreCase)
+              .Select(g => g.First())
+              .ToList();
+
     public async Task AddMemberToGroupAsync(string groupId, string memberObjectId, CancellationToken cancellationToken = default)
     {
         if (_graph is null) throw new InvalidOperationException("Sign in to Entra ID first.");

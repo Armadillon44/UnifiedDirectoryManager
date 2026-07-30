@@ -140,7 +140,16 @@ public partial class CloudObjectListViewModel : ObservableObject
     }
 
     /// <summary>Switches the list to a mode and loads the first page.</summary>
-    public async Task LoadAsync(CloudListMode mode)
+    public Task LoadAsync(CloudListMode mode) => LoadAsync(mode, null);
+
+    /// <summary>
+    /// Switches the list to a mode and loads the first page, optionally with the server-side search pre-seeded.
+    /// Seeding matters after creating an object: both backends would otherwise return an arbitrary first page
+    /// (Graph pages; Exchange caps at 200) that almost certainly doesn't contain the new row, which reads as the
+    /// create having failed. The search is applied BEFORE the fetch so this stays one round trip — the Exchange
+    /// lists run on a serialised channel where a second load is expensive.
+    /// </summary>
+    public async Task LoadAsync(CloudListMode mode, string? search)
     {
         Mode = mode;
         Header = mode switch
@@ -155,11 +164,25 @@ public partial class CloudObjectListViewModel : ObservableObject
 
         BuildColumns(mode);
         BuildFilterOptions(mode);
-        SearchText = string.Empty;
+        SearchText = search?.Trim() ?? string.Empty;
         QuickFilter = string.Empty;
         // Set the pane's hint on the mode switch as well, so it is already right before the first selection.
         if (IsExchangeMode) Detail.EmptyHint = ExchangeDetailHint;
         await LoadFirstPageAsync();
+    }
+
+    /// <summary>
+    /// Selects the row with the given id if it is loaded, and reports whether it was found. Callers use the
+    /// answer to tell the operator plainly when a just-created object isn't visible yet, rather than leaving
+    /// them to conclude it wasn't created.
+    /// </summary>
+    public bool SelectRowById(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return false;
+        var row = Rows.FirstOrDefault(r => string.Equals(r.Id, id, StringComparison.OrdinalIgnoreCase));
+        if (row is null) return false;
+        SelectedRow = row;
+        return true;
     }
 
     [RelayCommand]

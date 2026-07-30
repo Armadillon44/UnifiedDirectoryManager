@@ -11,6 +11,7 @@
                 <MenuItem Header="_New User…" Command="{Binding NewUserCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="_Bulk Create Users…" Command="{Binding BulkCreateUsersCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="New _Group…" Command="{Binding NewGroupCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
+                <MenuItem Header="New _Cloud Group…" Command="{Binding NewCloudGroupCommand}" Visibility="{Binding IsCloudView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="_Open Selected…" Command="{Binding OpenSelectedCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="_Refresh" Command="{Binding RefreshCommand}" />
                 <Separator Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
@@ -137,8 +138,8 @@
                     </TreeView.ItemContainerStyle>
                     <TreeView.Resources>
                         <HierarchicalDataTemplate DataType="{x:Type vm:TreeNodeViewModel}" ItemsSource="{Binding Children}">
-                            <!-- ContextMenuOpening suppresses the menu on cloud / "Loading…" nodes (non-container),
-                                 so only OU/container/domain nodes get right-click ▸ Properties. -->
+                            <!-- ContextMenuOpening suppresses the menu on nodes with no actions at all
+                                 ("Loading…", the tenant roots); each item below gates itself from there. -->
                             <StackPanel Orientation="Horizontal" Background="Transparent"
                                         ContextMenuOpening="OnNodeContextMenuOpening">
                                 <StackPanel.ContextMenu>
@@ -147,8 +148,13 @@
                                                   Visibility="{Binding CanCreateChildOu, Converter={StaticResource BoolToVis}}" />
                                         <!-- Groups are legal in plain containers (CN=Users) as well as OUs, so this
                                              is gated on IsContainerNode rather than the OU-only CanCreateChildOu. -->
-                                        <MenuItem Header="New Group here…" Click="OnNodeNewGroupClick" />
-                                        <MenuItem Header="Properties" Click="OnNodePropertiesClick" />
+                                        <MenuItem Header="New Group here…" Click="OnNodeNewGroupClick"
+                                                  Visibility="{Binding IsContainerNode, Converter={StaticResource BoolToVis}}" />
+                                        <!-- Cloud groups have no container, so this hangs off the group LISTS. -->
+                                        <MenuItem Header="New cloud group…" Click="OnNodeNewCloudGroupClick"
+                                                  Visibility="{Binding CanCreateCloudGroup, Converter={StaticResource BoolToVis}}" />
+                                        <MenuItem Header="Properties" Click="OnNodePropertiesClick"
+                                                  Visibility="{Binding IsContainerNode, Converter={StaticResource BoolToVis}}" />
                                         <Separator Visibility="{Binding IsOrganizationalUnit, Converter={StaticResource BoolToVis}}" />
                                         <!-- Two-level guard: Delete only reveals "Yes, I'm sure…", which then requires
                                              typing a random confirmation string. OUs only. -->

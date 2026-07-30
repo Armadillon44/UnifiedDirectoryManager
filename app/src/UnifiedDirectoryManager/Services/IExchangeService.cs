@@ -64,6 +64,16 @@ public interface IExchangeService
     Task<ExchangePage> ListDistributionGroupsAsync(string? search, int max, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Creates a <b>distribution list</b> or <b>mail-enabled security group</b> via <c>New-DistributionGroup</c>.
+    /// These two kinds are read-only in Microsoft Graph, so this is the only path. Throws for the Graph-managed
+    /// kinds (<see cref="IGraphService.CreateGroupAsync"/> handles those).
+    ///
+    /// Unlike the Graph path, owners and members are supplied on the create itself, so a failure here means the
+    /// group was not created at all. The returned result therefore never carries warnings.
+    /// </summary>
+    Task<CloudGroupCreateResult> CreateDistributionGroupAsync(CloudGroupCreateRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Converts a mailbox to <paramref name="type"/> (Regular or Shared) via Set-Mailbox -Type. Throws for
     /// <see cref="MailboxType.Unknown"/>. Converting to Shared lets the account be unlicensed without losing
     /// the mailbox (the core termination use case).

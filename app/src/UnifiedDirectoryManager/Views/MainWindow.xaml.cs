@@ -71,11 +71,12 @@ public partial class MainWindow : Window
 
     // --- Right-click ▸ Properties on an OU/container tree node ---
 
-    /// <summary>Suppresses the tree context menu on non-container nodes (cloud sections, "Loading…"),
-    /// so only OU/container/domain nodes offer Properties.</summary>
+    /// <summary>Suppresses the tree context menu on nodes with no actions at all ("Loading…", the tenant roots).
+    /// Nodes that do offer something — on-prem containers, and the two cloud group lists — show the menu, and
+    /// each item gates its own visibility from there.</summary>
     private void OnNodeContextMenuOpening(object sender, ContextMenuEventArgs e)
     {
-        if ((sender as FrameworkElement)?.DataContext is TreeNodeViewModel { IsContainerNode: true }) return;
+        if ((sender as FrameworkElement)?.DataContext is TreeNodeViewModel { HasContextMenu: true }) return;
         e.Handled = true;
     }
 
@@ -97,6 +98,11 @@ public partial class MainWindow : Window
     private void OnNodeNewGroupClick(object sender, RoutedEventArgs e)
     {
         if (_vm is not null && NodeFromMenu(sender) is { } node) _ = _vm.CreateGroupUnderAsync(node);
+    }
+
+    private void OnNodeNewCloudGroupClick(object sender, RoutedEventArgs e)
+    {
+        if (_vm is not null && NodeFromMenu(sender) is { } node) _vm.CreateCloudGroup(node.DefaultCloudGroupType);
     }
 
     /// <summary>Resolves the tree node a context-menu item acts on. The menu item inherits the node as its

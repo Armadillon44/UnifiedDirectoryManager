@@ -117,6 +117,40 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         return new ExchangePage(rows, capped);
     }
 
+    public async Task<CloudGroupCreateResult> CreateDistributionGroupAsync(CloudGroupCreateRequest request, CancellationToken cancellationToken = default)
+    {
+        if (!CloudGroupValidator.IsExchangeType(request.Type))
+            throw new ArgumentException("Security and Microsoft 365 groups are created through Microsoft Graph, not Exchange Online.", nameof(request));
+
+        // Exchange addresses principals by SMTP; anyone without a mail identity can't be named here.
+        var owners = request.Owners.Select(o => o.Address).Where(a => !string.IsNullOrWhiteSpace(a)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var members = request.Members.Select(m => m.Address).Where(a => !string.IsNullOrWhiteSpace(a)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+        var data = await RunOpAsync(new
+        {
+            op = "new-distribution-group",
+            name = request.DisplayName.Trim(),
+            alias = request.MailNickname.Trim(),
+            type = request.Type == CloudGroupType.MailEnabledSecurity ? "Security" : "Distribution",
+            description = request.Description?.Trim() ?? string.Empty,
+            owners,
+            members,
+            // Exchange's flag is the double negative of the operator-facing option.
+            requireAuth = !request.AllowExternalSenders,
+            hiddenMembership = request.HiddenMembership,
+        }, cancellationToken, ListTimeout).ConfigureAwait(false);
+
+        string S(string p) => data is { ValueKind: JsonValueKind.Object } d && d.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString() ?? string.Empty : string.Empty;
+
+        var id = S("ExternalDirectoryObjectId");
+        var smtp = S("PrimarySmtpAddress");
+        AppLog.Instance.Info($"Created Exchange group '{request.DisplayName}' ({request.Type}) as {(id.Length > 0 ? id : smtp)}.");
+        // Prefer the directory object id so the row lines up with the Entra list; fall back to the address,
+        // which is what Exchange itself addresses the group by.
+        return new CloudGroupCreateResult(id.Length > 0 ? id : smtp, S("DisplayName"));
+    }
+
     public Task ConvertMailboxAsync(string identity, MailboxType type, CancellationToken cancellationToken = default)
     {
         if (type == MailboxType.Unknown)
@@ -896,6 +930,32 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 if ($script:__ownerErrors.Count -gt 0) { $odiag += "owner lookup errors: $(($script:__ownerErrors | Select-Object -Unique) -join ' | ')" }
                                 if ($odiag.Count -gt 0) { __emit @{ ok = $true; data = $data; detail = ($odiag -join '; ') } }
                                 else { __emit @{ ok = $true; data = $data } }
+                            }
+                            'new-distribution-group' {
+                                # Owners and members go on the create itself (unlike the Graph path), so a
+                                # failure here means nothing was created — there is no partial state to report.
+                                $np = @{
+                                    Name = [string]$r.name
+                                    Type = [string]$r.type
+                                    ErrorAction = 'Stop'
+                                }
+                                if (-not [string]::IsNullOrWhiteSpace([string]$r.alias)) { $np['Alias'] = [string]$r.alias }
+                                if (-not [string]::IsNullOrWhiteSpace([string]$r.description)) { $np['Description'] = [string]$r.description }
+                                $own = @($r.owners | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+                                if ($own.Count -gt 0) { $np['ManagedBy'] = $own }
+                                $mem = @($r.members | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+                                if ($mem.Count -gt 0) { $np['Members'] = $mem }
+                                # Both of these are create-time only. RequireSenderAuthenticationEnabled defaults
+                                # to $true, i.e. external mail is rejected, so it is always passed explicitly.
+                                $np['RequireSenderAuthenticationEnabled'] = [bool]$r.requireAuth
+                                if ([bool]$r.hiddenMembership) { $np['HiddenGroupMembershipEnabled'] = $true }
+                                $g = New-DistributionGroup @np 6>$null
+                                $g = $g | Select-Object -First 1
+                                __emit @{ ok = $true; data = @{
+                                    DisplayName = [string]$g.DisplayName
+                                    PrimarySmtpAddress = [string]$g.PrimarySmtpAddress
+                                    ExternalDirectoryObjectId = [string]$g.ExternalDirectoryObjectId
+                                } }
                             }
                             default { __emit @{ ok = $false; error = ("Unknown op: " + [string]$r.op) } }
                         }

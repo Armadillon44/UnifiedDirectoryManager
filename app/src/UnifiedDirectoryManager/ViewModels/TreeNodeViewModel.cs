@@ -44,6 +44,23 @@ public partial class TreeNodeViewModel : ObservableObject
     public bool CanCreateChildOu => CloudKind is null && !IsPlaceholder
         && Type is AdObjectType.Domain or AdObjectType.OrganizationalUnit;
 
+    /// <summary>True on the two group-list nodes, which is where creating a cloud group belongs. Cloud groups
+    /// have no container to be created "in", so this is about which list the operator is looking at.</summary>
+    public bool CanCreateCloudGroup =>
+        CloudKind is CloudNodeKind.Groups or CloudNodeKind.DistributionGroups;
+
+    /// <summary>The group type to preselect in the New Cloud Group dialog, from the node that launched it.</summary>
+    public CloudGroupType? DefaultCloudGroupType => CloudKind switch
+    {
+        CloudNodeKind.DistributionGroups => CloudGroupType.Distribution,
+        CloudNodeKind.Groups => CloudGroupType.Security,
+        _ => null,
+    };
+
+    /// <summary>True when the node offers any right-click action at all — the context menu is suppressed
+    /// entirely otherwise, so a new kind of actionable node must be added here as well as to the menu.</summary>
+    public bool HasContextMenu => IsContainerNode || CanCreateCloudGroup;
+
     public ObservableCollection<TreeNodeViewModel> Children { get; } = new();
 
     [ObservableProperty] private bool _isExpanded;

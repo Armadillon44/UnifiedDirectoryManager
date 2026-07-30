@@ -105,6 +105,14 @@ public interface IDialogService
     /// if one was created, or null if cancelled.</summary>
     string? ShowNewGroup(string? parentDn);
 
+    /// <summary>
+    /// Opens the (modal) "new cloud group" dialog, optionally preselecting a type (e.g. from the tree node the
+    /// operator right-clicked). Returns the new group's id and whether it was created through Exchange Online
+    /// rather than Microsoft Graph — the caller needs that to reload the right list, since a new Exchange group
+    /// is visible to Exchange immediately but takes a while to reach the Entra ID list. Null if cancelled.
+    /// </summary>
+    (string Id, string Name, bool FromExchange)? ShowNewCloudGroup(CloudGroupType? initialType);
+
     /// <summary>Advanced search builder. Returns the query to run, or null if cancelled.</summary>
     SearchQuery? ShowAdvancedSearch(string defaultBaseDn);
 

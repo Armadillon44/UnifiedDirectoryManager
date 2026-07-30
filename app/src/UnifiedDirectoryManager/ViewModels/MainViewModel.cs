@@ -23,6 +23,7 @@ public partial class MainViewModel : ObservableObject
     private TreeNodeViewModel? _cloudRoot;
     private TreeNodeViewModel? _exchangeRoot;
     private bool _scenarioRunning; // guards against a second (fire-and-forget) scenario run overlapping
+    private bool _suppressNodeLoad; // set while the tree selection is moved programmatically before an explicit load
 
     public AppSettings Settings { get; }
 
@@ -220,6 +221,9 @@ public partial class MainViewModel : ObservableObject
         if (value.CloudKind is { } kind)
         {
             IsCloudView = true;
+            // The caller is about to load this list itself, with a search seeded; don't race it with an
+            // unseeded load of the same mode on a channel where a redundant fetch is expensive.
+            if (_suppressNodeLoad) return;
             // Every cloud node kind is listed explicitly: the fall-through would quietly show the Entra Users
             // list, so a section added without a case here would look like it works rather than failing.
             switch (kind)
@@ -278,6 +282,68 @@ public partial class MainViewModel : ObservableObject
 
     [RelayCommand]
     private void ManageTemplates() => _dialogs.ShowTemplateEditor();
+
+    /// <summary>File ▸ New Cloud Group. The type defaults from whichever cloud list is showing.</summary>
+    [RelayCommand]
+    private void NewCloudGroup() => CreateCloudGroup(SelectedNode?.DefaultCloudGroupType);
+
+    /// <summary>
+    /// Opens the New Cloud Group dialog and, on success, reloads the list the group actually landed in.
+    ///
+    /// Only that one list: a group created through Exchange is readable from Exchange immediately but takes a
+    /// while to reach the Entra ID list, and a Microsoft 365 group created through Graph takes far longer still
+    /// to provision its mailbox. Reloading the other side would show the operator an absence and read as failure.
+    /// </summary>
+    public void CreateCloudGroup(CloudGroupType? initialType)
+    {
+        if (_dialogs.ShowNewCloudGroup(initialType) is not { } created) return;
+
+        var target = created.FromExchange ? CloudListMode.DistributionGroups : CloudListMode.Groups;
+        IsCloudView = true;
+        SelectTreeNode(created.FromExchange ? CloudNodeKind.DistributionGroups : CloudNodeKind.Groups);
+        _ = ShowCreatedCloudGroupAsync(target, created.Id, created.Name, created.FromExchange);
+    }
+
+    /// <summary>
+    /// Loads the list the new group landed in, searching for it by name so it is actually on screen, and says
+    /// plainly when it isn't yet. Only that one list is loaded: a group created in Exchange takes a while to
+    /// reach the Entra ID list, and reloading the other side would show an absence that reads as failure.
+    /// </summary>
+    private async Task ShowCreatedCloudGroupAsync(CloudListMode target, string id, string name, bool fromExchange)
+    {
+        var where = fromExchange ? "Exchange Online" : "Entra ID";
+        try
+        {
+            await Cloud.LoadAsync(target, name);
+            StatusMessage = Cloud.SelectRowById(id)
+                ? $"Created “{name}” in {where}."
+                // Both backends need a moment before a new object is returned by a query, and the Exchange
+                // lists are capped, so absence here is expected rather than a sign the create failed.
+                : $"Created “{name}” in {where}, but it isn't listed yet — refresh in a moment.";
+        }
+        catch (Exception ex)
+        {
+            SetError($"“{name}” was created in {where}, but the list couldn't be refreshed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Moves the tree selection onto a cloud section. Assigns <see cref="SelectedNode"/> FIRST and then the
+    /// node's own flag, matching the other tree-selection call sites: the flag alone round-trips through the
+    /// TreeViewItem back into SelectedNode and would start a second, unseeded load of the same list.
+    /// </summary>
+    private void SelectTreeNode(CloudNodeKind kind)
+    {
+        var node = RootNodes.SelectMany(r => r.Children).FirstOrDefault(c => c.CloudKind == kind);
+        if (node is null) return;
+        _suppressNodeLoad = true;
+        try
+        {
+            SelectedNode = node;
+            node.IsSelected = true;
+        }
+        finally { _suppressNodeLoad = false; }
+    }
 
     [RelayCommand]
     private void OpenSettings()
