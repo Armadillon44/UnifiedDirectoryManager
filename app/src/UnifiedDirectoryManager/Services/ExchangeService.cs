@@ -619,24 +619,47 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         # channel that serialises every call, and one slow list must not exhaust the operation timeout.
         $script:__ownerCache = @{}
         $script:__ownerBudget = 0
+        $script:__ownerSkipped = 0
+        $script:__ownerErrors = @()
         function __ownerNames($values) {
             $out = @()
             foreach ($v in @($values)) {
                 $s = [string]$v
                 if ([string]::IsNullOrWhiteSpace($s)) { continue }
-                if ($s.Contains('/')) { $out += ($s -split '/')[-1]; continue }
+                # Reduce a canonical name to its last segment, then FALL THROUGH to the GUID test rather than
+                # returning here: Exchange Online replaces the Name of a synced recipient with its directory
+                # object id, so a canonical name routinely ends in a GUID and still needs resolving.
+                # The dotted first segment is what distinguishes a canonical name from a display name that
+                # merely contains a slash ("Sales/Marketing Owners"), which must be left intact.
+                if ($s -match '^[^/]+\.[^/]+/') { $s = ($s -split '/')[-1] }
                 if ($s -notmatch '^\{?[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\}?$') { $out += $s; continue }
                 # Normalise to the bare GUID: the cache key and the lookup should not differ over braces.
                 $key = $s.Trim('{', '}')
                 if ($script:__ownerCache.ContainsKey($key)) { $out += $script:__ownerCache[$key]; continue }
-                # Budget spent: show the raw value rather than caching a guess.
-                if ($script:__ownerBudget -le 0) { $out += $s; continue }
+                # Budget spent: show the raw value rather than caching a guess, and count it so the caller
+                # can report that the column was degraded instead of leaving it to look like real data.
+                if ($script:__ownerBudget -le 0) { $script:__ownerSkipped++; $out += $s; continue }
                 $script:__ownerBudget--
                 $name = "Unresolved owner ($key)"
                 try {
                     $rc = Get-Recipient -Identity $key -ErrorAction Stop | Select-Object -First 1
-                    if ($rc) { $name = [string]$rc.DisplayName }
-                } catch { }
+                    # Documented trap on every Exchange Get- cmdlet: a NON-EXISTENT -Identity returns EVERY
+                    # object instead of erroring. A deleted owner's GUID is exactly that, so a blind -First 1
+                    # would label the group with an unrelated recipient's name. Only accept a result that
+                    # actually carries the identifier we asked for.
+                    if ($rc -and (@([string]$rc.ExternalDirectoryObjectId, [string]$rc.Guid, [string]$rc.ExchangeObjectId) -contains $key)) {
+                        $name = [string]$rc.DisplayName
+                    }
+                } catch {
+                    # "Not found" is the answer, not a failure. Anything else (throttling, permissions) is a
+                    # lookup that FAILED, which must not be reported as a deleted owner or cached as settled.
+                    if ($_.Exception.Message -notmatch "couldn't be found|not found|does not exist|wasn't found") {
+                        $name = "Owner lookup failed ($key)"
+                        $script:__ownerErrors += $_.Exception.Message
+                        $out += $name
+                        continue
+                    }
+                }
                 $script:__ownerCache[$key] = $name
                 $out += $name
             }
@@ -840,6 +863,8 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 # Fresh cache per load so a renamed owner isn't shown from a stale session entry.
                                 $script:__ownerCache = @{}
                                 $script:__ownerBudget = 50
+                                $script:__ownerSkipped = 0
+                                $script:__ownerErrors = @()
                                 $data = @($gl | ForEach-Object {
                                     $created = ''
                                     if ($_.WhenCreated) { $created = ([datetime]$_.WhenCreated).ToString('yyyy-MM-dd') }
@@ -864,7 +889,13 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                         WhenCreated = $created
                                     }
                                 })
-                                __emit @{ ok = $true; data = $data }
+                                # Report any degradation of the owner column. RunOpAsync logs 'detail' at Info,
+                                # so a partially-resolved column leaves a trace instead of looking like fact.
+                                $odiag = @()
+                                if ($script:__ownerSkipped -gt 0) { $odiag += "owner lookups skipped (budget): $($script:__ownerSkipped)" }
+                                if ($script:__ownerErrors.Count -gt 0) { $odiag += "owner lookup errors: $(($script:__ownerErrors | Select-Object -Unique) -join ' | ')" }
+                                if ($odiag.Count -gt 0) { __emit @{ ok = $true; data = $data; detail = ($odiag -join '; ') } }
+                                else { __emit @{ ok = $true; data = $data } }
                             }
                             default { __emit @{ ok = $false; error = ("Unknown op: " + [string]$r.op) } }
                         }

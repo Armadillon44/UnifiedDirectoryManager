@@ -48,7 +48,7 @@
                 <Button Content="Export loaded…" Command="{Binding ExportCsvCommand}" Margin="10,0,0,0" Padding="8,2"
                         ToolTip="Export only the rows currently loaded into the list (respects the active filter)." />
                 <Button Content="Export all…" Command="{Binding ExportAllCsvCommand}" Margin="6,0,0,0" Padding="8,2"
-                        ToolTip="Fetch every object from Entra ID across all pages and export them (respects the active filter)." />
+                        ToolTip="Fetch beyond the loaded page and export (respects the active filter). Entra ID lists page through everything; Exchange Online cannot page, so its export is capped and says so when it truncates." />
             </WrapPanel>
         </Border>
 

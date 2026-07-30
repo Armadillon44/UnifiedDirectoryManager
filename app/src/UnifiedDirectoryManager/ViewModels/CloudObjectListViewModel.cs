@@ -110,10 +110,13 @@ public partial class CloudObjectListViewModel : ObservableObject
     {
         Detail.SetTarget(IsExchangeMode ? null : value);
         // SetTarget(null) restores the "select an object" prompt, which would tell an operator who just
-        // selected a row to do the thing they did. Say what is actually going on instead.
-        if (IsExchangeMode && value is not null)
-            Detail.EmptyHint = "Details for Exchange Online objects aren't available here yet.";
+        // selected a row to do the thing they did. Unconditional in Exchange mode: selecting nothing there
+        // is no more actionable than selecting something, so the prompt is wrong either way.
+        if (IsExchangeMode) Detail.EmptyHint = ExchangeDetailHint;
     }
+
+    /// <summary>Explains the empty detail pane in the Exchange lists, where Graph-backed details don't apply.</summary>
+    private const string ExchangeDetailHint = "Details for Exchange Online objects aren't available here yet.";
     partial void OnIsBusyChanged(bool value)
     {
         LoadMoreCommand.NotifyCanExecuteChanged();
@@ -154,6 +157,8 @@ public partial class CloudObjectListViewModel : ObservableObject
         BuildFilterOptions(mode);
         SearchText = string.Empty;
         QuickFilter = string.Empty;
+        // Set the pane's hint on the mode switch as well, so it is already right before the first selection.
+        if (IsExchangeMode) Detail.EmptyHint = ExchangeDetailHint;
         await LoadFirstPageAsync();
     }
 
@@ -191,6 +196,10 @@ public partial class CloudObjectListViewModel : ObservableObject
         Rows.Clear();
         SelectedRow = null;
         _nextLink = null;
+        // HasMore too: if this load throws (pwsh missing, module missing, consent, timeout — all routine for
+        // the Exchange lists) the catch only sets Status, and a stale HasMore would leave "Load more" offering
+        // pages that an empty, failed list does not have.
+        HasMore = false;
         _exchangeCapped = false;
         Status = IsExchangeMode ? "Loading from Exchange Online…" : "Loading…";
         try
