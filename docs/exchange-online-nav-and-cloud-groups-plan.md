@@ -1,7 +1,8 @@
 # Exchange Online navigation + cloud group creation
 
-Status: **planned, not started. All decisions locked.** Target branch `release/2.3.0` (new features → minor
-bump), branched from `master` at v2.2.0.
+Status: **in progress — commit 1 done, commit 2 next. All decisions locked.** Branch `release/2.3.0` (new
+features → minor bump), branched from `master` at v2.2.0. See the sequencing section at the bottom for what
+has landed; update it as commits land rather than leaving this line to go stale.
 
 Four asks:
 
@@ -276,8 +277,10 @@ model, otherwise double-clicking an Exchange DL can never open its Entra detail.
 
 1. ~~**Ship 2.2.0** (D1): bump, merge `release/2.2.0`, tag, release, README + Wiki.~~ **Done.**
 2. ~~Branch `release/2.3.0`.~~ **Done.**
-3. Commit 1: nav section, read-only lists, per-op timeout, drag-drop and `Configure` fixes.
-4. Commit 2: create cloud groups (both backends).
+3. ~~Commit 1: nav section, read-only lists, per-op timeout, drag-drop and `Configure` fixes.~~ **Done**
+   (`7b1fdd0`), plus `80a311c` and `9eefbbf` for distribution-group owner resolution and the findings from
+   the adversarial pass over both. Awaiting a live retest of the *Managed by* column.
+4. Commit 2: create cloud groups (both backends). **Next.**
 5. Commit 3: distribution group members, picker basket, synced-group blocking, Entra-side routing fix.
 6. Commit 4: mailbox information view.
 7. README + Wiki: the raised RBAC bar, the new nav section, the group-type routing table.
