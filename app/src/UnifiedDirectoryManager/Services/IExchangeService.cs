@@ -108,6 +108,16 @@ public interface IExchangeService
     Task RemoveDelegateAsync(string identity, string delegateIdentity, DelegateAccess access, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Lists a distribution list's or mail-enabled security group's members. Reads the whole membership
+    /// (<c>-ResultSize Unlimited</c>): the default page is 1,000 and truncates in silence, which on a
+    /// membership list would read as "these are all the members".
+    ///
+    /// Does not apply to Exchange <b>dynamic</b> distribution groups, whose membership is query-computed —
+    /// those never appear in this app's list, since <c>Get-DistributionGroup</c> doesn't return them.
+    /// </summary>
+    Task<IReadOnlyList<MailboxRecipient>> GetDistributionGroupMembersAsync(string groupIdentity, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Removes <paramref name="memberIdentity"/> from a distribution list or mail-enabled security group
     /// (<paramref name="groupIdentity"/>, by primary SMTP / alias / name) via Remove-DistributionGroupMember.
     /// These groups can't be modified through Microsoft Graph, so this is the only path to remove a member.

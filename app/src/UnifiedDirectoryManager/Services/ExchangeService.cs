@@ -211,6 +211,21 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         }, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<MailboxRecipient>> GetDistributionGroupMembersAsync(string groupIdentity, CancellationToken cancellationToken = default)
+    {
+        // Validate before calling: a Get- cmdlet given a non-existent identity returns EVERY object, so an
+        // empty group identity here would come back as "the whole tenant is in this group".
+        if (string.IsNullOrWhiteSpace(groupIdentity)) throw new ArgumentException("A group is required.", nameof(groupIdentity));
+
+        var data = await RunOpAsync(new { op = "list-dl-members", group = groupIdentity }, cancellationToken, ListTimeout).ConfigureAwait(false);
+        var list = new List<MailboxRecipient>();
+        if (data is { ValueKind: JsonValueKind.Array } arr)
+            foreach (var e in arr.EnumerateArray()) list.Add(MapRecipient(e));
+        else if (data is { ValueKind: JsonValueKind.Object } one) // ConvertTo-Json renders a single result as an object
+            list.Add(MapRecipient(one));
+        return list;
+    }
+
     public Task RemoveDistributionGroupMemberAsync(string groupIdentity, string memberIdentity, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(groupIdentity)) throw new ArgumentException("A group is required.", nameof(groupIdentity));
@@ -960,6 +975,24 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 if ($script:__ownerErrors.Count -gt 0) { $odiag += "owner lookup errors: $(($script:__ownerErrors | Select-Object -Unique) -join ' | ')" }
                                 if ($odiag.Count -gt 0) { __emit @{ ok = $true; data = $data; detail = ($odiag -join '; ') } }
                                 else { __emit @{ ok = $true; data = $data } }
+                            }
+                            'list-dl-members' {
+                                # -ResultSize Unlimited: the default page is 1,000 and truncates silently, which
+                                # on a membership list would read as the complete membership.
+                                $mem = @(Get-DistributionGroupMember -Identity $r.group -ResultSize Unlimited -ErrorAction Stop)
+                                $data = @($mem | ForEach-Object {
+                                    $smtp = [string]$_.PrimarySmtpAddress
+                                    # Mail contacts and mail users can lack a primary SMTP; Name still addresses
+                                    # them for Remove-DistributionGroupMember.
+                                    $id = if ([string]::IsNullOrWhiteSpace($smtp)) { [string]$_.Name } else { $smtp }
+                                    @{
+                                        Identity = $id
+                                        DisplayName = [string]$_.DisplayName
+                                        PrimarySmtpAddress = $smtp
+                                        RecipientType = [string]$_.RecipientTypeDetails
+                                    }
+                                })
+                                __emit @{ ok = $true; data = $data }
                             }
                             'new-distribution-group' {
                                 # Owners and members go on the create itself here, unlike the Graph path, where

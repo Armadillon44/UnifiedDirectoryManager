@@ -12,7 +12,7 @@
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Row="0" Foreground="#666" Margin="0,0,0,8" TextWrapping="Wrap"
-                   Text="Search for a recipient — a user, shared mailbox, or distribution group — then select one and click OK." />
+                   Text="{Binding Heading}" />
 
         <DockPanel Grid.Row="1" Margin="0,0,0,8">
             <Button DockPanel.Dock="Right" Content="Search" Command="{Binding SearchCommand}" Margin="6,0,0,0" />
@@ -23,18 +23,57 @@
             </TextBox>
         </DockPanel>
 
-        <ListView Grid.Row="2" x:Name="ResultsList" ItemsSource="{Binding Results}"
-                  SelectedItem="{Binding SelectedResult}" SelectionMode="Single"
-                  VirtualizingStackPanel.IsVirtualizing="False"
-                  MouseDoubleClick="OnResultDoubleClick">
-            <ListView.View>
-                <GridView>
-                    <GridViewColumn Header="Recipient" Width="200" DisplayMemberBinding="{Binding DisplayName}" />
-                    <GridViewColumn Header="Address" Width="230" DisplayMemberBinding="{Binding PrimarySmtpAddress}" />
-                    <GridViewColumn Header="Type" Width="140" DisplayMemberBinding="{Binding RecipientType}" />
-                </GridView>
-            </ListView.View>
-        </ListView>
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <ListView Grid.Column="0" x:Name="ResultsList" ItemsSource="{Binding Results}"
+                      SelectedItem="{Binding SelectedResult}" SelectionMode="{Binding ResultsSelectionMode}"
+                      VirtualizingStackPanel.IsVirtualizing="False"
+                      MouseDoubleClick="OnResultDoubleClick">
+                <ListView.View>
+                    <GridView>
+                        <GridViewColumn Header="Recipient" Width="180" DisplayMemberBinding="{Binding DisplayName}" />
+                        <GridViewColumn Header="Address" Width="210" DisplayMemberBinding="{Binding PrimarySmtpAddress}" />
+                        <GridViewColumn Header="Type" Width="130" DisplayMemberBinding="{Binding RecipientType}" />
+                    </GridView>
+                </ListView.View>
+            </ListView>
+
+            <!-- The basket only exists in multi-select mode; single-select keeps the original layout exactly. -->
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="8,0"
+                        Visibility="{Binding MultiSelect, Converter={StaticResource BoolToVis}}">
+                <Button Content="Add →" MinWidth="70" Padding="6,3" Click="OnAddToBasket"
+                        IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}"
+                        ToolTip="Add the selected results to the list on the right. The search can be run again without losing them." />
+            </StackPanel>
+
+            <DockPanel Grid.Column="2" Width="220"
+                       Visibility="{Binding MultiSelect, Converter={StaticResource BoolToVis}}">
+                <TextBlock DockPanel.Dock="Top" Text="Selected" Foreground="#666" Margin="0,0,0,4" />
+                <Border BorderBrush="#DDD" BorderThickness="1">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding Basket}" Margin="4">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <DockPanel Margin="0,1">
+                                        <Button DockPanel.Dock="Right" Content="✕" Width="22" MinWidth="22" Padding="0"
+                                                Command="{Binding DataContext.RemoveFromBasketCommand,
+                                                                  RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding}" />
+                                        <TextBlock Text="{Binding DisplayName}" ToolTip="{Binding PrimarySmtpAddress}"
+                                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                    </DockPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Border>
+            </DockPanel>
+        </Grid>
 
         <DockPanel Grid.Row="3" Margin="0,10,0,0">
             <!-- Buttons dock right FIRST so they always reserve their width; the status text then fills + wraps

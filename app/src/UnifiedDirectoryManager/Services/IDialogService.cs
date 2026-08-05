@@ -26,6 +26,17 @@ public interface IDialogService
     /// <summary>Picks a single internal Exchange recipient (user/shared mailbox/distribution group) to forward a mailbox to. Null if cancelled.</summary>
     MailboxRecipient? PickMailboxRecipient(string title);
 
+    /// <summary>Picks several internal Exchange recipients (the same picker, with a basket). Null if cancelled.</summary>
+    IReadOnlyList<MailboxRecipient>? PickMailboxRecipients(string title);
+
+    /// <summary>
+    /// Opens the (modal) membership editor for a distribution list or mail-enabled security group.
+    /// <paramref name="identity"/> is the primary SMTP address Exchange addresses it by. Pass
+    /// <paramref name="isSynced"/> so the dialog can disable its write controls up front — Exchange rejects
+    /// every write against an on-prem-synced object, and in a hybrid org that is the ordinary case.
+    /// </summary>
+    void ShowDistributionGroupMembers(string identity, string groupName, bool isSynced);
+
     /// <summary>Edits a delegate's mailbox access (which permissions + auto-map), pre-checked to <paramref name="current"/>.
     /// Returns the chosen permission set and auto-map preference, or null if cancelled.</summary>
     (DelegateAccess Access, bool AutoMapping)? EditDelegateAccess(string delegateName, DelegateAccess current);

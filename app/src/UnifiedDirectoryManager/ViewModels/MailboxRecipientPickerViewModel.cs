@@ -7,8 +7,13 @@ using UnifiedDirectoryManager.Services;
 namespace UnifiedDirectoryManager.ViewModels;
 
 /// <summary>
-/// Single-select searchable picker for an internal Exchange recipient (user, shared mailbox, or distribution
-/// group) to forward a mailbox to. Backed by <see cref="IExchangeService.SearchRecipientsAsync"/>.
+/// Searchable picker for internal Exchange recipients (users, shared mailboxes, distribution groups), backed by
+/// <see cref="IExchangeService.SearchRecipientsAsync"/>.
+///
+/// Two modes from one view model, matching <see cref="ObjectPickerViewModel"/>: single-select for "forward this
+/// mailbox to…", and multi-select with a basket for "add these members…". The basket matters because the search
+/// is server-side and returns one page — without somewhere to put results, choosing people who don't share a
+/// search term means one dialog trip each.
 /// </summary>
 public partial class MailboxRecipientPickerViewModel : ObservableObject
 {
@@ -21,10 +26,33 @@ public partial class MailboxRecipientPickerViewModel : ObservableObject
 
     public ObservableCollection<MailboxRecipient> Results { get; } = new();
 
-    /// <summary>The chosen recipient, set on OK.</summary>
-    public MailboxRecipient? Picked { get; private set; }
+    /// <summary>Chosen recipients, held across searches. Empty and unused in single-select mode.</summary>
+    public ObservableCollection<MailboxRecipient> Basket { get; } = new();
 
-    public MailboxRecipientPickerViewModel(IExchangeService exchange) => _exchange = exchange;
+    /// <summary>True when the dialog collects several recipients rather than one.</summary>
+    public bool MultiSelect { get; }
+
+    /// <summary>Drives the results list's selection mode.</summary>
+    public string ResultsSelectionMode => MultiSelect ? "Extended" : "Single";
+
+    /// <summary>
+    /// The instruction at the top of the dialog. Mode-aware because the two modes need opposite actions —
+    /// telling a multi-select operator to "select one and click OK" is an instruction to add nobody.
+    /// </summary>
+    public string Heading => MultiSelect
+        ? "Search for recipients — users, shared mailboxes, or distribution groups — then Add them to the list on the right and click OK."
+        : "Search for a recipient — a user, shared mailbox, or distribution group — then select one and click OK.";
+
+    /// <summary>The final selection, set on OK. A list in both modes; the single-select caller takes the first.</summary>
+    public List<MailboxRecipient> Picked { get; } = new();
+
+    public MailboxRecipientPickerViewModel(IExchangeService exchange, bool multiSelect = false)
+    {
+        _exchange = exchange;
+        MultiSelect = multiSelect;
+        if (multiSelect)
+            Status = "Search for recipients, add the ones you want, then click OK.";
+    }
 
     [RelayCommand]
     private async Task SearchAsync()
@@ -38,13 +66,54 @@ public partial class MailboxRecipientPickerViewModel : ObservableObject
             foreach (var r in recipients) Results.Add(r);
             Status = Results.Count == 0 ? "No matching recipients." : $"{Results.Count} recipient(s).";
         }
-        catch (Exception ex) { Status = "Search failed: " + ex.Message; }
+        catch (Exception ex) { Status = "Search failed: " + ExchangeErrors.Friendly(ex); }
         finally { IsBusy = false; }
     }
 
+    [RelayCommand]
+    private void AddToBasket(System.Collections.IList? selected)
+    {
+        var rows = selected?.Cast<MailboxRecipient>().ToList() ?? new List<MailboxRecipient>();
+        if (rows.Count == 0 && SelectedResult is not null) rows.Add(SelectedResult);
+
+        // "Nothing selected" and "everything selected was a duplicate" are different answers, and conflating
+        // them tells the operator their search hits are already members when nothing was even highlighted.
+        if (rows.Count == 0)
+        {
+            Status = "Select one or more recipients in the results list first.";
+            return;
+        }
+
+        var added = 0;
+        foreach (var r in rows)
+        {
+            if (Basket.Any(b => SameRecipient(b, r))) continue;
+            Basket.Add(r);
+            added++;
+        }
+        Status = added == 0
+            ? "Nothing added — those recipients are already in the list."
+            : $"{Basket.Count} selected.";
+    }
+
+    [RelayCommand]
+    private void RemoveFromBasket(MailboxRecipient? row)
+    {
+        if (row is null) return;
+        Basket.Remove(row);
+        Status = $"{Basket.Count} selected.";
+    }
+
+    /// <summary>Matches on the identity Exchange is actually addressed by, so the same person found through two
+    /// different searches can't be added twice.</summary>
+    private static bool SameRecipient(MailboxRecipient a, MailboxRecipient b) =>
+        string.Equals(a.Identity, b.Identity, StringComparison.OrdinalIgnoreCase);
+
     public bool Commit()
     {
-        Picked = SelectedResult;
-        return Picked is not null;
+        Picked.Clear();
+        if (MultiSelect) Picked.AddRange(Basket);
+        else if (SelectedResult is not null) Picked.Add(SelectedResult);
+        return Picked.Count > 0;
     }
 }

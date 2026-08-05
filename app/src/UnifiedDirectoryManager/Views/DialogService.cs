@@ -90,7 +90,20 @@ public sealed class DialogService : IDialogService
     {
         var vm = new MailboxRecipientPickerViewModel(_exchange);
         var window = new MailboxRecipientPickerWindow { DataContext = vm, Title = title, Owner = Owner };
+        return window.ShowDialog() == true && vm.Commit() ? vm.Picked[0] : null;
+    }
+
+    public IReadOnlyList<MailboxRecipient>? PickMailboxRecipients(string title)
+    {
+        var vm = new MailboxRecipientPickerViewModel(_exchange, multiSelect: true);
+        var window = new MailboxRecipientPickerWindow { DataContext = vm, Title = title, Owner = Owner };
         return window.ShowDialog() == true && vm.Commit() ? vm.Picked : null;
+    }
+
+    public void ShowDistributionGroupMembers(string identity, string groupName, bool isSynced)
+    {
+        var vm = new DistributionGroupMembersViewModel(_exchange, this, identity, groupName, isSynced);
+        new DistributionGroupMembersWindow { DataContext = vm, Owner = Owner }.ShowDialog(); // modal; loads on open
     }
 
     public (DelegateAccess Access, bool AutoMapping)? EditDelegateAccess(string delegateName, DelegateAccess current)

@@ -96,6 +96,22 @@ public partial class MainViewModel : ObservableObject
         // Double-click a cloud row → open its read-only properties window.
         Cloud.OpenRequested += (_, row) => _dialogs.ShowCloudObjectProperties(row);
 
+        // …except a distribution group, whose membership is what the app can actually manage today. Exchange
+        // addresses it by primary SMTP, and the row's Id may be the Entra object id, so pass the address.
+        Cloud.MembersRequested += (_, row) =>
+        {
+            var smtp = row.Get("primarySmtpAddress");
+            if (string.IsNullOrWhiteSpace(smtp))
+            {
+                SetError($"“{row.DisplayName}” has no primary SMTP address, so Exchange can't address it.");
+                return;
+            }
+            _dialogs.ShowDistributionGroupMembers(smtp, row.DisplayName,
+                string.Equals(row.Get("dirSynced"), "Synced", StringComparison.OrdinalIgnoreCase));
+            // No reload afterwards: the list carries no membership column, so nothing on screen changed, and a
+            // reload is a full capped sweep on a channel that serialises every call.
+        };
+
         // When the edit pane commits a change (disable, attribute edit, group/member change),
         // refresh the list so it reflects the change (e.g. the greyed-out disabled state).
         Edit.ObjectChanged += () => _ = List.ReloadAsync();

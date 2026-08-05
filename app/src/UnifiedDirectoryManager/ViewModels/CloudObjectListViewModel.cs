@@ -78,6 +78,13 @@ public partial class CloudObjectListViewModel : ObservableObject
     /// </summary>
     public void RequestOpen(CloudObjectRow row)
     {
+        // A distribution group's membership is the one thing this app can do with it today, so that is what
+        // activating the row does. Properties arrive with the detail-pane refactor.
+        if (Mode == CloudListMode.DistributionGroups)
+        {
+            MembersRequested?.Invoke(this, row);
+            return;
+        }
         if (IsExchangeMode)
         {
             Status = "Properties for Exchange Online objects aren't available yet.";
@@ -85,6 +92,9 @@ public partial class CloudObjectListViewModel : ObservableObject
         }
         OpenRequested?.Invoke(this, row);
     }
+
+    /// <summary>Raised when a distribution group row is activated, so the host can open its membership editor.</summary>
+    public event EventHandler<CloudObjectRow>? MembersRequested;
 
     public IReadOnlyList<CloudObjectRow> CheckedRows => Rows.Where(r => r.IsChecked).ToList();
 

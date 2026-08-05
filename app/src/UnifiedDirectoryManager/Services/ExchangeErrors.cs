@@ -43,6 +43,13 @@ public static class ExchangeErrors
         //
         // A bare "insufficient" is deliberately NOT matched for the same reason: policy rejections contain it,
         // and rewriting one as a permissions problem is the failure mode this branch used to cause.
+        // In a hybrid org this is the DEFAULT outcome of any write against a synced object, not an edge case.
+        // The raw text is two sentences of Exchange prose; the app blocks these writes up front, so reaching
+        // here means the block was bypassed or the sync state changed underneath.
+        if (msg.Contains("being synchronized from your on-premises", StringComparison.OrdinalIgnoreCase) ||
+            msg.Contains("is synchronized from your on-premises", StringComparison.OrdinalIgnoreCase))
+            return "This object is synchronized from on-premises Active Directory and is read-only in Exchange Online. Make the change on-premises, then wait for directory synchronisation.";
+
         if (msg.Contains("AccessDenied", StringComparison.OrdinalIgnoreCase) ||
             msg.Contains("not authorized", StringComparison.OrdinalIgnoreCase) ||
             msg.Contains("insufficient access rights", StringComparison.OrdinalIgnoreCase) ||

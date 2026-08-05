@@ -517,8 +517,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
                 items.Add(new BulkItemResult(g.Id, g.DisplayName, false, "Synced from on-prem AD — manage this membership in Active Directory."));
                 continue;
             }
-            try { await _graph.AddMemberToGroupAsync(g.Id, row.Id); items.Add(new BulkItemResult(g.Id, g.DisplayName, true, null)); }
-            catch (Exception ex) { items.Add(new BulkItemResult(g.Id, g.DisplayName, false, GraphErrors.Friendly(ex))); }
+            items.Add(await ChangeMembershipAsync(g, row, add: true));
         }
         IsBusy = false;
         _dialogs.ShowBulkResult(new BulkResult(items));
@@ -559,12 +558,50 @@ public partial class CloudObjectDetailViewModel : ObservableObject
                 items.Add(new BulkItemResult(g.Id, g.DisplayName, false, "Synced from on-prem AD — manage this membership in Active Directory."));
                 continue;
             }
-            try { await _graph.RemoveMemberFromGroupAsync(g.Id, row.Id); items.Add(new BulkItemResult(g.Id, g.DisplayName, true, null)); }
-            catch (Exception ex) { items.Add(new BulkItemResult(g.Id, g.DisplayName, false, GraphErrors.Friendly(ex))); }
+            items.Add(await ChangeMembershipAsync(g, row, add: false));
         }
         IsBusy = false;
         _dialogs.ShowBulkResult(new BulkResult(items));
         SetTarget(row); // refresh memberships
+    }
+
+    /// <summary>
+    /// Adds or removes one object's membership of one cloud group, through whichever backend actually owns that
+    /// group. Distribution lists and mail-enabled security groups are read-only in Microsoft Graph — it answers
+    /// their membership with 403 — so those route to Exchange, which addresses both sides by SMTP rather than by
+    /// directory object id.
+    /// </summary>
+    private async Task<BulkItemResult> ChangeMembershipAsync(CloudGroup group, CloudObjectRow row, bool add)
+    {
+        try
+        {
+            if (group.IsExchangeManaged)
+            {
+                if (string.IsNullOrWhiteSpace(group.Mail))
+                    return new BulkItemResult(group.Id, group.DisplayName, false,
+                        "This group is managed through Exchange Online but has no email address, so Exchange can't address it.");
+
+                var member = MailboxIdentityFor(row);
+                if (string.IsNullOrWhiteSpace(member))
+                    return new BulkItemResult(group.Id, group.DisplayName, false,
+                        $"“{row.DisplayName}” has no email address, and Exchange addresses members by address. Devices can't be members of a distribution group.");
+
+                if (add) await _exchange.AddDistributionGroupMemberAsync(group.Mail!, member!);
+                else await _exchange.RemoveDistributionGroupMemberAsync(group.Mail!, member!);
+                return new BulkItemResult(group.Id, group.DisplayName, true, null);
+            }
+
+            if (add) await _graph.AddMemberToGroupAsync(group.Id, row.Id);
+            else await _graph.RemoveMemberFromGroupAsync(group.Id, row.Id);
+            return new BulkItemResult(group.Id, group.DisplayName, true, null);
+        }
+        catch (Exception ex)
+        {
+            // ExchangeService already humanizes its failures before throwing, so running them through
+            // ExchangeErrors again duplicates the guidance sentence. Graph exceptions still need translating.
+            var friendly = group.IsExchangeManaged ? ex.Message : GraphErrors.Friendly(ex);
+            return new BulkItemResult(group.Id, group.DisplayName, false, friendly);
+        }
     }
 
     private static CloudListMode ModeFor(CloudObjectKind kind) => kind switch
