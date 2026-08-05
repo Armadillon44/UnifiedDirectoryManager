@@ -32,10 +32,24 @@ public static class ExchangeErrors
                 : $"This mailbox or recipient could not be found in Exchange Online: {who}";
         }
 
+        // RBAC failures KEEP Exchange's own text and get a hint appended, rather than being replaced by one.
+        //
+        // Two reasons the previous fixed sentence was worse than nothing. It named Recipient Management, which
+        // does not carry group creation (that needs Distribution Groups, and the member ops' hardcoded
+        // -BypassSecurityGroupManagerCheck needs Organization Management or Security Group Creation and
+        // Membership) — so it confidently sent the operator to the wrong role. And it discarded the original
+        // message, which is exactly what a tenant policy rejection needs: group-creation and naming-policy
+        // errors are the app's problem to surface verbatim, not to reinterpret.
+        //
+        // A bare "insufficient" is deliberately NOT matched for the same reason: policy rejections contain it,
+        // and rewriting one as a permissions problem is the failure mode this branch used to cause.
         if (msg.Contains("AccessDenied", StringComparison.OrdinalIgnoreCase) ||
             msg.Contains("not authorized", StringComparison.OrdinalIgnoreCase) ||
-            msg.Contains("insufficient", StringComparison.OrdinalIgnoreCase))
-            return "Access denied. The signed-in admin needs an Exchange role (e.g. Recipient Management) for this action.";
+            msg.Contains("insufficient access rights", StringComparison.OrdinalIgnoreCase) ||
+            msg.Contains("insufficient permission", StringComparison.OrdinalIgnoreCase))
+            return msg.Trim() +
+                   " — the signed-in admin is probably missing the Exchange management role this particular " +
+                   "action needs (they differ per operation; see the README).";
 
         return msg.Trim();
     }

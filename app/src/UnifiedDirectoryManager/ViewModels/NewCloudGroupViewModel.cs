@@ -7,10 +7,20 @@ using UnifiedDirectoryManager.Services;
 namespace UnifiedDirectoryManager.ViewModels;
 
 /// <summary>One picked owner or member, shown as a removable row.</summary>
-public sealed record CloudPrincipalRow(CloudGroupPrincipal Principal)
+public sealed record CloudPrincipalRow(
+    CloudGroupPrincipal Principal,
+    CloudObjectKind Kind = CloudObjectKind.User,
+    bool Seeded = false)
 {
     public string Name => Principal.DisplayName;
     public string Detail => string.IsNullOrWhiteSpace(Principal.Address) ? Principal.Id : Principal.Address;
+
+    /// <summary>
+    /// The row remembers what it is because only one group type accepts a device, and only as a member. When the
+    /// type changes there is no other way to find the rows that just became illegal — the principal record
+    /// itself carries only identifiers, deliberately, because that is all either backend is sent.
+    /// </summary>
+    public bool IsDevice => Kind == CloudObjectKind.Device;
 }
 
 /// <summary>
@@ -37,6 +47,8 @@ public partial class NewCloudGroupViewModel : ObservableObject
     [ObservableProperty] private string _visibility = "Private";
     [ObservableProperty] private bool _hiddenMembership;
     [ObservableProperty] private bool _allowExternalSenders;
+    [ObservableProperty] private bool _sendWelcomeEmail;
+    [ObservableProperty] private bool _hideInOutlook;
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string _status = string.Empty;
 
@@ -66,6 +78,13 @@ public partial class NewCloudGroupViewModel : ObservableObject
     /// <summary>A plain security group has no membership list to hide.</summary>
     public bool ShowHiddenMembership => Type != CloudGroupType.Security;
 
+    /// <summary>
+    /// Graph's <c>resourceBehaviorOptions</c> is a Microsoft 365 concept. A security group has no mailbox to
+    /// send a welcome email from and nothing to hide in Outlook, and the Exchange kinds don't have the
+    /// collection at all, so these options are meaningless outside the one type.
+    /// </summary>
+    public bool ShowMicrosoft365Options => Type == CloudGroupType.Microsoft365;
+
     /// <summary>The label for the alias field, which is called different things by each backend.</summary>
     public string NicknameLabel => IsExchangeType ? "Alias" : "Mail nickname";
 
@@ -89,15 +108,101 @@ public partial class NewCloudGroupViewModel : ObservableObject
         if (initialType is { } t) _type = t;
     }
 
+    /// <summary>
+    /// Seeds the signed-in admin as the default owner. Separate from the constructor because it needs a Graph
+    /// round trip; the host starts it and shows the dialog immediately, so the row appears a moment later.
+    ///
+    /// An <b>admin</b> creating a security group with no owner gets an <b>ownerless</b> group: Graph auto-assigns
+    /// the caller only for Microsoft 365 groups, or when the caller isn't an admin. The common path through this
+    /// dialog is exactly that combination — an admin, a security group, nobody picked — so the field defaults
+    /// rather than sitting empty and producing the thing the requirement exists to prevent.
+    ///
+    /// The seed is for the GRAPH kinds only. Exchange takes owners as <c>-ManagedBy</c> ON the create, where a
+    /// principal it can't resolve fails the whole command and no group is made — and the row's address is a UPN,
+    /// which is not necessarily a mail address, so an admin without a mailbox would lose every Exchange create
+    /// to a default they never asked for. There is no ownerless hazard to solve there either: Exchange assigns
+    /// an owner itself.
+    ///
+    /// Fails soft, and deliberately: the field is optional and the row is removable, so a lookup that doesn't
+    /// work leaves it empty and logs, rather than blocking a dialog opened to do something else.
+    /// </summary>
+    public async Task InitializeAsync()
+    {
+        var upn = _graph.SignedInAccount;
+        if (string.IsNullOrWhiteSpace(upn) || Owners.Count > 0 || IsExchangeType) return;
+        try
+        {
+            var me = await _graph.GetUserByUpnAsync(upn!);
+            if (me is null || string.IsNullOrWhiteSpace(me.Id)) return;
+            // Re-check both guards: the lookup was in flight, so the operator may have picked an owner or
+            // switched to an Exchange type in the meantime.
+            if (Owners.Count > 0 || IsExchangeType) return;
+            Owners.Add(new CloudPrincipalRow(new CloudGroupPrincipal(
+                me.Id,
+                string.IsNullOrWhiteSpace(me.DisplayName) ? upn! : me.DisplayName!,
+                string.IsNullOrWhiteSpace(me.UserPrincipalName) ? upn! : me.UserPrincipalName!),
+                CloudObjectKind.User,
+                Seeded: true));
+        }
+        catch (Exception ex)
+        {
+            AppLog.Instance.Warn(
+                $"Could not default the new group's owner to the signed-in admin ({upn}): {GraphErrors.Friendly(ex)}");
+        }
+    }
+
     partial void OnTypeChanged(CloudGroupType value)
     {
         OnPropertyChanged(nameof(IsExchangeType));
         OnPropertyChanged(nameof(ShowVisibility));
         OnPropertyChanged(nameof(ShowHiddenMembership));
+        OnPropertyChanged(nameof(ShowMicrosoft365Options));
         OnPropertyChanged(nameof(NicknameLabel));
-        // The two rule sets differ, so re-check the alias against the newly selected backend rather than
-        // letting a value that was valid a moment ago fail at the server.
-        Status = string.Empty;
+
+        // A device is a legal MEMBER of a plain security group and of nothing else, so switching away from
+        // Security would otherwise strand one in Members to be refused at create time, on a group that by then
+        // exists. Drop it here, visibly.
+        var dropped = value == CloudGroupType.Security ? null : DropDevices();
+
+        // Same reasoning for the owner this dialog seeded: its address is a UPN, and Exchange takes owners on
+        // the create itself, so an unresolvable one loses the whole group rather than degrading to a warning.
+        // Only the seeded row goes — an owner the operator picked deliberately is theirs to keep or remove.
+        var unseeded = CloudGroupValidator.IsExchangeType(value) ? DropSeededOwner() : null;
+
+        // The two backends cap the name differently and forbid different characters in the alias, so a value the
+        // operator already typed can stop being legal the instant they change the type, without them touching
+        // it. Re-check both here rather than letting it fail at the server on submit. Empty fields report
+        // nothing: the required-field messages belong to the create, not to flipping a radio button.
+        var problem = CloudGroupValidator.ValidateName(value, Name)
+                      ?? CloudGroupValidator.ValidateNickname(value, MailNickname);
+
+        Status = string.Join("  ", new[] { dropped, unseeded, problem }.Where(s => !string.IsNullOrEmpty(s)));
+    }
+
+    /// <summary>
+    /// Removes the owner row this dialog seeded (never one the operator picked). Returns a message naming it, or
+    /// null when there wasn't one.
+    /// </summary>
+    private string? DropSeededOwner()
+    {
+        var seeded = Owners.Where(o => o.Seeded).ToList();
+        if (seeded.Count == 0) return null;
+        foreach (var row in seeded) Owners.Remove(row);
+        return "Removed the default owner (Exchange assigns its own): " + string.Join(", ", seeded.Select(s => s.Name));
+    }
+
+    /// <summary>
+    /// Removes device rows, which only the Security type accepts. Returns a message naming them, or null when
+    /// there were none. Done on the type change rather than at submit so the operator watches the list change
+    /// instead of learning about it from a warning after the group has been created.
+    /// </summary>
+    private string? DropDevices()
+    {
+        var dropped = Members.Where(m => m.IsDevice).ToList();
+        if (dropped.Count == 0) return null;
+        foreach (var row in dropped) Members.Remove(row);
+        return "Removed (devices can only be members of a security group): " +
+               string.Join(", ", dropped.Select(d => d.Name));
     }
 
     /// <summary>Keeps the alias in step with the name until the operator types their own.</summary>
@@ -109,12 +214,12 @@ public partial class NewCloudGroupViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void AddOwners() => Pick("Choose owners for the new group", Owners);
+    private void AddOwners() => Pick("Choose owners for the new group", Owners, owners: true);
 
     [RelayCommand]
-    private void AddMembers() => Pick("Choose members for the new group", Members);
+    private void AddMembers() => Pick("Choose members for the new group", Members, owners: false);
 
-    private void Pick(string title, ObservableCollection<CloudPrincipalRow> into)
+    private void Pick(string title, ObservableCollection<CloudPrincipalRow> into, bool owners)
     {
         var picked = _dialogs.PickCloudMembers(title);
         if (picked is null) return;
@@ -122,14 +227,17 @@ public partial class NewCloudGroupViewModel : ObservableObject
         var skipped = new List<string>();
         foreach (var row in picked)
         {
-            // Which principals are legal depends on the kind: a Microsoft 365 group accepts ONLY users, and
-            // Exchange addresses members by mail so a device can't be one. A plain security group genuinely can
-            // contain devices, and Graph binds them through the same directoryObjects reference used for users,
-            // so they are allowed there rather than refused for uniformity's sake.
-            var deviceAllowed = Type == CloudGroupType.Security;
+            // Which principals are legal depends on the kind AND on which list is being filled. A Microsoft 365
+            // group accepts ONLY users, and Exchange addresses members by mail so a device can't be one. A plain
+            // security group genuinely can CONTAIN devices, and Graph binds them through the same
+            // directoryObjects reference used for users — but nothing owns a group except a user. The owners
+            // relationship is bound through /users/ (GraphService.BindPrincipalsAsync), where a device id does
+            // not resolve, so accepting one here buys an unexplained "these owners were not set" warning on a
+            // group that was otherwise created correctly.
+            var deviceAllowed = !owners && Type == CloudGroupType.Security;
             if (row.Kind != CloudObjectKind.User && !(deviceAllowed && row.Kind == CloudObjectKind.Device))
             {
-                skipped.Add($"{row.DisplayName} ({(row.Kind == CloudObjectKind.Device ? "devices can only be members of a security group" : "not a user")})");
+                skipped.Add($"{row.DisplayName} ({DeclineReason(row.Kind, owners)})");
                 continue;
             }
 
@@ -138,11 +246,19 @@ public partial class NewCloudGroupViewModel : ObservableObject
             if (IsExchangeType && string.IsNullOrWhiteSpace(address)) { skipped.Add($"{row.DisplayName} (no mail address)"); continue; }
 
             if (into.Any(p => string.Equals(p.Principal.Id, row.Id, StringComparison.OrdinalIgnoreCase))) continue;
-            into.Add(new CloudPrincipalRow(new CloudGroupPrincipal(row.Id, row.DisplayName, address)));
+            into.Add(new CloudPrincipalRow(new CloudGroupPrincipal(row.Id, row.DisplayName, address), row.Kind));
         }
 
         Status = skipped.Count == 0 ? string.Empty : "Skipped: " + string.Join(", ", skipped);
     }
+
+    /// <summary>Why a picked principal was refused, phrased for whichever list it was headed for.</summary>
+    private static string DeclineReason(CloudObjectKind kind, bool owners) => kind switch
+    {
+        CloudObjectKind.Device when owners => "a device can't own a group",
+        CloudObjectKind.Device => "devices can only be members of a security group",
+        _ => "not a user",
+    };
 
     [RelayCommand]
     private void RemoveOwner(CloudPrincipalRow? row) { if (row is not null) Owners.Remove(row); }
@@ -166,6 +282,8 @@ public partial class NewCloudGroupViewModel : ObservableObject
             Visibility = Visibility,
             HiddenMembership = ShowHiddenMembership && HiddenMembership,
             AllowExternalSenders = IsExchangeType && AllowExternalSenders,
+            SendWelcomeEmail = ShowMicrosoft365Options && SendWelcomeEmail,
+            HideInOutlook = ShowMicrosoft365Options && HideInOutlook,
         };
 
         if (CloudGroupValidator.Validate(request) is { } problem) { Status = problem; return; }

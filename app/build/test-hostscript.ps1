@@ -9,6 +9,8 @@
 
     1. Extracts the literal and parses it with the PowerShell parser (catches syntax errors).
     2. Unit-tests __ownerNames, the owner projection, against a stubbed Get-Recipient.
+    3. Unit-tests __newDgParams, the New-DistributionGroup splat. Every value it decides is create-time
+       only, so a mistake there cannot be corrected on the group afterwards.
 
   Run it after editing HostScript.
 
@@ -169,6 +171,80 @@ Check 'lookups stop at the budget' 2 $script:lookups
 Check 'over-budget owners show raw' '33333333-3333-3333-3333-333333333333' $res[2]
 Check 'every owner still returned' 5 $res.Count
 Check 'skipped owners counted for reporting' 3 $script:__ownerSkipped
+
+# --- 3. __newDgParams -----------------------------------------------------------------------------
+# The New-DistributionGroup splat. Nothing it decides can be changed on the group afterwards, and none of
+# it runs until it runs against a live tenant, so it is checked here instead.
+$dgStart = ($all | Select-String -Pattern '^function __newDgParams' | Select-Object -First 1).LineNumber
+if (-not $dgStart) { throw 'Could not locate __newDgParams (has HostScript been reformatted?).' }
+$dgEnd = $null
+for ($i = $dgStart; $i -lt $all.Count; $i++) { if ($all[$i] -eq '}') { $dgEnd = $i; break } }
+if (-not $dgEnd) { throw 'Could not locate the end of __newDgParams.' }
+$dgText = ($all[($dgStart - 1)..$dgEnd]) -join "`n"
+# Guard the END of the block, not the start. A start check is tautological — the slice begins at the line the
+# pattern just matched — and the failure that can actually happen is the opposite one: the closing-brace scan
+# missing its target and over-running into the rest of the host script, which would still parse and still
+# define the function, leaving the suite green while testing something else.
+if (($dgText -split "`n")[-1] -ne '}') { throw 'Extraction of __newDgParams did not end on its closing brace.' }
+if ($dgText -match 'Import-Module|Connect-ExchangeOnline|__emit|<<<UDM-') {
+    throw 'Extraction of __newDgParams over-ran into the host-script body.'
+}
+Invoke-Expression $dgText
+if (-not (Get-Command __newDgParams -ErrorAction SilentlyContinue)) { throw '__newDgParams was not defined by the extracted block.' }
+
+# The host receives $r from ConvertFrom-Json, so build the same shape rather than a hashtable: a
+# PSCustomObject answers a missing property with $null, which is what the function's guards are written for.
+function NewR([hashtable]$over) {
+    $base = @{
+        name = 'Test Group'; type = 'Distribution'; alias = ''; description = ''
+        owners = @(); members = @(); requireAuth = $true; hiddenMembership = $false
+    }
+    foreach ($k in $over.Keys) { $base[$k] = $over[$k] }
+    return [pscustomobject]$base
+}
+
+Write-Host "`n== __newDgParams: required and omitted parameters ==" -ForegroundColor Cyan
+$np = __newDgParams (NewR @{})
+Check 'Name passed through'          'Test Group'   $np['Name']
+Check 'Type passed through'          'Distribution' $np['Type']
+Check 'ErrorAction is Stop'          'Stop'         $np['ErrorAction']
+Check 'blank alias omitted'          $false         $np.ContainsKey('Alias')
+Check 'blank description omitted'    $false         $np.ContainsKey('Description')
+Check 'no owners -> no ManagedBy'    $false         $np.ContainsKey('ManagedBy')
+Check 'no members -> no Members'     $false         $np.ContainsKey('Members')
+Check 'hidden membership off -> key absent' $false  $np.ContainsKey('HiddenGroupMembershipEnabled')
+
+$np = __newDgParams (NewR @{ alias = 'test-group'; description = 'A group' })
+Check 'alias passed through'       'test-group' $np['Alias']
+Check 'description passed through' 'A group'    $np['Description']
+Check 'whitespace alias omitted'   $false       ((__newDgParams (NewR @{ alias = '   ' })).ContainsKey('Alias'))
+
+Write-Host "`n== __newDgParams: external senders is a double negative ==" -ForegroundColor Cyan
+# The operator-facing option is "allow mail from external senders"; Exchange's flag is its inverse and
+# defaults to $true, i.e. a new group rejects ALL external mail. Flipping this would be invisible until
+# someone outside the org mailed the list and got a bounce.
+Check 'always sent, never left to the default' $true ($np.ContainsKey('RequireSenderAuthenticationEnabled'))
+Check 'external senders OFF -> RequireSenderAuthenticationEnabled $true' `
+    $true  (__newDgParams (NewR @{ requireAuth = $true }))['RequireSenderAuthenticationEnabled']
+Check 'external senders ON  -> RequireSenderAuthenticationEnabled $false' `
+    $false (__newDgParams (NewR @{ requireAuth = $false }))['RequireSenderAuthenticationEnabled']
+
+Write-Host "`n== __newDgParams: principals ==" -ForegroundColor Cyan
+$np = __newDgParams (NewR @{ owners = @('a@x.com', '', '  ', 'b@x.com'); members = @('c@x.com', '', 'd@x.com') })
+Check 'owners -> ManagedBy, blanks dropped' 'a@x.com; b@x.com' (($np['ManagedBy']) -join '; ')
+Check 'members -> Members, blanks dropped'  'c@x.com; d@x.com' (($np['Members']) -join '; ')
+Check 'all-blank owners -> no ManagedBy'    $false ((__newDgParams (NewR @{ owners = @('', ' ') })).ContainsKey('ManagedBy'))
+
+Write-Host "`n== __newDgParams: irreversible and type-specific settings ==" -ForegroundColor Cyan
+Check 'hidden membership set when asked' $true (__newDgParams (NewR @{ hiddenMembership = $true }))['HiddenGroupMembershipEnabled']
+# A mail-enabled security group is a security principal: Open join/depart is rejected for it, and the
+# cmdlet documents 'Default value: None', meaning it sends nothing and the service decides. Pin it.
+$np = __newDgParams (NewR @{ type = 'Security' })
+Check 'security: MemberJoinRestriction pinned Closed'   'Closed' $np['MemberJoinRestriction']
+Check 'security: MemberDepartRestriction pinned Closed' 'Closed' $np['MemberDepartRestriction']
+$np = __newDgParams (NewR @{ type = 'Distribution' })
+Check 'distribution: join restriction left alone'   $false $np.ContainsKey('MemberJoinRestriction')
+Check 'distribution: depart restriction left alone' $false $np.ContainsKey('MemberDepartRestriction')
 
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

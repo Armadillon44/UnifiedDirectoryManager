@@ -708,6 +708,36 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             $map[$key][$perm] = $true
         }
 
+        # Builds the New-DistributionGroup parameter splat. Factored out of the op so it can be unit-tested
+        # without a tenant (build/test-hostscript.ps1): everything decided here is create-time only, so a
+        # mistake is not correctable afterwards, and this whole file is an unchecked string literal.
+        function __newDgParams($r) {
+            $np = @{
+                Name = [string]$r.name
+                Type = [string]$r.type
+                ErrorAction = 'Stop'
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$r.alias)) { $np['Alias'] = [string]$r.alias }
+            if (-not [string]::IsNullOrWhiteSpace([string]$r.description)) { $np['Description'] = [string]$r.description }
+            $own = @($r.owners | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+            if ($own.Count -gt 0) { $np['ManagedBy'] = $own }
+            $mem = @($r.members | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+            if ($mem.Count -gt 0) { $np['Members'] = $mem }
+            # RequireSenderAuthenticationEnabled defaults to $true, i.e. a new group silently rejects ALL
+            # external mail, so it is always passed explicitly rather than left to that default. Note the
+            # value is the inverse of the operator-facing option: requireAuth = !AllowExternalSenders.
+            $np['RequireSenderAuthenticationEnabled'] = [bool]$r.requireAuth
+            if ([bool]$r.hiddenMembership) { $np['HiddenGroupMembershipEnabled'] = $true }
+            # A mail-enabled security group is a security principal, so self-service join and depart aren't
+            # meaningful for it and Open is rejected. Pin both to Closed rather than depending on a service
+            # default that isn't documented per type ('Default value: None' means the cmdlet sends nothing).
+            if ([string]$r.type -eq 'Security') {
+                $np['MemberJoinRestriction'] = 'Closed'
+                $np['MemberDepartRestriction'] = 'Closed'
+            }
+            return $np
+        }
+
         try {
             Import-Module ExchangeOnlineManagement -ErrorAction Stop
         } catch {
@@ -932,23 +962,10 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 else { __emit @{ ok = $true; data = $data } }
                             }
                             'new-distribution-group' {
-                                # Owners and members go on the create itself (unlike the Graph path), so a
-                                # failure here means nothing was created — there is no partial state to report.
-                                $np = @{
-                                    Name = [string]$r.name
-                                    Type = [string]$r.type
-                                    ErrorAction = 'Stop'
-                                }
-                                if (-not [string]::IsNullOrWhiteSpace([string]$r.alias)) { $np['Alias'] = [string]$r.alias }
-                                if (-not [string]::IsNullOrWhiteSpace([string]$r.description)) { $np['Description'] = [string]$r.description }
-                                $own = @($r.owners | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
-                                if ($own.Count -gt 0) { $np['ManagedBy'] = $own }
-                                $mem = @($r.members | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
-                                if ($mem.Count -gt 0) { $np['Members'] = $mem }
-                                # Both of these are create-time only. RequireSenderAuthenticationEnabled defaults
-                                # to $true, i.e. external mail is rejected, so it is always passed explicitly.
-                                $np['RequireSenderAuthenticationEnabled'] = [bool]$r.requireAuth
-                                if ([bool]$r.hiddenMembership) { $np['HiddenGroupMembershipEnabled'] = $true }
+                                # Owners and members go on the create itself here, unlike the Graph path, where
+                                # anything in the request BODY that fails to bind destroys the whole create. A
+                                # failure here means nothing was created, so there is no partial state to report.
+                                $np = __newDgParams $r
                                 $g = New-DistributionGroup @np 6>$null
                                 $g = $g | Select-Object -First 1
                                 __emit @{ ok = $true; data = @{

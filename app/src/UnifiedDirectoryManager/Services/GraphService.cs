@@ -333,10 +333,6 @@ public sealed class GraphService : IGraphService
 
     // --- Writes (callers confirm first) ---
 
-    /// <summary>Graph binds relationships by absolute URL, and caps them at 20 PER REQUEST — both on create
-    /// (owners + members counted together) and on a members PATCH.</summary>
-    private const int BindLimit = 20;
-
     public async Task<CloudGroupCreateResult> CreateGroupAsync(CloudGroupCreateRequest request, CancellationToken cancellationToken = default)
     {
         if (_graph is null) throw new InvalidOperationException("Sign in to Entra ID first.");
@@ -357,23 +353,30 @@ public sealed class GraphService : IGraphService
         // visibility isn't meaningful, so it is left unset there rather than sent as a no-op.
         if (unified) body.Visibility = request.HiddenMembership ? "HiddenMembership" : request.Visibility;
 
+        // resourceBehaviorOptions is POST-only and Microsoft 365-only. WelcomeEmailDisabled is the ONLY way to
+        // stop the service mailing every initial member, and there is no second chance: omit it and the
+        // notification has already reached real people by the time this method returns.
+        if (unified)
+        {
+            var behaviors = new List<string>();
+            if (!request.SendWelcomeEmail) behaviors.Add("WelcomeEmailDisabled");
+            if (request.HideInOutlook) behaviors.Add("HideGroupInOutlook");
+            if (behaviors.Count > 0)
+                body.AdditionalData = new Dictionary<string, object> { ["resourceBehaviorOptions"] = behaviors };
+        }
+
         var owners = Distinct(request.Owners);
         var members = Distinct(request.Members);
 
-        // Owners are deliberately NOT part of the create body. Graph has a documented known issue with no
-        // workaround: a non-admin naming themselves in owners@odata.bind gets 400 "Request contains a property
-        // with duplicate values", and because that is a property of the request body it fails the WHOLE create —
-        // no group at all, from an error that names no principal. The issue is specific to Create/Update/Upsert;
-        // POST /owners/$ref afterwards is a separate operation and is not affected. Binding owners after the
-        // create also keeps an admin's explicitly-chosen owner, which a blanket "strip self" would have dropped,
+        // NOTHING is bound in the create body — not owners, not members. Any principal reference the service
+        // can't resolve is a property of the request body, so it fails the WHOLE create: one stale id means no
+        // group at all, reported by an error that names no principal. Two documented traps make that concrete.
+        // A non-admin naming themselves in owners@odata.bind gets 400 "Request contains a property with
+        // duplicate values" (a known issue with no workaround), and members@odata.bind is all-or-nothing. Both
+        // are specific to Create/Update/Upsert; POST /$ref afterwards is one request per principal, so a bad
+        // one degrades to a warning naming that principal, on a group that exists. Binding owners afterwards
+        // also keeps an admin's explicitly-chosen owner, which a blanket "strip self" would have dropped —
         // leaving the ownerless security group this is meant to avoid.
-        var membersOnCreate = members.Take(BindLimit).ToList();
-        if (membersOnCreate.Count > 0)
-            body.AdditionalData = new Dictionary<string, object>
-            {
-                ["members@odata.bind"] = membersOnCreate.Select(m => DirectoryUrl("directoryObjects", m.Id)).ToList(),
-            };
-
         var created = await _graph.Groups.PostAsync(body, cancellationToken: cancellationToken);
         var id = created?.Id;
         if (string.IsNullOrEmpty(id))
@@ -381,19 +384,18 @@ public sealed class GraphService : IGraphService
 
         AppLog.Instance.Info($"Created cloud group '{body.DisplayName}' ({request.Type}) as {id}.");
 
-        // Owners (all of them) and any members past the per-request cap are follow-up writes. The group already
-        // exists, so a failure here is a warning, not a failed create.
-        var ownersError = await BindOverflowAsync("owners", id!, owners, cancellationToken).ConfigureAwait(false);
-        var membersError = await BindOverflowAsync("members", id!, members.Skip(membersOnCreate.Count).ToList(), cancellationToken).ConfigureAwait(false);
+        // The group already exists, so a failure past this point is a warning, not a failed create.
+        var ownersError = await BindPrincipalsAsync("owners", id!, owners, cancellationToken).ConfigureAwait(false);
+        var membersError = await BindPrincipalsAsync("members", id!, members, cancellationToken).ConfigureAwait(false);
         return new CloudGroupCreateResult(id!, body.DisplayName ?? request.DisplayName, ownersError, membersError);
     }
 
     /// <summary>
-    /// Adds the relationships that didn't fit on the create request, one reference at a time so a single bad
-    /// principal doesn't discard the whole batch (a PATCH of <c>members@odata.bind</c> is all-or-nothing).
-    /// Returns null on success, or a message naming what didn't get added.
+    /// Binds owners or members to a group that already exists, one reference at a time so a single bad principal
+    /// doesn't discard the rest (both the create body and a <c>members@odata.bind</c> PATCH are all-or-nothing).
+    /// Returns null on success, or a message naming who didn't get added.
     /// </summary>
-    private async Task<string?> BindOverflowAsync(
+    private async Task<string?> BindPrincipalsAsync(
         string relationship, string groupId, IReadOnlyList<CloudGroupPrincipal> principals, CancellationToken ct)
     {
         if (principals.Count == 0) return null;
@@ -407,6 +409,10 @@ public sealed class GraphService : IGraphService
             {
                 try
                 {
+                    // Owners bind through /users/ and members through /directoryObjects/. That asymmetry is only
+                    // safe because the picker refuses a device on the owners path (NewCloudGroupViewModel.Pick):
+                    // a device id sent through the /users/ segment does not resolve, and the operator would see
+                    // an unexplained "these owners were not set" on an otherwise successful create.
                     var reference = new ReferenceCreate
                     {
                         OdataId = DirectoryUrl(relationship == "owners" ? "users" : "directoryObjects", p.Id),
@@ -415,6 +421,14 @@ public sealed class GraphService : IGraphService
                         await _graph!.Groups[groupId].Owners.Ref.PostAsync(reference, cancellationToken: ct).ConfigureAwait(false);
                     else
                         await _graph!.Groups[groupId].Members.Ref.PostAsync(reference, cancellationToken: ct).ConfigureAwait(false);
+                    break;
+                }
+                catch (Exception ex) when (IsAlreadyPresent(ex))
+                {
+                    // The principal is already attached, which is the desired end state — not a failure, and
+                    // certainly not something to retry. Graph auto-assigns the caller as owner of every
+                    // Microsoft 365 group (and of a security group for a non-admin caller), so this is the
+                    // NORMAL path for the owner the dialog seeds by default, not an edge case.
                     break;
                 }
                 catch (Exception ex) when (attempt < 3 && IsReplicationDelay(ex))
@@ -433,10 +447,38 @@ public sealed class GraphService : IGraphService
         return failed.Count == 0 ? null : string.Join(", ", failed);
     }
 
-    /// <summary>The documented transient failure while a freshly-created object replicates across directory replicas.</summary>
-    private static bool IsReplicationDelay(Exception ex) =>
-        GraphErrors.Friendly(ex).Contains("don't exist", StringComparison.OrdinalIgnoreCase)
-        || GraphErrors.Friendly(ex).Contains("does not exist", StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// True when the reference already exists, which Graph answers with 400 rather than a success code. Matched
+    /// on the message because there is no distinct error code for it — <c>Request_BadRequest</c> covers this and
+    /// most other rejections alike, so the code alone cannot tell them apart.
+    /// </summary>
+    private static bool IsAlreadyPresent(Exception ex) =>
+        string.Equals(GraphErrors.Code(ex), "Request_BadRequest", StringComparison.OrdinalIgnoreCase)
+        && GraphErrors.Friendly(ex).Contains("already exist", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The documented transient failure while a freshly-created object replicates across directory replicas.
+    /// Graph reports it as <c>Request_BadRequest</c> with a message about the source resource not existing.
+    ///
+    /// The code is NOT sufficient on its own. <c>Request_BadRequest</c> is Graph's catch-all for rejected
+    /// requests — a duplicate reference, an invalid property, a policy violation — none of which get better by
+    /// waiting. Retrying on the code alone spends 12 seconds per principal turning an instant, permanent
+    /// failure into a slow one. So the code is required <i>together with</i> the wording, and
+    /// <c>Request_ResourceNotFound</c> is accepted on its own because it is specific enough to be safe.
+    /// </summary>
+    private static bool IsReplicationDelay(Exception ex)
+    {
+        if (string.Equals(GraphErrors.Code(ex), "Request_ResourceNotFound", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (!string.Equals(GraphErrors.Code(ex), "Request_BadRequest", StringComparison.OrdinalIgnoreCase)
+            && GraphErrors.Code(ex) is not null)
+            return false;
+
+        var msg = GraphErrors.Friendly(ex);
+        return msg.Contains("don't exist", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("does not exist", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("do not exist", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static string DirectoryUrl(string segment, string id) => $"https://graph.microsoft.com/v1.0/{segment}/{id}";
 

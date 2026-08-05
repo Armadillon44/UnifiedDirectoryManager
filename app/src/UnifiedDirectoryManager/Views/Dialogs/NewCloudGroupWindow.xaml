@@ -2,7 +2,7 @@
         x:Name="Root"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="New Cloud Group" Height="640" Width="600"
+        Title="New Cloud Group" Height="690" Width="600"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
         FocusManager.FocusedElement="{Binding ElementName=NameBox}">
     <Grid Margin="14">
@@ -59,6 +59,14 @@
                       IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" Margin="0,2,0,4"
                       Visibility="{Binding IsExchangeType, Converter={StaticResource BoolToVis}}"
                       ToolTip="Off by default, matching Exchange: a new group accepts mail only from authenticated (internal) senders and silently rejects everything from outside." />
+            <CheckBox Content="Send a welcome email to the initial members" IsChecked="{Binding SendWelcomeEmail}"
+                      IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" Margin="0,2,0,4"
+                      Visibility="{Binding ShowMicrosoft365Options, Converter={StaticResource BoolToVis}}"
+                      ToolTip="Off by default. Microsoft 365 emails everyone added below unless that is suppressed as the group is created — and suppressing it is only possible as the group is created. Leave this ticked and the mail has gone before the dialog closes." />
+            <CheckBox Content="Hide the group in Outlook" IsChecked="{Binding HideInOutlook}"
+                      IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" Margin="0,2,0,4"
+                      Visibility="{Binding ShowMicrosoft365Options, Converter={StaticResource BoolToVis}}"
+                      ToolTip="Keeps the group out of Outlook's group list and address-book experiences. Like the welcome email, this can only be set while the group is being created." />
             <CheckBox Content="Hide the membership list (permanent)" IsChecked="{Binding HiddenMembership}"
                       IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" Margin="0,2,0,4"
                       Visibility="{Binding ShowHiddenMembership, Converter={StaticResource BoolToVis}}"

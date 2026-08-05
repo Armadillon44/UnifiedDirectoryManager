@@ -57,25 +57,47 @@ public static class CloudGroupValidator
     /// </summary>
     public static string? Validate(CloudGroupCreateRequest request)
     {
-        var exchange = IsExchangeType(request.Type);
+        if ((request.DisplayName?.Trim() ?? string.Empty).Length == 0) return "Enter a name for the group.";
+        if (ValidateName(request.Type, request.DisplayName) is { } nameProblem) return nameProblem;
 
-        var name = request.DisplayName?.Trim() ?? string.Empty;
-        if (name.Length == 0) return "Enter a name for the group.";
-        // The two backends cap the name very differently, and Exchange's limit is the one that bites.
-        var nameCap = exchange ? MaxExchangeNameLength : MaxDisplayNameLength;
-        if (name.Length > nameCap)
-            return exchange
-                ? $"Exchange Online limits a group name to {MaxExchangeNameLength} characters (this one is {name.Length})."
-                : $"The name must be {MaxDisplayNameLength} characters or fewer.";
-
-        var nick = request.MailNickname?.Trim() ?? string.Empty;
-        if (nick.Length == 0)
-            return exchange
+        if ((request.MailNickname?.Trim() ?? string.Empty).Length == 0)
+            return IsExchangeType(request.Type)
                 ? "Enter an alias. Leaving it to Exchange rewrites the name (spaces stripped, unsupported characters replaced with “?”)."
                 : "Enter a mail nickname. Microsoft Graph requires one even for a security group that isn't mail-enabled.";
-        if (nick.Length > MaxNicknameLength) return $"The alias must be {MaxNicknameLength} characters or fewer.";
 
-        return exchange ? ValidateExchangeAlias(nick) : ValidateGraphNickname(nick);
+        return ValidateNickname(request.Type, request.MailNickname);
+    }
+
+    /// <summary>
+    /// Validates just the name against one backend's length cap. Returns null for an EMPTY name, because this
+    /// exists to re-check a value the operator has ALREADY typed when they change the group type — the two
+    /// backends cap the name very differently and Exchange's 64 is the one that bites, so a name that was legal
+    /// a moment ago can stop being legal without the operator touching it. "You haven't typed it yet" is not a
+    /// problem worth reporting at that moment; <see cref="Validate"/> owns the required-field message.
+    /// </summary>
+    public static string? ValidateName(CloudGroupType type, string? displayName)
+    {
+        var name = displayName?.Trim() ?? string.Empty;
+        if (name.Length == 0) return null;
+        var exchange = IsExchangeType(type);
+        var cap = exchange ? MaxExchangeNameLength : MaxDisplayNameLength;
+        if (name.Length <= cap) return null;
+        return exchange
+            ? $"Exchange Online limits a group name to {MaxExchangeNameLength} characters (this one is {name.Length})."
+            : $"The name must be {MaxDisplayNameLength} characters or fewer.";
+    }
+
+    /// <summary>
+    /// Validates just the alias against one backend's character rules, which is the sharper half of the same
+    /// problem <see cref="ValidateName"/> solves: Graph and Exchange forbid different characters, so switching
+    /// type can invalidate an untouched alias. Returns null for an EMPTY alias.
+    /// </summary>
+    public static string? ValidateNickname(CloudGroupType type, string? mailNickname)
+    {
+        var nick = mailNickname?.Trim() ?? string.Empty;
+        if (nick.Length == 0) return null;
+        if (nick.Length > MaxNicknameLength) return $"The alias must be {MaxNicknameLength} characters or fewer.";
+        return IsExchangeType(type) ? ValidateExchangeAlias(nick) : ValidateGraphNickname(nick);
     }
 
     /// <summary>Graph: ASCII only, and none of <c>@ ( ) \ [ ] " ; : &lt; &gt; , .</c> or space.</summary>

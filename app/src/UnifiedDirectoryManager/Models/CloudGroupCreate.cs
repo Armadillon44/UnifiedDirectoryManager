@@ -61,6 +61,22 @@ public sealed record CloudGroupCreateRequest
     /// thinks about it, and the service call inverts it.
     /// </summary>
     public bool AllowExternalSenders { get; init; }
+
+    /// <summary>
+    /// Microsoft 365 only. A new Microsoft 365 group emails every initial member a welcome notification unless
+    /// the create body's <c>resourceBehaviorOptions</c> carries <c>WelcomeEmailDisabled</c>. That collection is
+    /// POST-only, so this is unfixable afterwards — and the mail has already gone to real people.
+    /// <b>Default off</b>: an admin building a group from a directory tool is not announcing it.
+    /// </summary>
+    public bool SendWelcomeEmail { get; init; }
+
+    /// <summary>
+    /// Microsoft 365 only, and POST-only for the same reason as <see cref="SendWelcomeEmail"/>
+    /// (<c>resourceBehaviorOptions: HideGroupInOutlook</c>). Not to be confused with Graph's similarly-named
+    /// <c>hideFromOutlookClients</c>, which is stored outside the main directory and is documented as
+    /// unsettable in a create body at all.
+    /// </summary>
+    public bool HideInOutlook { get; init; }
 }
 
 /// <summary>

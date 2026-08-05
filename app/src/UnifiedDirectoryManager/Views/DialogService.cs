@@ -301,6 +301,10 @@ public sealed class DialogService : IDialogService
         var vm = new NewCloudGroupViewModel(_graph, _exchange, this, initialType);
         var win = new NewCloudGroupWindow { DataContext = vm, Owner = Owner };
         vm.Created += () => { win.DialogResult = true; win.Close(); }; // close the modal once the group is created
+        // Defaulting the owner to the signed-in admin needs a Graph lookup. Start it and open the dialog straight
+        // away rather than stalling on it: ShowDialog pumps messages, so the continuation lands back on the UI
+        // thread and the row appears a moment later. It fails soft internally, so there is nothing to await here.
+        _ = vm.InitializeAsync();
         return win.ShowDialog() == true && vm.CreatedId is { Length: > 0 } id
             ? (id, vm.CreatedName ?? string.Empty, vm.CreatedInExchange)
             : null;
