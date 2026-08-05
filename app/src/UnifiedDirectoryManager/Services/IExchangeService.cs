@@ -124,7 +124,10 @@ public interface IExchangeService
     /// store rather than the directory, takes one mailbox per call, and fanning it across a list is the
     /// documented way to exhaust the Exchange throttling budget.
     /// </summary>
-    Task<CloudPropertySection> GetMailboxUsageAsync(string identity, CancellationToken cancellationToken = default);
+    /// <param name="exchangeGuid">The mailbox's <c>ExchangeGuid</c> when known. Preferred over the identity
+    /// because it is exact, and because it is the ONLY identifier this cmdlet echoes back — its result carries
+    /// no UPN, address or alias to check, so without it there is nothing to verify the answer against.</param>
+    Task<CloudPropertySection> GetMailboxUsageAsync(string identity, string? exchangeGuid = null, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Lists a distribution list's or mail-enabled security group's members. Reads the whole membership

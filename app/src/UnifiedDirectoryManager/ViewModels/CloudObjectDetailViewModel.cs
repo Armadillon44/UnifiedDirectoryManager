@@ -23,6 +23,9 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     // superseded and must not touch Sections.
     private int _detailToken;
 
+    /// <summary>The selected mailbox's ExchangeGuid, captured from the detail read; null for other kinds.</summary>
+    private string? _mailboxExchangeGuid;
+
     [ObservableProperty] private bool _hasTarget;
     // User action-bar visibility (cloud user writes).
     [ObservableProperty] private bool _showEnable;
@@ -109,6 +112,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         Title = KindLabel = Status = string.Empty;
         IsUser = IsGroup = IsDevice = IsMailbox = false;
         HasUsage = false;
+        _mailboxExchangeGuid = null;
         ShowEnable = ShowDisable = false;
         CanAddMembers = false;
         CanManageLicenses = false;
@@ -345,6 +349,10 @@ public partial class CloudObjectDetailViewModel : ObservableObject
             foreach (var s in sections) Sections.Add(s);
             WireSections();
             HasUsage = false; // the rebuilt section list no longer holds the usage rows
+            // Keep the ExchangeGuid: it is how the usage read addresses the mailbox exactly, and the only
+            // identifier that read echoes back to be checked against.
+            var guid = sections.SelectMany(s => s.Properties).FirstOrDefault(p => p.Key == "exchangeGuid")?.Value;
+            _mailboxExchangeGuid = string.IsNullOrWhiteSpace(guid) || guid == "—" ? null : guid;
         }
         catch (Exception ex)
         {
@@ -374,7 +382,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         IsBusy = true;
         try
         {
-            var usage = await _exchange.GetMailboxUsageAsync(identity);
+            var usage = await _exchange.GetMailboxUsageAsync(identity, _mailboxExchangeGuid);
             if (token != _detailToken || !ReferenceEquals(_currentTarget, row)) return; // superseded
             UnwireSections();
             Sections.Add(usage);

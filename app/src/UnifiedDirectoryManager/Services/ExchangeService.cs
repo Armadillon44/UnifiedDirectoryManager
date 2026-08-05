@@ -286,10 +286,12 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         return sections;
     }
 
-    public async Task<CloudPropertySection> GetMailboxUsageAsync(string identity, CancellationToken cancellationToken = default)
+    public async Task<CloudPropertySection> GetMailboxUsageAsync(string identity, string? exchangeGuid = null, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(identity)) throw new ArgumentException("A mailbox is required.", nameof(identity));
-        var data = await RunOpAsync(new { op = "get-mailbox-usage", identity }, cancellationToken).ConfigureAwait(false);
+        var data = await RunOpAsync(
+            new { op = "get-mailbox-usage", identity, exchangeGuid = exchangeGuid ?? string.Empty },
+            cancellationToken).ConfigureAwait(false);
         if (data is not { ValueKind: JsonValueKind.Object } d)
             throw new ExchangeException("Exchange Online returned no usage figures for that mailbox.");
 
@@ -1182,12 +1184,18 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 # Store-backed and one mailbox per call — the expensive read, which is why it is
                                 # on demand rather than part of opening a mailbox.
                                 $wantU = ([string]$r.identity).Trim()
-                                $s = Get-EXOMailboxStatistics -Identity $r.identity -PropertySets All -ErrorAction Stop |
-                                     Select-Object -First 1
+                                $wantGuid = ([string]$r.exchangeGuid).Trim().Trim('{', '}')
+                                # This cmdlet returns NONE of the usual identity fields — only DisplayName,
+                                # MailboxGuid, counts and sizes — so __isWanted cannot be used here. Address it
+                                # by -ExchangeGuid where we have one, which is exact, and verify the MailboxGuid
+                                # that comes back. Falling back to -Identity leaves nothing to verify against.
+                                $sp = @{ PropertySets = 'All'; ErrorAction = 'Stop' }
+                                if ($wantGuid) { $sp['ExchangeGuid'] = [guid]$wantGuid } else { $sp['Identity'] = $wantU }
+                                $s = Get-EXOMailboxStatistics @sp | Select-Object -First 1
                                 if ($null -eq $s) { throw "No mailbox statistics were returned for '$wantU'." }
-                                # Same trap as the detail read: a non-existent identity returns everything, and a
-                                # bare -First 1 would report a stranger's size against the selected mailbox.
-                                if (-not (__isWanted $s $wantU)) { throw "Exchange did not return statistics for '$wantU'." }
+                                if ($wantGuid -and (([string]$s.MailboxGuid).Trim('{', '}') -ne $wantGuid)) {
+                                    throw "Exchange returned statistics for a different mailbox than '$wantU'."
+                                }
                                 __emit @{ ok = $true; data = @{
                                     TotalItemSize = [string]$s.TotalItemSize
                                     ItemCount = [string]$s.ItemCount
