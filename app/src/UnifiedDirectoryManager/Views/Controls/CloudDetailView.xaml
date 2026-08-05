@@ -42,7 +42,9 @@
             <Border DockPanel.Dock="Top" Background="{StaticResource HeaderBrush}" Padding="8">
                 <StackPanel>
                     <TextBlock Text="{Binding Title}" FontWeight="SemiBold" FontSize="14" Foreground="White" TextWrapping="Wrap" />
-                    <TextBlock Text="{Binding KindLabel, StringFormat='Entra ID {0}'}" Foreground="#DDD" FontSize="11" Margin="0,2,0,0" />
+                    <TextBlock Foreground="#DDD" FontSize="11" Margin="0,2,0,0">
+                        <Run Text="{Binding SourceLabel, Mode=OneWay}" /><Run Text=" " /><Run Text="{Binding KindLabel, Mode=OneWay}" />
+                    </TextBlock>
                 </StackPanel>
             </Border>
 
@@ -55,6 +57,17 @@
                     <Button Content="Enable account" Command="{Binding EnableCommand}" Margin="0,0,6,0"
                             Visibility="{Binding ShowEnable, Converter={StaticResource BoolToVis}}" />
                     <Button Content="Revoke sessions" Command="{Binding RevokeSessionsCommand}" />
+                </WrapPanel>
+            </Border>
+
+            <!-- Mailbox actions. Size and usage is a separate, expensive read (the mailbox store rather than the
+                 directory, one mailbox per call), so it is asked for rather than fetched on open. -->
+            <Border DockPanel.Dock="Top" Padding="6" Background="#F7F7F7" BorderBrush="#E0E0E0" BorderThickness="0,0,0,1"
+                    Visibility="{Binding IsMailbox, Converter={StaticResource BoolToVis}}">
+                <WrapPanel>
+                    <Button Content="Load size and usage" Command="{Binding LoadUsageCommand}"
+                            IsEnabled="{Binding HasUsage, Converter={StaticResource InverseBool}}"
+                            ToolTip="Reads mailbox size, item counts and last logon. This queries the mailbox itself rather than the directory, so it is slower and is not part of opening a mailbox." />
                 </WrapPanel>
             </Border>
 
@@ -74,21 +87,26 @@
             </Border>
 
             <TabControl Margin="4">
-                <!-- Properties (all object kinds) -->
+                <!-- Properties (all object kinds). One tab per section rather than one long scroll: a mailbox
+                     alone has eight of them, and the section a value lives in is how an operator finds it. The
+                     inner TabControl is bound to Sections because the outer strip also carries the kind-specific
+                     tabs below, and a WPF TabControl cannot mix ItemsSource with declared TabItems. -->
                 <TabItem Header="Properties">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <ItemsControl ItemsSource="{Binding Sections}" Margin="8">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <StackPanel Margin="0,0,0,8">
-                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" Margin="0,6,0,2"
-                                                   Foreground="{StaticResource AccentText}" />
-                                        <ItemsControl ItemsSource="{Binding Properties}" ItemTemplate="{StaticResource PropertyRow}" />
-                                    </StackPanel>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </ScrollViewer>
+                    <TabControl ItemsSource="{Binding Sections}" BorderThickness="0" Margin="0,4,0,0">
+                        <TabControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Title}" />
+                            </DataTemplate>
+                        </TabControl.ItemTemplate>
+                        <TabControl.ContentTemplate>
+                            <DataTemplate>
+                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                    <ItemsControl ItemsSource="{Binding Properties}"
+                                                  ItemTemplate="{StaticResource PropertyRow}" Margin="8" />
+                                </ScrollViewer>
+                            </DataTemplate>
+                        </TabControl.ContentTemplate>
+                    </TabControl>
                 </TabItem>
 
                 <!-- Licenses (users) -->

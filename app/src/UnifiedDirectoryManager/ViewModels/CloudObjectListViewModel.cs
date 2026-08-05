@@ -71,10 +71,9 @@ public partial class CloudObjectListViewModel : ObservableObject
     public event EventHandler<CloudObjectRow>? OpenRequested;
 
     /// <summary>
-    /// Raises <see cref="OpenRequested"/> so the host opens a properties window — except in the Exchange lists,
-    /// which have no Exchange-backed properties view yet. The window is driven entirely by Microsoft Graph: it
-    /// would issue Graph reads that 403 for a distribution list and describe nothing for a mailbox, and it would
-    /// offer Graph-backed member edits and saves that Exchange objects cannot accept. Say so instead.
+    /// Raises <see cref="OpenRequested"/> so the host opens a properties window. A distribution group is the one
+    /// exception: it has no properties view yet, and its membership is the thing the app can actually manage, so
+    /// activating that row raises <see cref="MembersRequested"/> instead.
     /// </summary>
     public void RequestOpen(CloudObjectRow row)
     {
@@ -83,11 +82,6 @@ public partial class CloudObjectListViewModel : ObservableObject
         if (Mode == CloudListMode.DistributionGroups)
         {
             MembersRequested?.Invoke(this, row);
-            return;
-        }
-        if (IsExchangeMode)
-        {
-            Status = "Properties for Exchange Online objects aren't available yet.";
             return;
         }
         OpenRequested?.Invoke(this, row);
@@ -118,15 +112,16 @@ public partial class CloudObjectListViewModel : ObservableObject
     // distribution list. Leave it empty in the Exchange lists rather than showing a failure or a half-truth.
     partial void OnSelectedRowChanged(CloudObjectRow? value)
     {
-        Detail.SetTarget(IsExchangeMode ? null : value);
-        // SetTarget(null) restores the "select an object" prompt, which would tell an operator who just
-        // selected a row to do the thing they did. Unconditional in Exchange mode: selecting nothing there
-        // is no more actionable than selecting something, so the prompt is wrong either way.
-        if (IsExchangeMode) Detail.EmptyHint = ExchangeDetailHint;
+        // Mailboxes are now described by Exchange, so they get the real pane. Distribution groups still don't:
+        // their properties arrive with the detail-pane work, and membership is reached by activating the row.
+        var showDetail = Mode != CloudListMode.DistributionGroups;
+        Detail.SetTarget(showDetail ? value : null);
+        if (!showDetail) Detail.EmptyHint = DistributionGroupDetailHint;
     }
 
-    /// <summary>Explains the empty detail pane in the Exchange lists, where Graph-backed details don't apply.</summary>
-    private const string ExchangeDetailHint = "Details for Exchange Online objects aren't available here yet.";
+    /// <summary>Explains the empty detail pane for distribution groups, whose properties view isn't built yet.</summary>
+    private const string DistributionGroupDetailHint =
+        "Properties for distribution groups aren't available here yet — double-click a row to manage its members.";
     partial void OnIsBusyChanged(bool value)
     {
         LoadMoreCommand.NotifyCanExecuteChanged();
@@ -176,8 +171,9 @@ public partial class CloudObjectListViewModel : ObservableObject
         BuildFilterOptions(mode);
         SearchText = search?.Trim() ?? string.Empty;
         QuickFilter = string.Empty;
-        // Set the pane's hint on the mode switch as well, so it is already right before the first selection.
-        if (IsExchangeMode) Detail.EmptyHint = ExchangeDetailHint;
+        // Distribution groups only. Mailboxes now have a real properties pane, and the Entra lists always did,
+        // so telling either that properties "aren't available" would be false.
+        if (mode == CloudListMode.DistributionGroups) Detail.EmptyHint = DistributionGroupDetailHint;
         await LoadFirstPageAsync();
     }
 

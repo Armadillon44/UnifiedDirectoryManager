@@ -18,6 +18,11 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     private readonly IExchangeService _exchange; // for the license-removal mailbox guardrail
     private CloudObjectRow? _currentTarget; // guards stale async results on fast re-selection
 
+    // Re-selecting the SAME row is a real case (a write path calls SetTarget(row) to re-read), and the row
+    // reference alone can't tell those apart. Each SetTarget bumps this; a load whose token is stale has been
+    // superseded and must not touch Sections.
+    private int _detailToken;
+
     [ObservableProperty] private bool _hasTarget;
     // User action-bar visibility (cloud user writes).
     [ObservableProperty] private bool _showEnable;
@@ -28,6 +33,13 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     [ObservableProperty] private bool _isUser;
     [ObservableProperty] private bool _isGroup;
     [ObservableProperty] private bool _isDevice;
+    [ObservableProperty] private bool _isMailbox;
+
+    /// <summary>Which service describes this object — the header used to say "Entra ID" for everything.</summary>
+    [ObservableProperty] private string _sourceLabel = "Entra ID";
+
+    /// <summary>True once size and usage have been fetched, so the button doesn't invite a second expensive read.</summary>
+    [ObservableProperty] private bool _hasUsage;
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string _status = string.Empty;
 
@@ -56,6 +68,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     {
         Clear();
         _currentTarget = row;
+        _detailToken++; // supersede any load still in flight, including one for this same row
         if (row is null) { HasTarget = false; EmptyHint = "Select an object to view its properties."; return; }
 
         HasTarget = true;
@@ -72,6 +85,10 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         IsUser = row.Kind == CloudObjectKind.User;
         IsGroup = row.Kind == CloudObjectKind.Group;
         IsDevice = row.Kind == CloudObjectKind.Device;
+        IsMailbox = row.Kind == CloudObjectKind.Mailbox;
+        // The header said "Entra ID {kind}" unconditionally. A mailbox is described by Exchange, not Entra.
+        SourceLabel = IsMailbox ? "Exchange Online" : "Entra ID";
+        HasUsage = false;
         CanManageLicenses = IsUser;
         CanManageMemberships = IsUser || IsDevice;
 
@@ -90,7 +107,8 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     private void Clear()
     {
         Title = KindLabel = Status = string.Empty;
-        IsUser = IsGroup = IsDevice = false;
+        IsUser = IsGroup = IsDevice = IsMailbox = false;
+        HasUsage = false;
         ShowEnable = ShowDisable = false;
         CanAddMembers = false;
         CanManageLicenses = false;
@@ -241,6 +259,10 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     private async Task LoadDetailAsync(CloudObjectRow row)
     {
         if (!_graph.IsSignedIn) return;
+        // A mailbox is described by Exchange, not Graph — mailbox type, forwarding, holds, quotas, archive state
+        // and the protocol flags have no Graph equivalent at all.
+        if (row.Kind == CloudObjectKind.Mailbox) { await LoadMailboxDetailAsync(row); return; }
+
         IsBusy = true;
         try
         {
@@ -301,6 +323,78 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         }
         finally { if (ReferenceEquals(_currentTarget, row)) IsBusy = false; }
     }
+
+    /// <summary>Loads a mailbox's read-only property sections from Exchange.</summary>
+    private async Task LoadMailboxDetailAsync(CloudObjectRow row)
+    {
+        var identity = MailboxIdentityFor(row) ?? row.Get("primarySmtpAddress");
+        if (string.IsNullOrWhiteSpace(identity))
+        {
+            Status = "This mailbox has no address, so Exchange can't be asked about it.";
+            return;
+        }
+
+        var token = _detailToken;
+        IsBusy = true;
+        try
+        {
+            var sections = await _exchange.GetMailboxDetailAsync(identity);
+            if (token != _detailToken || !ReferenceEquals(_currentTarget, row)) return; // superseded
+            UnwireSections();
+            Sections.Clear();
+            foreach (var s in sections) Sections.Add(s);
+            WireSections();
+            HasUsage = false; // the rebuilt section list no longer holds the usage rows
+        }
+        catch (Exception ex)
+        {
+            AppLog.Instance.Warn($"Could not load mailbox details for '{identity}': {ex.Message}");
+            // The summary built from the list row stays on screen, so the pane still shows something true.
+            if (token == _detailToken) Status = "Could not load mailbox details: " + ex.Message;
+        }
+        finally { if (token == _detailToken) IsBusy = false; }
+    }
+
+    /// <summary>
+    /// Fetches size, item counts and last logon on demand. Kept off the open path deliberately: this reads the
+    /// mailbox store rather than the directory, handles one mailbox per call, and fanning it across a list is
+    /// the documented way to exhaust the Exchange throttling budget.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanLoadUsage))]
+    private async Task LoadUsageAsync()
+    {
+        var row = _currentTarget;
+        if (row is null || row.Kind != CloudObjectKind.Mailbox || IsBusy) return;
+        var identity = MailboxIdentityFor(row) ?? row.Get("primarySmtpAddress");
+        if (string.IsNullOrWhiteSpace(identity)) return;
+
+        // The generation counter, not just the row reference: re-selecting the SAME row rebuilds Sections, so a
+        // late result would otherwise append to a pane that has already been torn down and rebuilt.
+        var token = ++_detailToken;
+        IsBusy = true;
+        try
+        {
+            var usage = await _exchange.GetMailboxUsageAsync(identity);
+            if (token != _detailToken || !ReferenceEquals(_currentTarget, row)) return; // superseded
+            UnwireSections();
+            Sections.Add(usage);
+            WireSections();
+            HasUsage = true;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Instance.Warn($"Could not read mailbox usage for '{identity}': {ex.Message}");
+            if (token == _detailToken) Status = "Could not read size and usage: " + ex.Message;
+        }
+        finally { if (token == _detailToken) IsBusy = false; }
+    }
+
+    /// <summary>Gated on the pane being idle as well as the figures being unread, so the button reflects what it
+    /// will actually do instead of looking live while a load is in flight.</summary>
+    private bool CanLoadUsage() => IsMailbox && !HasUsage && !IsBusy;
+
+    partial void OnHasUsageChanged(bool value) => LoadUsageCommand.NotifyCanExecuteChanged();
+    partial void OnIsMailboxChanged(bool value) => LoadUsageCommand.NotifyCanExecuteChanged();
 
     // --- Cloud user write actions (confirm first) ---
 

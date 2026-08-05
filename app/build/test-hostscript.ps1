@@ -172,7 +172,64 @@ Check 'over-budget owners show raw' '33333333-3333-3333-3333-333333333333' $res[
 Check 'every owner still returned' 5 $res.Count
 Check 'skipped owners counted for reporting' 3 $script:__ownerSkipped
 
-# --- 3. __newDgParams -----------------------------------------------------------------------------
+# --- 3. value formatters --------------------------------------------------------------------------
+# Exchange returns almost nothing in a shape that survives ConvertTo-Json, so these three flatten it. They
+# feed the mailbox properties view, where a wrong answer is indistinguishable from a true one.
+$fmtStart = ($all | Select-String -Pattern '^function __yn' | Select-Object -First 1).LineNumber
+if (-not $fmtStart) { throw 'Could not locate the value formatters (has HostScript been reformatted?).' }
+$lastStart = ($all | Select-String -Pattern '^function __isWanted' | Select-Object -First 1).LineNumber
+if (-not $lastStart) { throw 'Could not locate __isWanted.' }
+$fmtEnd = $null
+for ($i = $lastStart; $i -lt $all.Count; $i++) { if ($all[$i] -eq '}') { $fmtEnd = $i; break } }
+if (-not $fmtEnd) { throw 'Could not locate the end of __isWanted.' }
+$fmtText = ($all[($fmtStart - 1)..$fmtEnd]) -join "`n"
+if (($fmtText -split "`n")[-1] -ne '}') { throw 'Extraction of the formatters did not end on a closing brace.' }
+if ($fmtText -match 'Import-Module|Connect-ExchangeOnline|__emit|<<<UDM-') {
+    throw 'Extraction of the formatters over-ran into the host-script body.'
+}
+Invoke-Expression $fmtText
+foreach ($fn in '__yn', '__dt', '__leaf', '__isWanted') {
+    if (-not (Get-Command $fn -ErrorAction SilentlyContinue)) { throw "$fn was not defined by the extracted block." }
+}
+
+Write-Host "`n== value formatters ==" -ForegroundColor Cyan
+# EXO V3 returns flags as the STRINGS 'True'/'False'; -not 'False' is $false, so the comparison must be on text.
+Check '__yn: string True'  'Yes' (__yn 'True')
+Check '__yn: string False' 'No'  (__yn 'False')
+Check '__yn: real boolean' 'Yes' (__yn $true)
+Check '__yn: empty'        'No'  (__yn '')
+Check '__yn: null'         'No'  (__yn $null)
+Check '__dt: empty stays empty' '' (__dt '')
+Check '__dt: null stays empty'  '' (__dt $null)
+Check '__dt: formats a date' '2026-03-04 09:07' (__dt ([datetime]'2026-03-04T09:07:00'))
+# ADObjectId stringifies to a canonical name, which is not an address.
+Check '__leaf: canonical name' 'Jane Doe' (__leaf 'contoso.onmicrosoft.com/Users/Jane Doe')
+Check '__leaf: plain name kept' 'Default MRM Policy' (__leaf 'Default MRM Policy')
+Check '__leaf: name with a slash kept' 'Sales/Marketing' (__leaf 'Sales/Marketing')
+Check '__leaf: empty' '' (__leaf '')
+
+Write-Host "`n== __isWanted: the returns-everything guard ==" -ForegroundColor Cyan
+# A non-existent -Identity makes an Exchange Get- cmdlet return EVERY object, so "take the first" would show a
+# stranger's mailbox under the selected person's name. Every identity form Exchange accepts must be recognised.
+$mb = [pscustomobject]@{
+    UserPrincipalName        = 'jane@contoso.com'
+    PrimarySmtpAddress       = 'jane.doe@contoso.com'
+    ExternalDirectoryObjectId = '11111111-1111-1111-1111-111111111111'
+    Guid                     = '22222222-2222-2222-2222-222222222222'
+    Alias                    = 'jdoe'
+    Identity                 = 'contoso.com/Users/Jane Doe'
+    Name                     = 'Jane Doe'
+}
+Check '__isWanted: matches UPN'        $true  (__isWanted $mb 'jane@contoso.com')
+Check '__isWanted: matches SMTP'       $true  (__isWanted $mb 'jane.doe@contoso.com')
+Check '__isWanted: matches object id'  $true  (__isWanted $mb '11111111-1111-1111-1111-111111111111')
+Check '__isWanted: matches alias'      $true  (__isWanted $mb 'jdoe')
+Check '__isWanted: braces normalised'  $true  (__isWanted $mb '{22222222-2222-2222-2222-222222222222}')
+Check '__isWanted: rejects a stranger' $false (__isWanted $mb 'someone.else@contoso.com')
+Check '__isWanted: rejects empty'      $false (__isWanted $mb '')
+Check '__isWanted: rejects null'       $false (__isWanted $mb $null)
+
+# --- 4. __newDgParams -----------------------------------------------------------------------------
 # The New-DistributionGroup splat. Nothing it decides can be changed on the group afterwards, and none of
 # it runs until it runs against a live tenant, so it is checked here instead.
 $dgStart = ($all | Select-String -Pattern '^function __newDgParams' | Select-Object -First 1).LineNumber

@@ -211,6 +211,106 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         }, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<CloudPropertySection>> GetMailboxDetailAsync(string identity, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(identity)) throw new ArgumentException("A mailbox is required.", nameof(identity));
+        var data = await RunOpAsync(new { op = "get-mailbox-detail", identity }, cancellationToken).ConfigureAwait(false);
+        if (data is not { ValueKind: JsonValueKind.Object } d)
+            throw new ExchangeException("Exchange Online returned no details for that mailbox.");
+
+        string S(string p) => d.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
+
+        // Proxy addresses arrive prefixed: capital SMTP marks the primary, lowercase a secondary.
+        var addresses = new List<string>();
+        if (d.TryGetProperty("EmailAddresses", out var addrs) && addrs.ValueKind == JsonValueKind.Array)
+            foreach (var a in addrs.EnumerateArray())
+                if (a.GetString() is { Length: > 0 } s) addresses.Add(s);
+        var primary = addresses.FirstOrDefault(a => a.StartsWith("SMTP:", StringComparison.Ordinal));
+        var secondary = addresses.Where(a => a.StartsWith("smtp:", StringComparison.Ordinal)).Select(a => a[5..]).ToList();
+        var other = addresses.Where(a => !a.StartsWith("SMTP:", StringComparison.Ordinal) && !a.StartsWith("smtp:", StringComparison.Ordinal)).ToList();
+
+        var protocolsError = S("ProtocolsError");
+        var sections = new List<CloudPropertySection>
+        {
+            Section("Identity",
+                P("displayName", "Display name", S("DisplayName")),
+                P("alias", "Alias", S("Alias")),
+                P("userPrincipalName", "User principal name", S("UserPrincipalName")),
+                P("primarySmtpAddress", "Primary SMTP", S("PrimarySmtpAddress")),
+                P("exchangeGuid", "Exchange GUID", S("ExchangeGuid")),
+                P("whenMailboxCreated", "Mailbox created", S("WhenMailboxCreated")),
+                P("isDirSynced", "Directory sync", S("IsDirSynced") == "Yes" ? "Synced from on-premises" : "Cloud-only")),
+            Section("Type and visibility",
+                P("recipientTypeDetails", "Mailbox type", S("RecipientTypeDetails")),
+                P("hiddenFromAddressLists", "Hidden from address lists", S("HiddenFromAddressLists"))),
+            Section("Addresses",
+                P("primaryAddress", "Primary", primary is null ? string.Empty : primary[5..]),
+                P("secondaryAddresses", "Secondary", string.Join("; ", secondary)),
+                P("otherAddresses", "Other", string.Join("; ", other))),
+            Section("Delivery and forwarding",
+                P("forwardingAddress", "Forwarding to (internal)", S("ForwardingAddress")),
+                P("forwardingSmtpAddress", "Forwarding to (external)", S("ForwardingSmtpAddress")),
+                P("deliverToMailboxAndForward", "Also deliver to this mailbox", S("DeliverToMailboxAndForward"))),
+            Section("Quotas",
+                P("issueWarningQuota", "Issue warning at", S("IssueWarningQuota")),
+                P("prohibitSendQuota", "Prohibit send at", S("ProhibitSendQuota")),
+                P("prohibitSendReceiveQuota", "Prohibit send/receive at", S("ProhibitSendReceiveQuota")),
+                P("useDatabaseQuotaDefaults", "Using database defaults", S("UseDatabaseQuotaDefaults"))),
+            Section("Hold and retention",
+                P("litigationHoldEnabled", "Litigation hold", S("LitigationHoldEnabled")),
+                P("litigationHoldDate", "Hold applied", S("LitigationHoldDate")),
+                P("litigationHoldOwner", "Hold set by", S("LitigationHoldOwner")),
+                P("litigationHoldDuration", "Hold duration", S("LitigationHoldDuration")),
+                P("retentionPolicy", "Retention policy", S("RetentionPolicy"))),
+            Section("Archive",
+                // ArchiveStatus is shown but not trusted: Microsoft documents it reading "None" for a live
+                // archive after a re-license or migration, so the presence answer comes from ArchiveGuid.
+                P("hasArchive", "Archive mailbox", S("HasArchive")),
+                P("archiveStatus", "Archive status (reported)", S("ArchiveStatus")),
+                P("archiveState", "Archive state", S("ArchiveState")),
+                P("archiveGuid", "Archive GUID", S("ArchiveGuid"))),
+            // Protocols come from a second cmdlet behind a second permission. When that read fails, the section
+            // says so ONCE and shows nothing else: rendering the six flags as "—" would use this pane's symbol
+            // for "no value" to mean "we couldn't read it", and an operator would conclude ActiveSync is off.
+            protocolsError.Length > 0
+                ? Section("Protocols",
+                    P("protocolsError", "Could not be read", protocolsError))
+                : Section("Protocols",
+                    P("owaEnabled", "Outlook on the web", S("OwaEnabled")),
+                    P("activeSyncEnabled", "Exchange ActiveSync", S("ActiveSyncEnabled")),
+                    P("mapiEnabled", "MAPI (Outlook desktop)", S("MapiEnabled")),
+                    P("ewsEnabled", "Exchange Web Services", S("EwsEnabled")),
+                    P("imapEnabled", "IMAP", S("ImapEnabled")),
+                    P("popEnabled", "POP", S("PopEnabled"))),
+        };
+        return sections;
+    }
+
+    public async Task<CloudPropertySection> GetMailboxUsageAsync(string identity, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(identity)) throw new ArgumentException("A mailbox is required.", nameof(identity));
+        var data = await RunOpAsync(new { op = "get-mailbox-usage", identity }, cancellationToken).ConfigureAwait(false);
+        if (data is not { ValueKind: JsonValueKind.Object } d)
+            throw new ExchangeException("Exchange Online returned no usage figures for that mailbox.");
+
+        string S(string p) => d.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
+        return Section("Size and usage",
+            P("totalItemSize", "Mailbox size", S("TotalItemSize")),
+            P("itemCount", "Items", S("ItemCount")),
+            P("totalDeletedItemSize", "Recoverable items size", S("TotalDeletedItemSize")),
+            P("deletedItemCount", "Recoverable items", S("DeletedItemCount")),
+            P("lastLogonTime", "Last logon", S("LastLogonTime")));
+    }
+
+    /// <summary>Every mailbox row is read-only: this view reports state, and the write paths for a mailbox live
+    /// on their own confirmed actions rather than in a property grid.</summary>
+    private static CloudProperty P(string key, string label, string value) =>
+        new(key, label, string.IsNullOrWhiteSpace(value) ? "—" : value, CloudPropertyEditability.SystemReadOnly,
+            "Read-only here. Mailbox settings are changed through their own actions, not by editing this list.");
+
+    private static CloudPropertySection Section(string title, params CloudProperty[] properties) =>
+        new(title, properties);
+
     public async Task<IReadOnlyList<MailboxRecipient>> GetDistributionGroupMembersAsync(string groupIdentity, CancellationToken cancellationToken = default)
     {
         // Validate before calling: a Get- cmdlet given a non-existent identity returns EVERY object, so an
@@ -659,6 +759,37 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         }
         function __arg($b64) { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) | ConvertFrom-Json }
 
+        # Exchange returns almost everything as a type that does not survive ConvertTo-Json intact, so values
+        # are flattened to display strings here. The grouping into sections is done in C# — this literal gets
+        # no compiler and no IntelliSense, so it carries as little logic as possible.
+        function __yn($v) { if ([string]$v -eq 'True') { 'Yes' } else { 'No' } }
+        function __dt($v) { if ($v) { ([datetime]$v).ToString('yyyy-MM-dd HH:mm') } else { '' } }
+        # ADObjectId (ForwardingAddress, RetentionPolicy) stringifies to a canonical name, not an address.
+        # Same rule as the owner projection: a dotted first segment marks a canonical name; take its last part.
+        function __leaf($v) {
+            $s = [string]$v
+            if ($s -match '^[^/]+\.[^/]+/') { ($s -split '/')[-1] } else { $s }
+        }
+
+        # True when an object Exchange returned is the one that was asked for. Needed because a non-existent
+        # -Identity makes a Get- cmdlet return EVERY object rather than erroring, so a bare "take the first"
+        # would silently substitute an unrelated recipient.
+        function __isWanted($obj, $want) {
+            if ([string]::IsNullOrWhiteSpace($want)) { return $false }
+            $w = $want.Trim('{', '}')
+            $ids = @(
+                [string]$obj.UserPrincipalName
+                [string]$obj.PrimarySmtpAddress
+                [string]$obj.ExternalDirectoryObjectId
+                [string]$obj.Guid
+                [string]$obj.Alias
+                [string]$obj.Identity
+                [string]$obj.Name
+            )
+            foreach ($id in $ids) { if ($id -and $id.Trim('{', '}') -eq $w) { return $true } }
+            return $false
+        }
+
         # Group-owner projection. ManagedBy entries arrive in three shapes and each needs different handling:
         #   * a canonical name ("contoso.onmicrosoft.com/Users/Jane Doe") — take the last segment
         #   * a plain display name, including role groups such as "Organization Management" — use as-is
@@ -975,6 +1106,95 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 if ($script:__ownerErrors.Count -gt 0) { $odiag += "owner lookup errors: $(($script:__ownerErrors | Select-Object -Unique) -join ' | ')" }
                                 if ($odiag.Count -gt 0) { __emit @{ ok = $true; data = $data; detail = ($odiag -join '; ') } }
                                 else { __emit @{ ok = $true; data = $data } }
+                            }
+                            'get-mailbox-detail' {
+                                # -ErrorAction Stop, deliberately NOT SilentlyContinue like the older get-mailbox
+                                # op: access-denied and not-found are different answers, and reporting a
+                                # permissions problem as "no mailbox found" sends the operator the wrong way.
+                                # Small budget: at most one forwarding target needs resolving on this path.
+                                $script:__ownerCache = @{}
+                                $script:__ownerBudget = 2
+                                $want = ([string]$r.identity).Trim()
+                                $m = Get-EXOMailbox -Identity $r.identity `
+                                        -PropertySets Minimum,AddressList,Delivery,Hold,Policy,Quota,Archive,StatisticsSeed `
+                                        -Properties WhenMailboxCreated,IsDirSynced -ErrorAction Stop |
+                                     Select-Object -First 1
+                                if ($null -eq $m) { throw "No mailbox was returned for '$want'." }
+                                # A NON-EXISTENT -Identity makes an Exchange Get- cmdlet return EVERY object
+                                # instead of erroring, and -First 1 would then hand back a stranger's mailbox
+                                # under the selected person's name. Only accept the one that was asked for.
+                                if (-not (__isWanted $m $want)) { throw "Exchange did not return the mailbox '$want'." }
+
+                                # Protocol flags live on a different cmdlet and a different permission, so a
+                                # failure there must not lose the mailbox — it is reported alongside instead.
+                                $cas = $null; $casError = ''
+                                try {
+                                    $cas = Get-EXOCasMailbox -Identity $r.identity -ErrorAction Stop | Select-Object -First 1
+                                    if ($cas -and -not (__isWanted $cas $want)) { $cas = $null; $casError = 'Exchange returned a different mailbox for the protocol settings.' }
+                                }
+                                catch { $casError = $_.Exception.Message }
+
+                                # ArchiveStatus alone lies: Microsoft documents it reading "None" for an active
+                                # archive after a re-license or migration. ArchiveGuid is the reliable test.
+                                $agid = [string]$m.ArchiveGuid
+                                $hasArchive = ($agid -and $agid -ne '00000000-0000-0000-0000-000000000000')
+
+                                __emit @{ ok = $true; data = @{
+                                    DisplayName = [string]$m.DisplayName
+                                    Alias = [string]$m.Alias
+                                    UserPrincipalName = [string]$m.UserPrincipalName
+                                    PrimarySmtpAddress = [string]$m.PrimarySmtpAddress
+                                    RecipientTypeDetails = [string]$m.RecipientTypeDetails
+                                    ExchangeGuid = [string]$m.ExchangeGuid
+                                    WhenMailboxCreated = (__dt $m.WhenMailboxCreated)
+                                    IsDirSynced = (__yn $m.IsDirSynced)
+                                    HiddenFromAddressLists = (__yn $m.HiddenFromAddressListsEnabled)
+                                    EmailAddresses = @($m.EmailAddresses | ForEach-Object { [string]$_ })
+                                    # Through the owner projection, not __leaf: Exchange replaces the Name of a
+                                    # synced recipient with its object id, so a canonical name routinely ends in
+                                    # a GUID and __leaf alone would render the forwarding target as a bare id.
+                                    ForwardingAddress = ((__ownerNames @($m.ForwardingAddress)) -join '; ')
+                                    ForwardingSmtpAddress = (([string]$m.ForwardingSmtpAddress) -replace '^smtp:', '')
+                                    DeliverToMailboxAndForward = (__yn $m.DeliverToMailboxAndForward)
+                                    IssueWarningQuota = [string]$m.IssueWarningQuota
+                                    ProhibitSendQuota = [string]$m.ProhibitSendQuota
+                                    ProhibitSendReceiveQuota = [string]$m.ProhibitSendReceiveQuota
+                                    UseDatabaseQuotaDefaults = (__yn $m.UseDatabaseQuotaDefaults)
+                                    LitigationHoldEnabled = (__yn $m.LitigationHoldEnabled)
+                                    LitigationHoldDate = (__dt $m.LitigationHoldDate)
+                                    LitigationHoldOwner = [string]$m.LitigationHoldOwner
+                                    LitigationHoldDuration = [string]$m.LitigationHoldDuration
+                                    RetentionPolicy = (__leaf $m.RetentionPolicy)
+                                    HasArchive = $(if ($hasArchive) { 'Yes' } else { 'No' })
+                                    ArchiveStatus = [string]$m.ArchiveStatus
+                                    ArchiveState = [string]$m.ArchiveState
+                                    ArchiveGuid = $(if ($hasArchive) { $agid } else { '' })
+                                    OwaEnabled = $(if ($cas) { __yn $cas.OWAEnabled } else { '' })
+                                    ActiveSyncEnabled = $(if ($cas) { __yn $cas.ActiveSyncEnabled } else { '' })
+                                    ImapEnabled = $(if ($cas) { __yn $cas.ImapEnabled } else { '' })
+                                    PopEnabled = $(if ($cas) { __yn $cas.PopEnabled } else { '' })
+                                    MapiEnabled = $(if ($cas) { __yn $cas.MAPIEnabled } else { '' })
+                                    EwsEnabled = $(if ($cas) { __yn $cas.EwsEnabled } else { '' })
+                                    ProtocolsError = $casError
+                                }; detail = $(if ($casError) { "protocol settings unavailable: $casError" } else { '' }) }
+                            }
+                            'get-mailbox-usage' {
+                                # Store-backed and one mailbox per call — the expensive read, which is why it is
+                                # on demand rather than part of opening a mailbox.
+                                $wantU = ([string]$r.identity).Trim()
+                                $s = Get-EXOMailboxStatistics -Identity $r.identity -PropertySets All -ErrorAction Stop |
+                                     Select-Object -First 1
+                                if ($null -eq $s) { throw "No mailbox statistics were returned for '$wantU'." }
+                                # Same trap as the detail read: a non-existent identity returns everything, and a
+                                # bare -First 1 would report a stranger's size against the selected mailbox.
+                                if (-not (__isWanted $s $wantU)) { throw "Exchange did not return statistics for '$wantU'." }
+                                __emit @{ ok = $true; data = @{
+                                    TotalItemSize = [string]$s.TotalItemSize
+                                    ItemCount = [string]$s.ItemCount
+                                    TotalDeletedItemSize = [string]$s.TotalDeletedItemSize
+                                    DeletedItemCount = [string]$s.DeletedItemCount
+                                    LastLogonTime = (__dt $s.LastLogonTime)
+                                } }
                             }
                             'list-dl-members' {
                                 # -ResultSize Unlimited: the default page is 1,000 and truncates silently, which

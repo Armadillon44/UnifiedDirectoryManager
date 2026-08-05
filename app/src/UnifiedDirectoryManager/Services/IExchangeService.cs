@@ -108,6 +108,25 @@ public interface IExchangeService
     Task RemoveDelegateAsync(string identity, string delegateIdentity, DelegateAccess access, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Reads a mailbox's state as grouped, read-only property sections for the details pane: identity, type,
+    /// addresses, delivery and forwarding, quotas, hold and retention, archive, and protocol access.
+    ///
+    /// Two cheap directory-backed calls (<c>Get-EXOMailbox</c> + <c>Get-EXOCasMailbox</c>) and deliberately not
+    /// <see cref="GetMailboxAsync"/>, which runs with <c>-ErrorAction SilentlyContinue</c> and so reports an
+    /// access-denied as "no mailbox found". Microsoft Graph can replace none of this — forwarding, holds,
+    /// quotas, archive state and the protocol flags have no Graph equivalent.
+    /// </summary>
+    Task<IReadOnlyList<CloudPropertySection>> GetMailboxDetailAsync(string identity, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads size, item counts and last logon for ONE mailbox. Separate from
+    /// <see cref="GetMailboxDetailAsync"/> and never called as part of opening a mailbox: this hits the mailbox
+    /// store rather than the directory, takes one mailbox per call, and fanning it across a list is the
+    /// documented way to exhaust the Exchange throttling budget.
+    /// </summary>
+    Task<CloudPropertySection> GetMailboxUsageAsync(string identity, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Lists a distribution list's or mail-enabled security group's members. Reads the whole membership
     /// (<c>-ResultSize Unlimited</c>): the default page is 1,000 and truncates in silence, which on a
     /// membership list would read as "these are all the members".
