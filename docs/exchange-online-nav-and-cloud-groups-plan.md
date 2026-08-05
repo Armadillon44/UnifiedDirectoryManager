@@ -213,6 +213,55 @@ flag have no Graph equivalent at all.
 
 ---
 
+## Commit 5 · Exchange properties surface (view) — ROUGH
+
+Commits 1-4 leave both Exchange lists without a properties view: selecting a row blanks the detail pane and
+double-click is refused, because `CloudObjectDetailViewModel` reads exclusively through Microsoft Graph, which
+cannot describe a mailbox and returns 403 for a distribution list. **That refactor is the substance of this
+commit, not a detail** — commit 4's mailbox view needs it too, so whichever lands first pays for it.
+
+- **Give the detail view model a source.** Today `SetTarget` branches on `CloudObjectKind` and every path ends in
+  a Graph call. It needs an Exchange-backed path that produces the same `CloudPropertySection` rows, so the pane,
+  the properties window and the CSV of a section all keep working unchanged.
+- **Distribution group properties.** New op wrapping `Get-DistributionGroup -Identity` (validate the identity
+  first — a non-existent one returns EVERY group). Sections: Identity, Mail and addresses, Delivery and
+  moderation, Membership rules, On-premises.
+- **Mark what can never change.** `HiddenGroupMembershipEnabled` is create-time only. Showing it as an ordinary
+  read-only row invites someone to look for the edit control; it needs the same "why" treatment
+  `CloudPropertyEditability.SystemReadOnly` already gives on-prem-mastered fields.
+- **Mailbox properties** are already specced in commit 4 and drop into the same surface.
+
+## Commit 6 · Exchange manipulations — ROUGH
+
+- **Distribution group edits** via `Set-DistributionGroup`: display name, alias, description, owners,
+  `RequireSenderAuthenticationEnabled`, `HiddenFromAddressListsEnabled`, join/depart restriction, moderation.
+  Same `-BypassSecurityGroupManagerCheck` requirement as the member operations, for the same reason: the owner is
+  usually a role group, so no individual passes Exchange's "manager of the group" check.
+- **Mailbox actions from the Exchange section**: convert Regular ↔ Shared, set/clear forwarding, manage
+  delegates. `IExchangeService` already implements all of these — this is wiring and confirmation UI, not new
+  service work.
+- **Deletes**, if wanted (see D6). A distribution group is **permanently deleted immediately** — there is no
+  30-day recycle bin, unlike Microsoft 365 and security groups. That is a harder guarantee to lose than the
+  on-prem group delete, which at least writes a record first.
+
+### Decisions to make before starting these
+
+| # | Decision | Leaning |
+|---|---|---|
+| **D5** | How much distribution-group editing? The full `Set-DistributionGroup` surface, or only the fields the list already shows (owners, external senders, join restriction, hidden from address lists)? | Start with the fields already surfaced as columns. They are the ones an operator has just looked at and wants to change; the rest can follow if asked for. |
+| **D6** | Delete distribution groups from the app at all? | Only behind the same two-step type-to-confirm guard as OU/group delete, **and** writing the same kind of record first — membership included, since it is unrecoverable. If that is not worth building, leave delete out entirely rather than shipping a thin version. |
+| **D7** | Mailbox actions exist in the ExOL tab (reached from an AD user). Duplicate them in the Exchange section, share one control, or move them? | Share one control. Two implementations of "convert to shared" will drift, and the ExOL tab is the only path for a hybrid user who has no row in the Exchange list. |
+
+### Sharp edges already established
+
+- Every write against an `IsDirSynced` object is rejected by Exchange. In a hybrid org that is the default case,
+  not an edge case — the same gate commit 3 builds applies to everything here.
+- A group naming policy can rewrite a display name on edit as well as on create.
+- `Get-*` with a non-existent `-Identity` returns every object rather than erroring, so any single-object read on
+  this surface has to validate its identity first.
+
+---
+
 ## Cross-cutting gotchas
 
 **G1 · The channel has no paging and one fixed timeout.** `OpTimeout` is a hard 90 s (ExchangeService.cs:30) with no
@@ -280,10 +329,16 @@ model, otherwise double-clicking an Exchange DL can never open its Entra detail.
 3. ~~Commit 1: nav section, read-only lists, per-op timeout, drag-drop and `Configure` fixes.~~ **Done**
    (`7b1fdd0`), plus `80a311c` and `9eefbbf` for distribution-group owner resolution and the findings from
    the adversarial pass over both. Awaiting a live retest of the *Managed by* column.
-4. Commit 2: create cloud groups (both backends). **Next.**
-5. Commit 3: distribution group members, picker basket, synced-group blocking, Entra-side routing fix.
-6. Commit 4: mailbox information view.
-7. README + Wiki: the raised RBAC bar, the new nav section, the group-type routing table.
+4. ~~Commit 2: create cloud groups (both backends).~~ **Done** (`d62972b`), plus `476e7d0` for owner defaulting,
+   the Microsoft 365 welcome-email/Outlook-visibility controls, and the findings from the adversarial pass.
+5. Commit 3: distribution group members, picker basket, synced-group blocking, Entra-side routing fix. **Next.**
+6. Commit 4: mailbox information view. Needs the detail-pane refactor in commit 5, so the two may merge.
+7. Commit 5 (rough): Exchange properties surface — the Graph-only detail pane gains an Exchange path.
+8. Commit 6 (rough): Exchange manipulations — group edits, mailbox actions, and delete if D6 says so.
+9. README + Wiki: the raised RBAC bar, the new nav section, the group-type routing table.
+
+Commits 5 and 6 are sketched, not specced: decisions **D5-D7** are open and the sharp edges are recorded, but
+neither has had the research or the file-level detail that commits 1-4 got. Do that before starting them.
 
 Each commit builds clean (0 warnings, 0 errors), gets an adversarial review pass before landing, and is verified in
 the deployed binary before being handed over for testing.
