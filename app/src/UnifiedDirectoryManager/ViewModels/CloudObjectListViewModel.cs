@@ -72,13 +72,13 @@ public partial class CloudObjectListViewModel : ObservableObject
 
     /// <summary>
     /// Raises <see cref="OpenRequested"/> so the host opens a properties window. A distribution group is the one
-    /// exception: it has no properties view yet, and its membership is the thing the app can actually manage, so
-    /// activating that row raises <see cref="MembersRequested"/> instead.
+    /// exception: its properties are already in the pane, and membership is the thing an operator opens it for,
+    /// so activating that row raises <see cref="MembersRequested"/> instead.
     /// </summary>
     public void RequestOpen(CloudObjectRow row)
     {
-        // A distribution group's membership is the one thing this app can do with it today, so that is what
-        // activating the row does. Properties arrive with the detail-pane refactor.
+        // Membership is what an operator activates a distribution group for; its properties are already
+        // visible in the pane beside the list.
         if (Mode == CloudListMode.DistributionGroups)
         {
             MembersRequested?.Invoke(this, row);
@@ -108,20 +108,14 @@ public partial class CloudObjectListViewModel : ObservableObject
     partial void OnQuickFilterChanged(string value) => RowsView.Refresh();
     partial void OnSelectedFilterChanged(CloudFilterOption? value) => RowsView.Refresh();
 
-    // The detail pane reads through Microsoft Graph, which can't describe a mailbox and returns 403 for a
-    // distribution list. Leave it empty in the Exchange lists rather than showing a failure or a half-truth.
     partial void OnSelectedRowChanged(CloudObjectRow? value)
     {
-        // Mailboxes are now described by Exchange, so they get the real pane. Distribution groups still don't:
-        // their properties arrive with the detail-pane work, and membership is reached by activating the row.
-        var showDetail = Mode != CloudListMode.DistributionGroups;
-        Detail.SetTarget(showDetail ? value : null);
-        if (!showDetail) Detail.EmptyHint = DistributionGroupDetailHint;
+        // Every cloud list now has a properties pane; the detail view model picks its own backend from the
+        // row's Source. Activating a distribution group row still opens its membership editor, which is a
+        // separate action rather than a substitute for this.
+        Detail.SetTarget(value);
     }
 
-    /// <summary>Explains the empty detail pane for distribution groups, whose properties view isn't built yet.</summary>
-    private const string DistributionGroupDetailHint =
-        "Properties for distribution groups aren't available here yet — double-click a row to manage its members.";
     partial void OnIsBusyChanged(bool value)
     {
         LoadMoreCommand.NotifyCanExecuteChanged();
@@ -171,9 +165,6 @@ public partial class CloudObjectListViewModel : ObservableObject
         BuildFilterOptions(mode);
         SearchText = search?.Trim() ?? string.Empty;
         QuickFilter = string.Empty;
-        // Distribution groups only. Mailboxes now have a real properties pane, and the Entra lists always did,
-        // so telling either that properties "aren't available" would be false.
-        if (mode == CloudListMode.DistributionGroups) Detail.EmptyHint = DistributionGroupDetailHint;
         await LoadFirstPageAsync();
     }
 

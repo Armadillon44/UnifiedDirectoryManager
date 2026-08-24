@@ -38,6 +38,9 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     [ObservableProperty] private bool _isDevice;
     [ObservableProperty] private bool _isMailbox;
 
+    /// <summary>True for a distribution list or mail-enabled security group — a group Exchange owns, not Entra.</summary>
+    [ObservableProperty] private bool _isExchangeGroup;
+
     /// <summary>Which service describes this object — the header used to say "Entra ID" for everything.</summary>
     [ObservableProperty] private string _sourceLabel = "Entra ID";
 
@@ -85,12 +88,16 @@ public partial class CloudObjectDetailViewModel : ObservableObject
             CloudObjectKind.Mailbox => "Mailbox",
             _ => "Object",
         };
+        var fromExchange = row.Source == CloudObjectSource.Exchange;
         IsUser = row.Kind == CloudObjectKind.User;
-        IsGroup = row.Kind == CloudObjectKind.Group;
+        // IsGroup drives the Graph-backed Members tab and its add/remove buttons, so it must stay FALSE for a
+        // distribution list: Graph answers that membership with 403, and the members editor is its own dialog.
+        IsGroup = row.Kind == CloudObjectKind.Group && !fromExchange;
         IsDevice = row.Kind == CloudObjectKind.Device;
         IsMailbox = row.Kind == CloudObjectKind.Mailbox;
-        // The header said "Entra ID {kind}" unconditionally. A mailbox is described by Exchange, not Entra.
-        SourceLabel = IsMailbox ? "Exchange Online" : "Entra ID";
+        IsExchangeGroup = row.Kind == CloudObjectKind.Group && fromExchange;
+        // The header said "Entra ID {kind}" unconditionally, which is wrong for anything Exchange describes.
+        SourceLabel = fromExchange ? "Exchange Online" : "Entra ID";
         HasUsage = false;
         CanManageLicenses = IsUser;
         CanManageMemberships = IsUser || IsDevice;
@@ -110,7 +117,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     private void Clear()
     {
         Title = KindLabel = Status = string.Empty;
-        IsUser = IsGroup = IsDevice = IsMailbox = false;
+        IsUser = IsGroup = IsDevice = IsMailbox = IsExchangeGroup = false;
         HasUsage = false;
         _mailboxExchangeGuid = null;
         ShowEnable = ShowDisable = false;
@@ -249,7 +256,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     private static CloudPropertySection BuildSummary(CloudObjectRow row)
     {
         // Instant read-only placeholder from the list row; replaced by the full classified sections on load.
-        var headers = CloudColumnCatalog.Headers(ModeFor(row.Kind));
+        var headers = CloudColumnCatalog.Headers(ModeFor(row.Kind, row.Source));
         var props = new List<CloudProperty>
         {
             new("displayName", "Display name", row.DisplayName, CloudPropertyEditability.SystemReadOnly, null),
@@ -265,7 +272,12 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         if (!_graph.IsSignedIn) return;
         // A mailbox is described by Exchange, not Graph — mailbox type, forwarding, holds, quotas, archive state
         // and the protocol flags have no Graph equivalent at all.
-        if (row.Kind == CloudObjectKind.Mailbox) { await LoadMailboxDetailAsync(row); return; }
+        if (row.Kind == CloudObjectKind.Mailbox) { await LoadExchangeDetailAsync(row, mailbox: true); return; }
+        if (row.Kind == CloudObjectKind.Group && row.Source == CloudObjectSource.Exchange)
+        {
+            await LoadExchangeDetailAsync(row, mailbox: false);
+            return;
+        }
 
         IsBusy = true;
         try
@@ -328,13 +340,22 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         finally { if (ReferenceEquals(_currentTarget, row)) IsBusy = false; }
     }
 
-    /// <summary>Loads a mailbox's read-only property sections from Exchange.</summary>
-    private async Task LoadMailboxDetailAsync(CloudObjectRow row)
+    /// <summary>
+    /// Loads read-only property sections from Exchange, for either a mailbox or a distribution group. One
+    /// method because everything around the call is identical — identity resolution, the staleness guard, and
+    /// leaving the row summary on screen when the read fails. Only the service call differs.
+    /// </summary>
+    private async Task LoadExchangeDetailAsync(CloudObjectRow row, bool mailbox)
     {
-        var identity = MailboxIdentityFor(row) ?? row.Get("primarySmtpAddress");
+        // A group is addressed by its SMTP; a mailbox may be reached by UPN too.
+        var identity = mailbox
+            ? MailboxIdentityFor(row) ?? row.Get("primarySmtpAddress")
+            : row.Get("primarySmtpAddress");
         if (string.IsNullOrWhiteSpace(identity))
         {
-            Status = "This mailbox has no address, so Exchange can't be asked about it.";
+            Status = mailbox
+                ? "This mailbox has no address, so Exchange can't be asked about it."
+                : "This group has no email address, so Exchange can't be asked about it.";
             return;
         }
 
@@ -342,7 +363,9 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         IsBusy = true;
         try
         {
-            var sections = await _exchange.GetMailboxDetailAsync(identity);
+            var sections = mailbox
+                ? await _exchange.GetMailboxDetailAsync(identity)
+                : await _exchange.GetDistributionGroupDetailAsync(identity);
             if (token != _detailToken || !ReferenceEquals(_currentTarget, row)) return; // superseded
             UnwireSections();
             Sections.Clear();
@@ -351,14 +374,18 @@ public partial class CloudObjectDetailViewModel : ObservableObject
             HasUsage = false; // the rebuilt section list no longer holds the usage rows
             // Keep the ExchangeGuid: it is how the usage read addresses the mailbox exactly, and the only
             // identifier that read echoes back to be checked against.
-            var guid = sections.SelectMany(s => s.Properties).FirstOrDefault(p => p.Key == "exchangeGuid")?.Value;
-            _mailboxExchangeGuid = string.IsNullOrWhiteSpace(guid) || guid == "—" ? null : guid;
+            if (mailbox)
+            {
+                var guid = sections.SelectMany(s => s.Properties).FirstOrDefault(p => p.Key == "exchangeGuid")?.Value;
+                _mailboxExchangeGuid = string.IsNullOrWhiteSpace(guid) || guid == "—" ? null : guid;
+            }
         }
         catch (Exception ex)
         {
-            AppLog.Instance.Warn($"Could not load mailbox details for '{identity}': {ex.Message}");
+            AppLog.Instance.Warn($"Could not load Exchange details for '{identity}': {ex.Message}");
             // The summary built from the list row stays on screen, so the pane still shows something true.
-            if (token == _detailToken) Status = "Could not load mailbox details: " + ex.Message;
+            if (token == _detailToken)
+                Status = (mailbox ? "Could not load mailbox details: " : "Could not load group details: ") + ex.Message;
         }
         finally { if (token == _detailToken) IsBusy = false; }
     }
@@ -706,13 +733,19 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         }
     }
 
-    private static CloudListMode ModeFor(CloudObjectKind kind) => kind switch
+    private static CloudListMode ModeFor(CloudObjectKind kind, CloudObjectSource source)
     {
-        CloudObjectKind.Group => CloudListMode.Groups,
-        CloudObjectKind.Device => CloudListMode.Devices,
-        // Without this arm a mailbox would borrow the Entra user headers, and every mailbox-specific key
-        // would miss the lookup and be labelled with its raw camelCase name.
-        CloudObjectKind.Mailbox => CloudListMode.Mailboxes,
-        _ => CloudListMode.Users,
-    };
+        // A distribution list and an Entra security group are both CloudObjectKind.Group, and they are
+        // described by different column sets, so the kind alone cannot pick the headers.
+        if (kind == CloudObjectKind.Group && source == CloudObjectSource.Exchange) return CloudListMode.DistributionGroups;
+        return kind switch
+        {
+            CloudObjectKind.Group => CloudListMode.Groups,
+            CloudObjectKind.Device => CloudListMode.Devices,
+            // Without this arm a mailbox would borrow the Entra user headers, and every mailbox-specific key
+            // would miss the lookup and be labelled with its raw camelCase name.
+            CloudObjectKind.Mailbox => CloudListMode.Mailboxes,
+            _ => CloudListMode.Users,
+        };
+    }
 }

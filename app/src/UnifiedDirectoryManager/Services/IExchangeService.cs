@@ -130,6 +130,13 @@ public interface IExchangeService
     Task<CloudPropertySection> GetMailboxUsageAsync(string identity, string? exchangeGuid = null, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Reads a distribution list's or mail-enabled security group's state as grouped, read-only property
+    /// sections. Microsoft Graph cannot describe these — it exposes almost none of what matters here (owners,
+    /// join restriction, sender authentication, moderation) and is read-only for them besides.
+    /// </summary>
+    Task<IReadOnlyList<CloudPropertySection>> GetDistributionGroupDetailAsync(string identity, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Lists a distribution list's or mail-enabled security group's members. Reads the whole membership
     /// (<c>-ResultSize Unlimited</c>): the default page is 1,000 and truncates in silence, which on a
     /// membership list would read as "these are all the members".

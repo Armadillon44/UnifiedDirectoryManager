@@ -8,7 +8,8 @@
   as a failed operation. This script closes part of that gap without needing a tenant:
 
     1. Extracts the literal and parses it with the PowerShell parser (catches syntax errors).
-    2. Unit-tests __ownerNames, the owner projection, against a stubbed Get-Recipient.
+    2. Unit-tests the recipient projection (__ownerNames, __ownerReset, __recipNames, __ownerDiag)
+       against a stubbed Get-Recipient.
     3. Unit-tests __newDgParams, the New-DistributionGroup splat. Every value it decides is create-time
        only, so a mistake there cannot be corrected on the group afterwards.
 
@@ -68,20 +69,27 @@ if ($errors -and $errors.Count -gt 0) {
     Write-Host "  PASS  parses without errors" -ForegroundColor Green
 }
 
-# --- 2. __ownerNames ------------------------------------------------------------------------------
-# Load just the helper: the rest of the host script connects to Exchange when it runs.
-$fnStart = ($hostScript -split "`n" | Select-String -Pattern '^\$script:__ownerCache' | Select-Object -First 1).LineNumber
-if (-not $fnStart) { throw 'Could not locate the owner-projection block (has HostScript been reformatted?).' }
+# --- 2. the recipient projection ------------------------------------------------------------------
+# Load just the helpers: the rest of the host script connects to Exchange when it runs. The block is
+# delimited by sentinels rather than by the first closing brace, so it can hold more than one function.
 $all = $hostScript -split "`n"
-$fnEnd = $null
-for ($i = $fnStart; $i -lt $all.Count; $i++) { if ($all[$i] -eq '}') { $fnEnd = $i; break } }
-if (-not $fnEnd) { throw 'Could not locate the end of the __ownerNames function.' }
-$fnText = ($all[($fnStart - 1)..$fnEnd]) -join "`n"
+$fnStart = ($all | Select-String -Pattern '^\$script:__ownerCache' | Select-Object -First 1).LineNumber
+if (-not $fnStart) { throw 'Could not locate the recipient-projection block (has HostScript been reformatted?).' }
+$fnEnd = ($all | Select-String -Pattern '^# --- end recipient projection' | Select-Object -First 1).LineNumber
+if (-not $fnEnd) { throw 'Could not locate the end of the recipient-projection block.' }
+if ($fnEnd -le $fnStart) { throw 'The recipient-projection sentinels are out of order.' }
+$fnText = ($all[($fnStart - 1)..($fnEnd - 1)]) -join "`n"
 # Fail loudly if the extraction silently grabbed the wrong text: these tests are worthless if they run
 # against a fragment that happens to parse.
-if ($fnText -notmatch 'function __ownerNames') { throw 'Extracted block does not contain __ownerNames.' }
+$RECIP_FNS = @('__ownerNames', '__ownerReset', '__recipNames', '__ownerDiag')
+foreach ($f in $RECIP_FNS) { if ($fnText -notmatch "function $f") { throw "Extracted block does not contain $f." } }
+if ($fnText -match 'Import-Module|Connect-ExchangeOnline|__emit|<<<UDM-') {
+    throw 'Extraction of the recipient projection over-ran into the host-script body.'
+}
 Invoke-Expression $fnText
-if (-not (Get-Command __ownerNames -ErrorAction SilentlyContinue)) { throw '__ownerNames was not defined by the extracted block.' }
+foreach ($f in $RECIP_FNS) {
+    if (-not (Get-Command $f -ErrorAction SilentlyContinue)) { throw "$f was not defined by the extracted block." }
+}
 
 # Stubbed Exchange. [CmdletBinding()] supplies -ErrorAction; declaring it explicitly alongside a
 # [Parameter()] attribute makes the binding fail, and the failure would be swallowed by the catch
@@ -171,6 +179,83 @@ Check 'lookups stop at the budget' 2 $script:lookups
 Check 'over-budget owners show raw' '33333333-3333-3333-3333-333333333333' $res[2]
 Check 'every owner still returned' 5 $res.Count
 Check 'skipped owners counted for reporting' 3 $script:__ownerSkipped
+
+Write-Host "`n== __ownerReset: one place that cannot be half-done ==" -ForegroundColor Cyan
+# The counters are script-scoped in a host process that outlives every op. Resetting only some of them
+# leaves the next op reporting the previous one's degradation as its own.
+$script:__ownerCache = @{ 'x' = 'y' }; $script:__ownerBudget = 3
+$script:__ownerSkipped = 9; $script:__ownerErrors = @('boom')
+__ownerReset 25
+Check 'cache cleared'  0  $script:__ownerCache.Count
+Check 'budget set'     25 $script:__ownerBudget
+Check 'skipped zeroed' 0  $script:__ownerSkipped
+Check 'errors cleared' 0  $script:__ownerErrors.Count
+
+Write-Host "`n== __ownerDiag: silent unless something actually degraded ==" -ForegroundColor Cyan
+# A stale count is worse than no count: it reports a degradation that did not happen on this read.
+__ownerReset 25
+Check 'clean read reports nothing' '' (__ownerDiag)
+__ownerReset 0
+$null = __ownerNames @('44444444-4444-4444-4444-444444444444')
+Check 'budget exhaustion reported' $true ((__ownerDiag) -like 'recipient lookups skipped*: 1')
+__ownerReset 25
+$script:__ownerErrors = @('throttled', 'throttled', 'denied')
+Check 'errors reported once each' $true ((__ownerDiag) -like '*throttled | denied')
+__ownerReset 25
+Check 'a reset clears what the last op left' '' (__ownerDiag)
+
+Write-Host "`n== __recipNames: prefers what Exchange already resolved ==" -ForegroundColor Cyan
+# Exchange returns these fields as bare GUIDs unless the matching -Include*WithDisplayNames switch is
+# passed. When it is, resolving them again here would be a round trip per recipient for the same answer.
+__ownerReset 25; $script:lookups = 0
+Check 'display-name variant wins' 'Jane Doe' `
+    ((__recipNames @('Jane Doe') @('11111111-1111-1111-1111-111111111111')) -join '; ')
+Check 'and costs no lookup' 0 $script:lookups
+Check 'falls back to the raw property' 'Dana Scully' `
+    ((__recipNames @() @('11111111-1111-1111-1111-111111111111')) -join '; ')
+Check 'the fallback did cost a lookup' 1 $script:lookups
+Check 'both empty -> nothing' '' ((__recipNames @() @()) -join '; ')
+Check 'both null -> nothing'  '' ((__recipNames $null $null) -join '; ')
+# A display-name variant is not automatically human-readable: Exchange leaves entries it could not
+# render as GUIDs, so whichever array is chosen still goes through the same resolution.
+__ownerReset 25
+Check 'a GUID inside the variant still resolves' 'Dana Scully' `
+    ((__recipNames @('11111111-1111-1111-1111-111111111111') @()) -join '; ')
+
+Write-Host "`n== every op that projects recipients resets the counters first ==" -ForegroundColor Cyan
+# The regression this guards: an op that projects recipients without resetting reports the previous
+# op's skips as its own. Finding the ops by parsing the switch means a new one is covered on arrival.
+$opName = $null; $ops = [ordered]@{}
+foreach ($line in $all) {
+    if ($line -match "^\s{8,}'([a-z0-9-]+)' \{\s*`$") { $opName = $Matches[1]; $ops[$opName] = @() }
+    elseif ($opName) { $ops[$opName] += $line }
+}
+$projecting = @($ops.Keys | Where-Object { ($ops[$_] -join "`n") -match '__ownerNames|__recipNames' })
+Check 'the projecting ops were located' $true ($projecting.Count -ge 3)
+foreach ($op in $projecting) {
+    Check "$op resets the counters" $true (($ops[$op] -join "`n") -match '__ownerReset')
+}
+
+Write-Host "`n== get-dl-detail asks for every display-name property it reads ==" -ForegroundColor Cyan
+# A *WithDisplayNames property comes back EMPTY unless its -Include* switch was passed on the same call,
+# and __recipNames then silently falls back to the raw property — which Exchange fills with bare GUIDs.
+# The pane would show object ids where it promises names, with nothing reporting a problem.
+if (-not $ops.Contains('get-dl-detail')) { throw 'get-dl-detail was not found in the host script.' }
+$dlBody = ($ops['get-dl-detail'] -join "`n")
+$dlCalls = [regex]::Matches($dlBody, '__recipNames \$g\.([A-Za-z]+)WithDisplayNames \$g\.([A-Za-z]+)\)')
+Check 'the recipient fields use the shared projection' $true ($dlCalls.Count -ge 5)
+foreach ($c in $dlCalls) {
+    $prop = $c.Groups[1].Value
+    Check "${prop}: the fallback names the same property" $prop $c.Groups[2].Value
+    Check "${prop}: the -Include switch is passed" $true `
+        ($dlBody -match "Include${prop}WithDisplayNames\s*=\s*\`$true")
+}
+# Declaring the switches is not passing them: without the splat the hashtable is dead code and every
+# recipient field quietly falls back to GUIDs.
+$dlSplat = [regex]::Match($dlBody, '\$(\w+) = @{[^}]*IncludeManagedByWithDisplayNames')
+Check 'the switches live in one splat hashtable' $true $dlSplat.Success
+Check 'and that hashtable is splatted onto the read' $true `
+    ($dlBody -match "Get-DistributionGroup[^`n]*@$($dlSplat.Groups[1].Value)\b")
 
 # --- 3. value formatters --------------------------------------------------------------------------
 # Exchange returns almost nothing in a shape that survives ConvertTo-Json, so these three flatten it. They

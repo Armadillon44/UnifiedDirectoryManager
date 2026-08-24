@@ -220,14 +220,8 @@ public sealed class ExchangeService : IExchangeService, IDisposable
 
         string S(string p) => d.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
 
-        // Proxy addresses arrive prefixed: capital SMTP marks the primary, lowercase a secondary.
-        var addresses = new List<string>();
-        if (d.TryGetProperty("EmailAddresses", out var addrs) && addrs.ValueKind == JsonValueKind.Array)
-            foreach (var a in addrs.EnumerateArray())
-                if (a.GetString() is { Length: > 0 } s) addresses.Add(s);
-        var primary = addresses.FirstOrDefault(a => a.StartsWith("SMTP:", StringComparison.Ordinal));
-        var secondary = addresses.Where(a => a.StartsWith("smtp:", StringComparison.Ordinal)).Select(a => a[5..]).ToList();
-        var other = addresses.Where(a => !a.StartsWith("SMTP:", StringComparison.Ordinal) && !a.StartsWith("smtp:", StringComparison.Ordinal)).ToList();
+        var (primary, secondary, other) = SplitAddresses(d);
+        static CloudProperty P(string key, string label, string value) => Prop(key, label, value, MailboxRowTip);
 
         var protocolsError = S("ProtocolsError");
         var sections = new List<CloudPropertySection>
@@ -244,7 +238,7 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                 P("recipientTypeDetails", "Mailbox type", S("RecipientTypeDetails")),
                 P("hiddenFromAddressLists", "Hidden from address lists", S("HiddenFromAddressLists"))),
             Section("Addresses",
-                P("primaryAddress", "Primary", primary is null ? string.Empty : primary[5..]),
+                P("primaryAddress", "Primary", primary ?? string.Empty),
                 P("secondaryAddresses", "Secondary", string.Join("; ", secondary)),
                 P("otherAddresses", "Other", string.Join("; ", other))),
             Section("Delivery and forwarding",
@@ -296,6 +290,7 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             throw new ExchangeException("Exchange Online returned no usage figures for that mailbox.");
 
         string S(string p) => d.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
+        static CloudProperty P(string key, string label, string value) => Prop(key, label, value, MailboxRowTip);
         return Section("Size and usage",
             P("totalItemSize", "Mailbox size", S("TotalItemSize")),
             P("itemCount", "Items", S("ItemCount")),
@@ -304,11 +299,97 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             P("lastLogonTime", "Last logon", S("LastLogonTime")));
     }
 
-    /// <summary>Every mailbox row is read-only: this view reports state, and the write paths for a mailbox live
-    /// on their own confirmed actions rather than in a property grid.</summary>
-    private static CloudProperty P(string key, string label, string value) =>
-        new(key, label, string.IsNullOrWhiteSpace(value) ? "—" : value, CloudPropertyEditability.SystemReadOnly,
-            "Read-only here. Mailbox settings are changed through their own actions, not by editing this list.");
+    /// <summary>
+    /// Splits an EmailAddresses collection into primary, secondary and anything else. Exchange prefixes each
+    /// entry: a capital <c>SMTP:</c> marks the primary and a lowercase <c>smtp:</c> a secondary, and other
+    /// prefixes (x500, sip) appear too and are neither.
+    /// </summary>
+    private static (string? Primary, List<string> Secondary, List<string> Other) SplitAddresses(JsonElement d)
+    {
+        var all = new List<string>();
+        if (d.TryGetProperty("EmailAddresses", out var addrs) && addrs.ValueKind == JsonValueKind.Array)
+            foreach (var a in addrs.EnumerateArray())
+                if (a.GetString() is { Length: > 0 } s) all.Add(s);
+
+        var primary = all.FirstOrDefault(a => a.StartsWith("SMTP:", StringComparison.Ordinal));
+        var secondary = all.Where(a => a.StartsWith("smtp:", StringComparison.Ordinal)).Select(a => a[5..]).ToList();
+        var other = all.Where(a => !a.StartsWith("SMTP:", StringComparison.Ordinal)
+                                && !a.StartsWith("smtp:", StringComparison.Ordinal)).ToList();
+        return (primary is null ? null : primary[5..], secondary, other);
+    }
+
+    public async Task<IReadOnlyList<CloudPropertySection>> GetDistributionGroupDetailAsync(string identity, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(identity)) throw new ArgumentException("A group is required.", nameof(identity));
+        var data = await RunOpAsync(new { op = "get-dl-detail", identity }, cancellationToken).ConfigureAwait(false);
+        if (data is not { ValueKind: JsonValueKind.Object } d)
+            throw new ExchangeException("Exchange Online returned no details for that group.");
+
+        string S(string p) => d.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
+        var (primary, secondary, other) = SplitAddresses(d);
+        static CloudProperty P(string key, string label, string value) => Prop(key, label, value, GroupRowTip);
+
+        return new List<CloudPropertySection>
+        {
+            Section("Identity",
+                P("displayName", "Display name", S("DisplayName")),
+                P("name", "Name", S("Name")),
+                P("alias", "Alias", S("Alias")),
+                P("groupType", "Group type", FriendlyRecipientType(S("RecipientTypeDetails"))),
+                P("id", "Object ID", S("ExternalDirectoryObjectId")),
+                P("exchangeGuid", "Exchange GUID", S("Guid")),
+                P("created", "Created", S("WhenCreated")),
+                P("changed", "Last changed", S("WhenChanged")),
+                // The one property that decides whether anything here can be edited at all.
+                P("dirSynced", "Directory sync", S("IsDirSynced") == "Yes"
+                    ? "Synced from on-premises — read-only in Exchange Online"
+                    : "Cloud-only")),
+            Section("Description",
+                P("description", "Description", S("Description")),
+                P("mailTip", "MailTip", S("MailTip"))),
+            Section("Addresses",
+                P("primaryAddress", "Primary", primary ?? string.Empty),
+                P("secondaryAddresses", "Secondary", string.Join("; ", secondary)),
+                P("otherAddresses", "Other", string.Join("; ", other))),
+            Section("Visibility",
+                P("hiddenFromAddressLists", "Hidden from address lists", S("HiddenFromAddressLists")),
+                // Shown because it cannot be undone: an operator needs to know it is already on.
+                P("hiddenGroupMembership", "Membership hidden (permanent)", S("HiddenGroupMembership"))),
+            Section("Ownership and joining",
+                P("managedBy", "Owners", S("ManagedBy")),
+                P("joinRestriction", "Members can join", S("MemberJoinRestriction")),
+                P("departRestriction", "Members can leave", S("MemberDepartRestriction")),
+                P("grantSendOnBehalfTo", "Send on behalf", S("GrantSendOnBehalfTo"))),
+            Section("Mail flow",
+                // Exchange stores the double negative; this is how an operator thinks about it.
+                P("externalSenders", "External senders", S("RequireSenderAuthenticationEnabled") == "Yes" ? "Blocked" : "Allowed"),
+                P("acceptFrom", "Accept only from", S("AcceptMessagesOnlyFromSendersOrMembers")),
+                P("rejectFrom", "Reject from", S("RejectMessagesFromSendersOrMembers")),
+                P("bccBlocked", "BCC blocked", S("BccBlocked")),
+                P("maxSendSize", "Max send size", S("MaxSendSize")),
+                P("maxReceiveSize", "Max receive size", S("MaxReceiveSize")),
+                P("reportToManager", "Delivery reports to owners", S("ReportToManagerEnabled")),
+                P("reportToOriginator", "Delivery reports to sender", S("ReportToOriginatorEnabled")),
+                P("sendOof", "Send auto-replies to sender", S("SendOofMessageToOriginatorEnabled"))),
+            Section("Moderation",
+                P("moderationEnabled", "Moderated", S("ModerationEnabled")),
+                P("moderatedBy", "Moderators", S("ModeratedBy")),
+                P("moderationNotifications", "Notify senders", S("SendModerationNotifications")),
+                P("bypassModeration", "Bypass moderation", S("BypassModerationFromSendersOrMembers"))),
+        };
+    }
+
+    // The tooltip names the object type: a mailbox and a distribution group send the operator to different
+    // places, so a group row explaining where mailbox settings are changed is the wrong explanation.
+    private const string MailboxRowTip =
+        "Read-only here. Mailbox settings are changed through their own actions, not by editing this list.";
+    private const string GroupRowTip =
+        "Read-only here. Distribution group settings are changed in the Exchange admin center, not by editing this list.";
+
+    /// <summary>Every Exchange-sourced row is read-only: these views report state, and the write paths live on
+    /// their own confirmed actions rather than in a property grid.</summary>
+    private static CloudProperty Prop(string key, string label, string value, string tooltip) =>
+        new(key, label, string.IsNullOrWhiteSpace(value) ? "—" : value, CloudPropertyEditability.SystemReadOnly, tooltip);
 
     private static CloudPropertySection Section(string title, params CloudProperty[] properties) =>
         new(title, properties);
@@ -619,6 +700,7 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             Id = oid.Length > 0 ? oid : smtp,
             DisplayName = S("DisplayName") is { Length: > 0 } n ? n : smtp,
             Kind = CloudObjectKind.Mailbox,
+            Source = CloudObjectSource.Exchange,
         };
         row.Values["primarySmtpAddress"] = smtp;
         row.Values["mailboxType"] = FriendlyRecipientType(S("RecipientTypeDetails"));
@@ -643,6 +725,7 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             Id = oid.Length > 0 ? oid : smtp,
             DisplayName = S("DisplayName") is { Length: > 0 } n ? n : smtp,
             Kind = CloudObjectKind.Group,
+            Source = CloudObjectSource.Exchange,
         };
         row.Values["primarySmtpAddress"] = smtp;
         row.Values["groupType"] = FriendlyRecipientType(S("RecipientTypeDetails"));
@@ -847,6 +930,34 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             }
             return $out
         }
+        # Every op that projects recipients starts from a clean slate. The host process is long-lived and these
+        # counters are script-scoped, so a skip left behind by a previous op would be reported as this one's
+        # degradation. Resetting through one function is what stops an op from forgetting one of them.
+        function __ownerReset($budget) {
+            $script:__ownerCache = @{}
+            $script:__ownerBudget = $budget
+            $script:__ownerSkipped = 0
+            $script:__ownerErrors = @()
+        }
+        # Prefer the server-resolved *WithDisplayNames variant of a recipient property. Without the matching
+        # -Include*WithDisplayNames switch Exchange Online returns these fields as bare GUIDs, and resolving one
+        # here costs a round trip against the budget. The variant is empty when the switch was not passed or
+        # could not bind, so fall back to the raw property rather than showing nothing.
+        function __recipNames($withNames, $raw) {
+            $v = @()
+            if ($withNames) { $v = @($withNames) }
+            elseif ($raw) { $v = @($raw) }
+            return (__ownerNames $v)
+        }
+        # Report degradation of the recipient projection. RunOpAsync logs 'detail' at Info, so a partially
+        # resolved field leaves a trace instead of looking like fact.
+        function __ownerDiag {
+            $d = @()
+            if ($script:__ownerSkipped -gt 0) { $d += "recipient lookups skipped (budget): $($script:__ownerSkipped)" }
+            if ($script:__ownerErrors.Count -gt 0) { $d += "recipient lookup errors: $(($script:__ownerErrors | Select-Object -Unique) -join ' | ')" }
+            return ($d -join '; ')
+        }
+        # --- end recipient projection ----------------------------------------------------------------------
         function __delAdd($map, $who, $perm) {
             if ([string]::IsNullOrWhiteSpace([string]$who)) { return }
             $rec = Get-Recipient -Identity $who -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -1073,10 +1184,7 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 try { $gl = @(Get-DistributionGroup @gp -IncludeManagedByWithDisplayNames) }
                                 catch [System.Management.Automation.ParameterBindingException] { $gl = @(Get-DistributionGroup @gp) }
                                 # Fresh cache per load so a renamed owner isn't shown from a stale session entry.
-                                $script:__ownerCache = @{}
-                                $script:__ownerBudget = 50
-                                $script:__ownerSkipped = 0
-                                $script:__ownerErrors = @()
+                                __ownerReset 50
                                 $data = @($gl | ForEach-Object {
                                     $created = ''
                                     if ($_.WhenCreated) { $created = ([datetime]$_.WhenCreated).ToString('yyyy-MM-dd') }
@@ -1101,12 +1209,10 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                         WhenCreated = $created
                                     }
                                 })
-                                # Report any degradation of the owner column. RunOpAsync logs 'detail' at Info,
-                                # so a partially-resolved column leaves a trace instead of looking like fact.
-                                $odiag = @()
-                                if ($script:__ownerSkipped -gt 0) { $odiag += "owner lookups skipped (budget): $($script:__ownerSkipped)" }
-                                if ($script:__ownerErrors.Count -gt 0) { $odiag += "owner lookup errors: $(($script:__ownerErrors | Select-Object -Unique) -join ' | ')" }
-                                if ($odiag.Count -gt 0) { __emit @{ ok = $true; data = $data; detail = ($odiag -join '; ') } }
+                                # Report any degradation of the owner column, so a partially-resolved column
+                                # leaves a trace instead of looking like fact.
+                                $odiag = __ownerDiag
+                                if ($odiag) { __emit @{ ok = $true; data = $data; detail = $odiag } }
                                 else { __emit @{ ok = $true; data = $data } }
                             }
                             'get-mailbox-detail' {
@@ -1114,8 +1220,7 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 # op: access-denied and not-found are different answers, and reporting a
                                 # permissions problem as "no mailbox found" sends the operator the wrong way.
                                 # Small budget: at most one forwarding target needs resolving on this path.
-                                $script:__ownerCache = @{}
-                                $script:__ownerBudget = 2
+                                __ownerReset 2
                                 $want = ([string]$r.identity).Trim()
                                 $m = Get-EXOMailbox -Identity $r.identity `
                                         -PropertySets Minimum,AddressList,Delivery,Hold,Policy,Quota,Archive,StatisticsSeed `
@@ -1203,6 +1308,72 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                     DeletedItemCount = [string]$s.DeletedItemCount
                                     LastLogonTime = (__dt $s.LastLogonTime)
                                 } }
+                            }
+                            'get-dl-detail' {
+                                # Owner-style properties repeat the same people across a group, so one shared
+                                # cache and one budget covers every multi-valued recipient field.
+                                __ownerReset 25
+                                $wantG = ([string]$r.identity).Trim()
+                                # Have Exchange resolve the recipient fields server-side. Without these switches
+                                # it returns them as bare GUIDs and each distinct one then costs a Get-Recipient
+                                # round trip against the budget. There is deliberately no Reject* switch here:
+                                # Exchange does not offer one, so that field alone is still resolved locally.
+                                $dgn = @{
+                                    IncludeManagedByWithDisplayNames = $true
+                                    IncludeModeratedByWithDisplayNames = $true
+                                    IncludeGrantSendOnBehalfToWithDisplayNames = $true
+                                    IncludeAcceptMessagesOnlyFromSendersOrMembersWithDisplayNames = $true
+                                    IncludeBypassModerationFromSendersOrMembersWithDisplayNames = $true
+                                }
+                                try { $g = Get-DistributionGroup -Identity $r.identity @dgn -ErrorAction Stop | Select-Object -First 1 }
+                                catch [System.Management.Automation.ParameterBindingException] {
+                                    $g = Get-DistributionGroup -Identity $r.identity -ErrorAction Stop | Select-Object -First 1
+                                }
+                                if ($null -eq $g) { throw "No group was returned for '$wantG'." }
+                                # A non-existent -Identity makes an Exchange Get- cmdlet return EVERY object, and
+                                # -First 1 would then describe an unrelated group under this one's name.
+                                if (-not (__isWanted $g $wantG)) { throw "Exchange did not return the group '$wantG'." }
+
+                                $created = ''
+                                if ($g.WhenCreated) { $created = ([datetime]$g.WhenCreated).ToString('yyyy-MM-dd HH:mm') }
+                                $changed = ''
+                                if ($g.WhenChanged) { $changed = ([datetime]$g.WhenChanged).ToString('yyyy-MM-dd HH:mm') }
+
+                                __emit @{ ok = $true; data = @{
+                                    DisplayName = [string]$g.DisplayName
+                                    Name = [string]$g.Name
+                                    Alias = [string]$g.Alias
+                                    PrimarySmtpAddress = [string]$g.PrimarySmtpAddress
+                                    ExternalDirectoryObjectId = [string]$g.ExternalDirectoryObjectId
+                                    Guid = [string]$g.Guid
+                                    RecipientTypeDetails = [string]$g.RecipientTypeDetails
+                                    IsDirSynced = (__yn $g.IsDirSynced)
+                                    WhenCreated = $created
+                                    WhenChanged = $changed
+                                    Description = (@($g.Description | ForEach-Object { [string]$_ }) -join ' ')
+                                    MailTip = [string]$g.MailTip
+                                    EmailAddresses = @($g.EmailAddresses | ForEach-Object { [string]$_ })
+                                    HiddenFromAddressLists = (__yn $g.HiddenFromAddressListsEnabled)
+                                    HiddenGroupMembership = (__yn $g.HiddenGroupMembershipEnabled)
+                                    ManagedBy = ((__recipNames $g.ManagedByWithDisplayNames $g.ManagedBy) -join '; ')
+                                    MemberJoinRestriction = [string]$g.MemberJoinRestriction
+                                    MemberDepartRestriction = [string]$g.MemberDepartRestriction
+                                    GrantSendOnBehalfTo = ((__recipNames $g.GrantSendOnBehalfToWithDisplayNames $g.GrantSendOnBehalfTo) -join '; ')
+                                    RequireSenderAuthenticationEnabled = (__yn $g.RequireSenderAuthenticationEnabled)
+                                    AcceptMessagesOnlyFromSendersOrMembers = ((__recipNames $g.AcceptMessagesOnlyFromSendersOrMembersWithDisplayNames $g.AcceptMessagesOnlyFromSendersOrMembers) -join '; ')
+                                    # The one recipient field Exchange has no display-name switch for.
+                                    RejectMessagesFromSendersOrMembers = ((__ownerNames $g.RejectMessagesFromSendersOrMembers) -join '; ')
+                                    BccBlocked = (__yn $g.BccBlocked)
+                                    MaxSendSize = [string]$g.MaxSendSize
+                                    MaxReceiveSize = [string]$g.MaxReceiveSize
+                                    ReportToManagerEnabled = (__yn $g.ReportToManagerEnabled)
+                                    ReportToOriginatorEnabled = (__yn $g.ReportToOriginatorEnabled)
+                                    SendOofMessageToOriginatorEnabled = (__yn $g.SendOofMessageToOriginatorEnabled)
+                                    ModerationEnabled = (__yn $g.ModerationEnabled)
+                                    ModeratedBy = ((__recipNames $g.ModeratedByWithDisplayNames $g.ModeratedBy) -join '; ')
+                                    SendModerationNotifications = [string]$g.SendModerationNotifications
+                                    BypassModerationFromSendersOrMembers = ((__recipNames $g.BypassModerationFromSendersOrMembersWithDisplayNames $g.BypassModerationFromSendersOrMembers) -join '; ')
+                                }; detail = (__ownerDiag) }
                             }
                             'list-dl-members' {
                                 # -ResultSize Unlimited: the default page is 1,000 and truncates silently, which

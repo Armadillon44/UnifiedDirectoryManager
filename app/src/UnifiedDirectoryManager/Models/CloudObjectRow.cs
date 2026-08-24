@@ -6,6 +6,13 @@ namespace UnifiedDirectoryManager.Models;
 public enum CloudObjectKind { User, Group, Device, Mailbox, Other }
 
 /// <summary>
+/// Which service is authoritative for a row. A distribution list and an Entra security group are both
+/// <see cref="CloudObjectKind.Group"/> — the difference is that Microsoft Graph is read-only for the former and
+/// answers its membership with 403 — so the kind alone cannot decide which backend to read or write through.
+/// </summary>
+public enum CloudObjectSource { Entra, Exchange }
+
+/// <summary>
 /// A row in a cloud (Entra ID) object list. Mirrors <see cref="AdObjectRow"/>'s arbitrary-attribute
 /// projection (a <see cref="Values"/> dictionary + a <c>this[key]</c> indexer) so the same dynamic
 /// <c>GridView</c> column binding (<c>DisplayMemberBinding="[key]"</c>) works, and adds an observable
@@ -16,6 +23,9 @@ public sealed partial class CloudObjectRow : ObservableObject
     public required string Id { get; init; }
     public required string DisplayName { get; init; }
     public CloudObjectKind Kind { get; init; }
+
+    /// <summary>Which service owns this object. Defaults to Entra, so the Graph-backed lists are unaffected.</summary>
+    public CloudObjectSource Source { get; init; } = CloudObjectSource.Entra;
 
     /// <summary>Checkbox selection state (drives the future bulk-operation set).</summary>
     [ObservableProperty] private bool _isChecked;
