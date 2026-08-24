@@ -70,7 +70,7 @@
             <CheckBox Content="Hide the membership list (permanent)" IsChecked="{Binding HiddenMembership}"
                       IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" Margin="0,2,0,4"
                       Visibility="{Binding ShowHiddenMembership, Converter={StaticResource BoolToVis}}"
-                      ToolTip="Can only be set when the group is created and can never be undone — the group would have to be deleted and recreated." />
+                      ToolTip="Can never be undone — revealing the membership again means deleting and recreating the group. For an Entra ID group this is the only chance to set it at all." />
         </StackPanel>
 
         <TextBlock Grid.Row="6" Grid.Column="1" Foreground="#8A6D00" TextWrapping="Wrap" Margin="0,0,0,6"

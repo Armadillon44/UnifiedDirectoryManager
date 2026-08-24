@@ -1,6 +1,6 @@
 # Exchange Online navigation + cloud group creation
 
-Status: **in progress — commit 1 done, commit 2 next. All decisions locked.** Branch `release/2.3.0` (new
+Status: **in progress — commits 1-4 done and live-tested; commits 5-7 specced. All decisions locked.** Branch `release/2.3.0` (new
 features → minor bump), branched from `master` at v2.2.0. See the sequencing section at the bottom for what
 has landed; update it as commits land rather than leaving this line to go stale.
 
@@ -244,13 +244,48 @@ commit, not a detail** — commit 4's mailbox view needs it too, so whichever la
   30-day recycle bin, unlike Microsoft 365 and security groups. That is a harder guarantee to lose than the
   on-prem group delete, which at least writes a record first.
 
-### Decisions to make before starting these
+### Locked decisions
 
-| # | Decision | Leaning |
-|---|---|---|
-| **D5** | How much distribution-group editing? The full `Set-DistributionGroup` surface, or only the fields the list already shows (owners, external senders, join restriction, hidden from address lists)? | Start with the fields already surfaced as columns. They are the ones an operator has just looked at and wants to change; the rest can follow if asked for. |
-| **D6** | Delete distribution groups from the app at all? | Only behind the same two-step type-to-confirm guard as OU/group delete, **and** writing the same kind of record first — membership included, since it is unrecoverable. If that is not worth building, leave delete out entirely rather than shipping a thin version. |
-| **D7** | Mailbox actions exist in the ExOL tab (reached from an AD user). Duplicate them in the Exchange section, share one control, or move them? | Share one control. Two implementations of "convert to shared" will drift, and the ExOL tab is the only path for a hybrid user who has no row in the Exchange list. |
+**D5 — the editable surface.** Chosen setting by setting from the full `Set-DistributionGroup` surface, not
+by category. `Set-DistributionGroup` has no `-Type`, so converting a distribution list to mail-enabled
+security (or back) is impossible and was never on the table.
+
+| Editable | Deliberately NOT editable |
+|---|---|
+| Alias | Rename (display name) — a naming policy silently rewrites it, and admins are exempt so it misbehaves differently for others |
+| Description, MailTip | Email addresses — changing the primary redirects mail and breaks the old address |
+| Hidden from address lists | Hide membership — one-way, and excluded rather than guarded |
+| Mark as a room list | Custom attributes 1–15 — can silently change what a dynamic rule matches |
+| Owners (ManagedBy) | |
+| Join restriction, depart restriction | |
+| Send on behalf | |
+| External senders | |
+| Accept / reject sender lists | |
+| Moderation (enable, moderators, notifications, bypass) | |
+| Size limits, BCC blocked, delivery reports | |
+
+**D6 — no delete.** Deleting a distribution group stays out of this app. It is the one operation with no
+recycle bin and no recovery, and the Exchange admin center already does it.
+
+**D7 — share one control.** `ExchangeTabViewModel` is hosted in the mailbox detail pane as well as the ExOL
+tab rather than reimplemented. It already takes only `IExchangeService`, `IGraphService` and `IDialogService`
+plus `SetTarget(type, identity)`; the only AD coupling is one `AdObjectType.User` gate to relax. One
+implementation means the two surfaces cannot drift, and the ExOL tab stays the path for a hybrid user who has
+no row in the Exchange list.
+
+### What D5 implies for the build
+
+Four of the chosen settings are multi-value **recipient** properties — owners, send on behalf, accept/reject
+lists, and moderators. They need the picker basket, which is why commit 3 built it. The rest are scalars,
+toggles and enums.
+
+That splits commit 6 naturally in two, and the split is worth keeping: the scalar half is low-risk and lands
+quickly, while the recipient half carries the pickers, the multi-value editing, and the identity-resolution
+traps this project keeps re-learning (a name that stringifies to a canonical name or a bare GUID).
+
+Sequencing note: the valid values for join and depart restriction depend on the group type — `Open` is
+invalid on a mail-enabled security group, and `ApprovalRequired` is accepted there but never routes requests
+to an owner. The editor has to offer only what the selected group can actually take.
 
 ### Sharp edges already established
 
@@ -331,14 +366,22 @@ model, otherwise double-clicking an Exchange DL can never open its Entra detail.
    the adversarial pass over both. Awaiting a live retest of the *Managed by* column.
 4. ~~Commit 2: create cloud groups (both backends).~~ **Done** (`d62972b`), plus `476e7d0` for owner defaulting,
    the Microsoft 365 welcome-email/Outlook-visibility controls, and the findings from the adversarial pass.
-5. Commit 3: distribution group members, picker basket, synced-group blocking, Entra-side routing fix. **Next.**
-6. Commit 4: mailbox information view. Needs the detail-pane refactor in commit 5, so the two may merge.
-7. Commit 5 (rough): Exchange properties surface — the Graph-only detail pane gains an Exchange path.
-8. Commit 6 (rough): Exchange manipulations — group edits, mailbox actions, and delete if D6 says so.
-9. README + Wiki: the raised RBAC bar, the new nav section, the group-type routing table.
+5. ~~Commit 3: distribution group members, picker basket, synced-group blocking, Entra-side routing fix.~~ **Done** (`c6d7172`), live-tested.
+6. ~~Commit 4: mailbox information view.~~ **Done** (`97eee52`), plus `c4bcfeb` for the usage fix, flat section
+   tabs and the header button. Live-tested. The refactor this plan feared was never needed.
+   **Commit 5 is next.**
+7. Commit 5: distribution-group properties view. Cheaper than planned — commit 4 proved the detail pane
+   takes an Exchange source without the refactor this plan budgeted for, so this is one host op plus a
+   section projection.
+8. Commit 6a: the scalar group edits — alias, description, MailTip, hidden from address lists, room list,
+   join/depart restriction, external senders, size limits, BCC, delivery reports.
+9. Commit 6b: the recipient-valued edits — owners, send on behalf, accept/reject lists, moderation.
+10. Commit 7: mailbox actions in the Exchange section, by hosting the existing ExchangeTabViewModel (D7).
+11. README + Wiki: the raised RBAC bar, the new nav section, the group-type routing table.
 
-Commits 5 and 6 are sketched, not specced: decisions **D5-D7** are open and the sharp edges are recorded, but
-neither has had the research or the file-level detail that commits 1-4 got. Do that before starting them.
+D5-D7 are locked (see above), and the editable surface was chosen setting by setting against the real
+`Set-DistributionGroup` parameter list. What commits 5-7 still lack is the file-level detail commits 1-4
+had: which host ops, which view models, which validation. Work that out per commit as it starts.
 
 Each commit builds clean (0 warnings, 0 errors), gets an adversarial review pass before landing, and is verified in
 the deployed binary before being handed over for testing.

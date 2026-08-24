@@ -50,8 +50,10 @@ public sealed record CloudGroupCreateRequest
     public string Visibility { get; init; } = "Private";
 
     /// <summary>
-    /// Hide the membership list. <b>Irreversible</b> and settable only at creation, on both backends
-    /// (Graph <c>visibility: "HiddenMembership"</c>, Exchange <c>-HiddenGroupMembershipEnabled</c>).
+    /// Hide the membership list. <b>Irreversible on both backends</b>, but not identically: Graph's
+    /// <c>visibility: "HiddenMembership"</c> can only be set at creation, while Exchange's
+    /// <c>-HiddenGroupMembershipEnabled</c> can be turned on later and then never off — Microsoft's wording is
+    /// "you can't edit the group later to reveal the membership". Either way there is no way back.
     /// </summary>
     public bool HiddenMembership { get; init; }
 
