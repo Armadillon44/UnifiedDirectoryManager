@@ -101,6 +101,45 @@ $vm.SelectedSectionIndex = $sections.Count - 1
 Settle
 Check 'an appended section can be selected' 'Size and usage' $tabs.SelectedItem.Title
 
+
+Write-Host "`n== a fixed tab renders its own control ==" -ForegroundColor Cyan
+# A TabControl copies its own ContentTemplate onto every TabItem that declares none. The pane's strip carries
+# one for the property sections, so a fixed tab holding a built control (Licenses, Member Of, Members,
+# Actions) had that template applied to it instead and rendered nothing at all. The template has to be keyed
+# by type so it reaches the sections and leaves the fixed tabs alone.
+function TabRenders([bool]$templateOnStrip) {
+    $tc = New-Object System.Windows.Controls.TabControl
+    $sectionTpl = [System.Windows.Markup.XamlReader]::Parse(
+        '<DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">' +
+        '<ItemsControl ItemsSource="{Binding Properties}" /></DataTemplate>')
+    if ($templateOnStrip) { $tc.ContentTemplate = $sectionTpl }
+    $cc2 = New-Object System.Windows.Data.CompositeCollection
+    $panel = New-Object System.Windows.Controls.DockPanel
+    $b = New-Object System.Windows.Controls.Button; $b.Content = 'An action'
+    $panel.Children.Add($b) | Out-Null
+    $item = New-Object System.Windows.Controls.TabItem; $item.Header = 'Fixed'; $item.Content = $panel
+    $cc2.Add($item) | Out-Null
+    $tc.ItemsSource = $cc2
+    $probe = New-Object System.Windows.Window
+    $probe.Width = 400; $probe.Height = 300; $probe.WindowStyle = [System.Windows.WindowStyle]::None
+    $probe.ShowInTaskbar = $false; $probe.Left = -10000; $probe.Top = -10000
+    $probe.Content = $tc; $probe.Show(); $tc.SelectedIndex = 0; $probe.UpdateLayout()
+    $found = @(Descend $tc | Where-Object { $_ -is [System.Windows.Controls.Button] }).Count -gt 0
+    $probe.Close()
+    return $found
+}
+function Descend($d) {
+    $o = @()
+    $c = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($d)
+    for ($i = 0; $i -lt $c; $i++) {
+        $child = [System.Windows.Media.VisualTreeHelper]::GetChild($d, $i)
+        $o += $child; $o += Descend $child
+    }
+    return $o
+}
+Check 'a ContentTemplate on the strip blanks a fixed tab' $false (TabRenders $true)
+Check 'without one, the fixed tab renders'                $true  (TabRenders $false)
+
 $win.Close()
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

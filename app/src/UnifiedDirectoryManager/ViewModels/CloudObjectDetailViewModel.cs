@@ -27,6 +27,13 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     private string? _mailboxExchangeGuid;
 
     /// <summary>
+    /// Mailbox actions — convert, forwarding, delegates — for the selected mailbox. The SAME view model the AD
+    /// edit pane hosts, not a second one: the two panes reach different objects (the edit pane reaches a hybrid
+    /// user with no row in the Exchange list) but the actions themselves must not drift apart.
+    /// </summary>
+    public ExchangeTabViewModel Exchange { get; }
+
+    /// <summary>
     /// The recipients each editable list currently holds, including edits not yet saved. The row itself keeps
     /// only addresses; reopening the editor has to show the same people the operator last chose, not the ones
     /// Exchange still has. Dies with the pane, because the rows do.
@@ -85,6 +92,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         _graph = graph;
         _exchange = exchange;
         _dialogs = dialogs;
+        Exchange = new ExchangeTabViewModel(exchange, graph, dialogs);
     }
 
     /// <summary>Shows a row's details (null clears the pane).</summary>
@@ -125,6 +133,10 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         ShowDisable = IsUser && enabled;
         ShowEnable = IsUser && !enabled;
 
+        // The actions tab acts on a mailbox identity, so it is pointed at one here and cleared for anything
+        // else. It does not fetch: the first Exchange connect can be slow, so the read stays on its button.
+        Exchange.SetTarget(IsMailbox ? MailboxIdentityFor(row) ?? row.Get("primarySmtpAddress") : null);
+
         // Instant summary from the list row, replaced by the full grouped set once it loads.
         Sections.Add(BuildSummary(row));
         SelectSection(0);
@@ -142,6 +154,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         _exchangeGroupGuid = null;
         _pendingRecipients.Clear();
         _retainedRecipients.Clear();
+        Exchange.Reset();
         ShowEnable = ShowDisable = false;
         CanAddMembers = false;
         CanManageLicenses = false;
