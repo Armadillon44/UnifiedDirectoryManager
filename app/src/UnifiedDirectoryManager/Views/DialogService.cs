@@ -253,7 +253,7 @@ public sealed class DialogService : IDialogService
 
     public bool ShowCopyGroupsToUser(string sourceUserDistinguishedName)
     {
-        var vm = new CopyGroupsViewModel(_directory, _graph, this, sourceUserDistinguishedName);
+        var vm = new CopyGroupsViewModel(_directory, _graph, _exchange, this, sourceUserDistinguishedName);
         new CopyGroupsWindow { DataContext = vm, Owner = Owner }.ShowDialog(); // modal; loads on Loaded
         return vm.Applied;
     }
