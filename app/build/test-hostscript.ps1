@@ -423,7 +423,8 @@ Write-Host "`n== every editable row has a write mapping ==" -ForegroundColor Cya
 # nothing. Rows blocked for a permanent reason are view-only by design and need no mapping.
 $dlKeys = @([regex]::Matches($csText, '\["([a-zA-Z]+)"\] = new\("') | ForEach-Object { $_.Groups[1].Value })
 Check 'the translation table was read' $true ($dlKeys.Count -ge 13)
-$permanentTips = @('AddressBlockedTip', 'SizeBlockedTip', 'RecipientPendingTip')
+$permanentTips = @('AddressBlockedTip', 'SizeBlockedTip', 'RecipientPendingTip',
+                   'PrimaryAddressTip', 'ServiceAddressTip', 'AliasBlockedTip')
 $checkedRows = 0
 foreach ($m in [regex]::Matches($csText, 'E\("([a-zA-Z]+)",')) {
     $rowKey = $m.Groups[1].Value
@@ -462,7 +463,7 @@ function __emit($obj) { $script:emitted += $obj }
 function Set-DistributionGroup {
     [CmdletBinding()]
     param(
-        $Identity, $Alias, $Description, $MailTip, [switch]$RoomList, $HiddenFromAddressListsEnabled,
+        $Identity, $Alias, $Description, $MailTip, [switch]$RoomList, $EmailAddresses, $HiddenFromAddressListsEnabled,
         $MemberJoinRestriction, $MemberDepartRestriction, $RequireSenderAuthenticationEnabled,
         $BccBlocked, $ReportToOriginatorEnabled, $ReportToManagerEnabled,
         $SendOofMessageToOriginatorEnabled, $ModerationEnabled, $SendModerationNotifications,
@@ -494,26 +495,30 @@ function RunSet($identity, $changes) {
 }
 
 $script:theGroup = NewGroup $false
-$err = RunSet 'allstaff@contoso.com' ([pscustomobject]@{ Alias = 'staff'; BccBlocked = $true })
+$err = RunSet 'allstaff@contoso.com' ([pscustomobject]@{ MailTip = 'Team list'; BccBlocked = $true })
 Check 'a clean edit succeeds'        $null $err
 Check 'and calls the cmdlet once'    1     $script:setCalls.Count
 Check 'and emits success'            $true ($script:emitted.Count -eq 1 -and $script:emitted[0].ok -eq $true)
-$sent = $script:setCalls[0]
+# Never index blind: when a guard regresses the write does not happen, and an exception here would stop
+# the run instead of reporting which check failed.
+function Sent($i) { if ($script:setCalls.Count -gt $i) { return $script:setCalls[$i] } return @{} }
+function Ea($i) { $v = (Sent $i)['EmailAddresses']; if ($null -eq $v) { return @{} } return $v }
+$sent = Sent 0
 Check 'addressed by the Exchange GUID' '77777777-7777-7777-7777-777777777777' $sent['Identity']
 Check 'the manager check is bypassed'  $true ([bool]$sent['BypassSecurityGroupManagerCheck'])
-Check 'the supplied values are passed' 'staff' $sent['Alias']
+Check 'the supplied values are passed' 'Team list' $sent['MailTip']
 Check 'booleans survive the trip'      $true  $sent['BccBlocked']
 
 # A synced group: Exchange rejects the write anyway, but names neither the group nor the reason.
 $script:theGroup = NewGroup $true
-$err = RunSet 'allstaff@contoso.com' ([pscustomobject]@{ Alias = 'staff' })
+$err = RunSet 'allstaff@contoso.com' ([pscustomobject]@{ MailTip = 'Team list' })
 Check 'a synced group is refused'          $true ($err -like '*synchronized from on-premises*')
 Check 'and the refusal names the group'    $true ($err -like '*All Staff*')
 Check 'and nothing is written'             0     $script:setCalls.Count
 
 # The returns-everything trap, on the write side: -First 1 on a wrong answer would edit a stranger.
 $script:theGroup = NewGroup $false
-$err = RunSet 'someone-else@contoso.com' ([pscustomobject]@{ Alias = 'staff' })
+$err = RunSet 'someone-else@contoso.com' ([pscustomobject]@{ MailTip = 'Team list' })
 Check 'a different group is refused'  $true ($err -like '*did not return the group*')
 Check 'and nothing is written'        0     $script:setCalls.Count
 
@@ -523,13 +528,48 @@ $err = RunSet 'allstaff@contoso.com' ([pscustomobject]@{ PrimarySmtpAddress = 'h
 Check 'an unlisted parameter is refused' $true ($err -like '*not a distribution group setting this app may change*')
 Check 'and nothing is written'           0    $script:setCalls.Count
 
-$err = RunSet '' ([pscustomobject]@{ Alias = 'staff' })
+$err = RunSet '' ([pscustomobject]@{ MailTip = 'Team list' })
 Check 'a blank identity is refused' $true ($err -like '*group is required*')
 Check 'and nothing is written'      0    $script:setCalls.Count
 
 $err = RunSet 'allstaff@contoso.com' ([pscustomobject]@{})
 Check 'an empty change set is refused' $true ($err -like '*No changes were supplied*')
 Check 'and nothing is written'         0    $script:setCalls.Count
+
+Write-Host "`n== set-dl-properties: secondary addresses ==" -ForegroundColor Cyan
+# The one parameter here that can silently redirect a group's mail. Exchange promotes an uppercase SMTP:
+# entry to the reply address, and replacing the whole collection promotes the first lowercase one, so the op
+# accepts an add/remove of lowercase entries and nothing else.
+function Addr($add, $remove) {
+    $o = @{}
+    if ($add) { $o['Add'] = $add }
+    if ($remove) { $o['Remove'] = $remove }
+    [pscustomobject]@{ EmailAddresses = [pscustomobject]$o }
+}
+
+$script:theGroup = NewGroup $false
+$err = RunSet 'allstaff@contoso.com' (Addr @('smtp:staff@contoso.com') @('smtp:old@contoso.com'))
+Check 'an add and remove succeeds' $null $err
+$ea = Ea 0
+Check 'the parameter is a hashtable' $true ($ea -is [hashtable])
+Check 'the addition is carried'      'smtp:staff@contoso.com' ($ea['Add'] -join ';')
+Check 'the removal is carried'       'smtp:old@contoso.com'   ($ea['Remove'] -join ';')
+
+$err = RunSet 'allstaff@contoso.com' (Addr @('SMTP:hijack@contoso.com') $null)
+Check 'an uppercase SMTP entry is refused' $true ($err -like '*must be a secondary address*')
+Check 'and nothing is written'             0    $script:setCalls.Count
+
+$err = RunSet 'allstaff@contoso.com' (Addr $null @('smtp:allstaff@contoso.com'))
+Check 'removing the primary is refused' $true ($err -like '*primary address*')
+Check 'and nothing is written'          0    $script:setCalls.Count
+
+$err = RunSet 'allstaff@contoso.com' (Addr $null @('smtp:allstaff@contoso.onmicrosoft.com'))
+Check 'removing a routing address is refused' $true ($err -like '*routing address*')
+Check 'and nothing is written'                0    $script:setCalls.Count
+
+$err = RunSet 'allstaff@contoso.com' (Addr @('smtp:new@contoso.com') $null)
+Check 'an add alone is fine'   $null $err
+Check 'and Remove is omitted'  $false ((Ea 0).ContainsKey('Remove'))
 
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

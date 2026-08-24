@@ -180,9 +180,6 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         // A distribution list and an Entra security group are both CloudObjectKind.Group; only the source says
         // which service owns the write, and Graph answers a write to a distribution list with 400.
         var toExchange = row.Kind == CloudObjectKind.Group && row.Source == CloudObjectSource.Exchange;
-        if (toExchange && dirty.Any(p => p.Key == "alias") && AliasChangeMovesAddress())
-            lines.Add("Note: an email address policy applies to this group, so changing the alias also rewrites "
-                      + "its primary email address. The current address stops working.");
         // The one edit on this pane with no way back through this app.
         if (toExchange && dirty.Any(p => p.Key == "roomList" && p.Value == "Yes"))
             lines.Add("Note: marking a group as a room list cannot be undone here. Exchange Online has no "
@@ -202,8 +199,17 @@ public partial class CloudObjectDetailViewModel : ObservableObject
                 {
                     Status = "This group has no identifier to save against."; IsBusy = false; return;
                 }
-                await _exchange.SetDistributionGroupPropertiesAsync(identity, dirty.ToDictionary(p => p.Key, p => p.Value));
-                var saved = $"Saved {dirty.Count} change(s).";
+                var unchanged = await _exchange.SetDistributionGroupPropertiesAsync(identity, dirty);
+                // A row can be edited into a value Exchange considers identical. Counting those as saved
+                // would report work that never happened, and the reload would then undo them on screen.
+                var applied = dirty.Count - unchanged.Count;
+                var saved = applied > 0 ? $"Saved {applied} change(s)." : "Nothing needed saving.";
+                if (unchanged.Count > 0)
+                {
+                    var same = dirty.Where(p => unchanged.Contains(p.Key, StringComparer.OrdinalIgnoreCase))
+                                    .Select(p => p.Label);
+                    saved += $" {string.Join(", ", same)} already matched what was typed; Exchange ignores case and order.";
+                }
                 IsBusy = false;
                 if (await LoadExchangeDetailAsync(row, mailbox: false, identityOverride: identity))
                 {
@@ -241,14 +247,6 @@ public partial class CloudObjectDetailViewModel : ObservableObject
             IsBusy = false;
         }
     }
-
-    /// <summary>
-    /// True when an email address policy applies to the group, which is what makes changing the alias rewrite
-    /// the primary address. Read from the row the properties projection already shows for exactly this reason.
-    /// </summary>
-    private bool AliasChangeMovesAddress() =>
-        Sections.SelectMany(s => s.Properties).FirstOrDefault(p => p.Key == "emailAddressPolicy")?.Value
-            .StartsWith("Applied", StringComparison.Ordinal) == true;
 
     [RelayCommand]
     private void Revert()

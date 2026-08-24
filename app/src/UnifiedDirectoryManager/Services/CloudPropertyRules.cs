@@ -50,7 +50,8 @@ public static class CloudPropertyRules
         var display = string.IsNullOrWhiteSpace(value)
             ? (editability == CloudPropertyEditability.Editable ? string.Empty : "—")
             : value!;
-        return new CloudProperty(key, label, display, editability, Tooltip(editability));
+        return new CloudProperty(key, label, display, editability, Tooltip(editability),
+                                 help: CloudPropertyHelp.For(key));
     }
 
     /// <summary>Writable single-valued user keys (for the PATCH key→setter mapping).</summary>

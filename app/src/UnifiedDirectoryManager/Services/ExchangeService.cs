@@ -337,18 +337,26 @@ public sealed class ExchangeService : IExchangeService, IDisposable
 
         // One editable row. The blocked argument gives the reason this particular setting is not offered, if
         // any; a synced group overrides every such reason, because Exchange rejects all writes against one.
-        CloudProperty E(string key, string label, string value, string? blocked = null, string[]? choices = null)
+        CloudProperty E(string key, string label, string value, string? blocked = null, string[]? choices = null,
+                        string? editableTip = null)
         {
-            if (synced) return new(key, label, Show(value), CloudPropertyEditability.OnPremMastered, SyncedRowTip);
-            if (blocked is not null) return new(key, label, Show(value), CloudPropertyEditability.SystemReadOnly, blocked);
+            var help = CloudPropertyHelp.For(key);
+            if (synced) return new(key, label, Show(value), CloudPropertyEditability.OnPremMastered, SyncedRowTip, help: help);
+            if (blocked is not null) return new(key, label, Show(value), CloudPropertyEditability.SystemReadOnly, blocked, help: help);
             // A drop-down whose current value is not one of its own choices means Exchange answered with
             // something this pane does not understand, or did not answer at all. Editing from there would
             // write over a value that was never read.
             if (choices is not null && !choices.Contains(value, StringComparer.Ordinal))
-                return new(key, label, Show(value), CloudPropertyEditability.SystemReadOnly, UnreadRowTip);
-            return new(key, label, value, CloudPropertyEditability.Editable, EditableRowTip,
-                       choices is null ? CloudPropertyEditor.Text : CloudPropertyEditor.Choice, choices);
+                return new(key, label, Show(value), CloudPropertyEditability.SystemReadOnly, UnreadRowTip, help: help);
+            return new(key, label, value, CloudPropertyEditability.Editable, editableTip,
+                       choices is null ? CloudPropertyEditor.Text : CloudPropertyEditor.Choice, choices, help);
         }
+
+        // The onmicrosoft.com addresses are the ones Microsoft 365 maintains for routing and hybrid mail flow.
+        // Removing one breaks delivery and the service puts it back, so they are held out of the editable row
+        // entirely rather than being offered and then rejected.
+        var service = secondary.Where(IsServiceAddress).ToList();
+        var vanity = secondary.Where(a => !IsServiceAddress(a)).ToList();
 
         // Join and depart restrictions are type-specific. Exchange rejects Open on a mail-enabled security
         // group outright, and accepts ApprovalRequired there while never routing the request to an owner: a
@@ -381,7 +389,7 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                 // and administrators are exempt from it, so the same save behaves differently for others.
                 P("displayName", "Display name", S("DisplayName")),
                 P("name", "Name", S("Name")),
-                E("alias", "Alias", S("Alias")),
+                E("alias", "Alias", S("Alias"), blocked: AliasBlockedTip),
                 P("groupType", "Group type", FriendlyRecipientType(typeDetails)),
                 // A room list is a distribution list whose members are all room mailboxes; Outlook uses it to
                 // offer a building when booking a meeting. Exchange has no room-list form of a security group.
@@ -395,7 +403,10 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                         : isRoomList ? "Exchange Online has no supported way to turn a room list back into an "
                             + "ordinary distribution list, so this is not offered here once it is set."
                         : null,
-                    choices: YesNoChoices),
+                    choices: YesNoChoices,
+                    editableTip: "Setting this CANNOT BE UNDONE. Exchange Online has no supported way to turn a "
+                        + "room list back into an ordinary distribution list, and the repair Microsoft documents "
+                        + "is an Active Directory attribute that a cloud-only group does not have."),
                 // Shown because it explains why changing the alias can move the primary address.
                 P("emailAddressPolicy", "Email address policy",
                     S("EmailAddressPolicyEnabled") == Yes ? "Applied - the alias sets the primary address" : "Not applied"),
@@ -411,8 +422,13 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                 E("description", "Description", S("Description")),
                 E("mailTip", "MailTip", S("MailTip"))),
             Section("Addresses",
-                E("primaryAddress", "Primary", primary ?? string.Empty, blocked: AddressBlockedTip),
-                E("secondaryAddresses", "Secondary", string.Join("; ", secondary), blocked: AddressBlockedTip),
+                E("primaryAddress", "Primary", primary ?? string.Empty, blocked: PrimaryAddressTip),
+                // Editable. Semicolon-separated, and written as an add/remove rather than as a replacement of
+                // the whole collection, which is how a primary address gets moved by accident.
+                E("secondaryAddresses", "Secondary", string.Join("; ", vanity),
+                    editableTip: "Extra addresses that also deliver here, separated by semicolons. Adding or "
+                        + "removing one never changes the address replies come from."),
+                E("serviceAddresses", "Service (routing)", string.Join("; ", service), blocked: ServiceAddressTip),
                 E("otherAddresses", "Other", string.Join("; ", other), blocked: AddressBlockedTip)),
             Section("Visibility",
                 E("hiddenFromAddressLists", "Hidden from address lists", S("HiddenFromAddressLists"), choices: YesNoChoices),
@@ -472,14 +488,27 @@ public sealed class ExchangeService : IExchangeService, IDisposable
     private const string SyncedRowTip =
         "Synchronized from on-premises Active Directory. Exchange Online rejects every write against a synced "
         + "group, so this has to be changed in Active Directory.";
-    private const string EditableRowTip =
-        "Editable. Save applies the change to Exchange Online; Revert discards it.";
     private const string UnreadRowTip =
         "Exchange Online did not return a value this pane recognises for this setting, so it is not offered "
         + "for editing rather than overwriting something that was never read.";
     private const string AddressBlockedTip =
-        "Changing a group's addresses redirects its mail and stops the old address working, so it is left to "
-        + "the Exchange admin center.";
+        "Read-only here. These are not SMTP addresses and exist so replies to old messages still resolve.";
+    private const string PrimaryAddressTip =
+        "Read-only here. Changing the address replies come from redirects the group's mail and stops the old "
+        + "address working, so it is left to the Exchange admin center.";
+    private const string ServiceAddressTip =
+        "Read-only here. Microsoft 365 maintains these for routing; removing one breaks mail flow and the "
+        + "service restores it anyway.";
+    private const string AliasBlockedTip =
+        "Read-only here. Wherever an email address policy applies — the usual case for a cloud group — changing "
+        + "the alias also rewrites the primary address, which redirects mail and stops the old one working.";
+
+    /// <summary>
+    /// True for the addresses Microsoft 365 owns: the tenant routing addresses. They are shown but never
+    /// offered for editing, which is what "lock the default secondary addresses" has to mean in practice.
+    /// </summary>
+    private static bool IsServiceAddress(string address) =>
+        address.EndsWith(".onmicrosoft.com", StringComparison.OrdinalIgnoreCase);
     private const string SizeBlockedTip =
         "Exchange Online does not accept a per-group message size limit; Microsoft documents the parameter as "
         + "on-premises only. The limit comes from the organization.";
@@ -490,7 +519,7 @@ public sealed class ExchangeService : IExchangeService, IDisposable
     private static string Show(string value) => string.IsNullOrWhiteSpace(value) ? "—" : value;
 
     /// <summary>How one editable row is written back. The pane speaks in display values; Exchange does not.</summary>
-    private enum DlValue { Text, YesNo, SenderPolicy, DeliveryReports }
+    private enum DlValue { Text, YesNo, SenderPolicy, DeliveryReports, Addresses }
 
     /// <param name="Parameter">The Set-DistributionGroup parameter this row writes.</param>
     /// <param name="Clearable">Whether an empty value is a legitimate instruction to clear the setting.</param>
@@ -505,10 +534,8 @@ public sealed class ExchangeService : IExchangeService, IDisposable
     private static readonly IReadOnlyDictionary<string, DlSetting> DlEditable =
         new Dictionary<string, DlSetting>(StringComparer.OrdinalIgnoreCase)
         {
-            // 64 characters is the documented maximum; Exchange also restricts the character set, which it
-            // reports clearly enough to leave to it.
-            ["alias"] = new("Alias", DlValue.Text, MaxLength: 64),
             ["description"] = new("Description", DlValue.Text, Clearable: true),
+            ["secondaryAddresses"] = new("EmailAddresses", DlValue.Addresses, Clearable: true),
             // 175 displayed characters is the documented maximum.
             ["mailTip"] = new("MailTip", DlValue.Text, Clearable: true, MaxLength: 175),
             ["roomList"] = new("RoomList", DlValue.YesNo),
@@ -528,16 +555,25 @@ public sealed class ExchangeService : IExchangeService, IDisposable
     /// every value here came from a drop-down or a text box this class defined, so anything unrecognised is a
     /// defect in this file, not something a user typed.
     /// </summary>
-    private static Dictionary<string, object?> ToSetParameters(IReadOnlyDictionary<string, string> changes)
+    /// <returns>
+    /// The parameters to send, and the keys of any rows that turned out to need nothing sent. A row can be
+    /// dirty and still produce no parameter: dirtiness is an exact string comparison, while Exchange matches
+    /// addresses without regard to case or order. Those rows are named rather than dropped, because a change
+    /// that vanishes silently is indistinguishable from one that was applied.
+    /// </returns>
+    private static (Dictionary<string, object?> Parameters, List<string> Unchanged) ToSetParameters(
+        IReadOnlyList<CloudProperty> changes)
     {
         var p = new Dictionary<string, object?>(StringComparer.Ordinal);
-        foreach (var (key, raw) in changes)
+        var unchanged = new List<string>();
+        foreach (var row in changes)
         {
+            var key = row.Key;
             if (!DlEditable.TryGetValue(key, out var setting))
                 throw new ExchangeException($"'{key}' is not a distribution group setting this app can change.");
 
             // The pane renders an absent value as an em dash. It is a placeholder, never something to save.
-            var value = (raw ?? string.Empty).Trim();
+            var value = (row.Value ?? string.Empty).Trim();
             if (value == "—") value = string.Empty;
 
             switch (setting.Kind)
@@ -568,27 +604,62 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                     p["ReportToOriginatorEnabled"] = toSender;
                     p["ReportToManagerEnabled"] = !toSender;
                     break;
+
+                case DlValue.Addresses:
+                    // Add and remove, never a replacement. Handing Exchange a whole collection is how a primary
+                    // address gets moved by accident: with no uppercase SMTP: entry it promotes the first one.
+                    var before = SplitList(row.OriginalValue);
+                    var after = SplitList(value);
+                    var add = after.Except(before, StringComparer.OrdinalIgnoreCase).ToList();
+                    var drop = before.Except(after, StringComparer.OrdinalIgnoreCase).ToList();
+                    foreach (var a in add) ValidateAddress(a);
+                    // Reordered, re-cased or re-spaced: the row looks edited and describes the same set.
+                    if (add.Count == 0 && drop.Count == 0) { unchanged.Add(key); break; }
+                    var ops = new Dictionary<string, object?>(StringComparer.Ordinal);
+                    // Lowercase smtp: keeps every one of them a secondary address.
+                    if (add.Count > 0) ops["Add"] = add.Select(a => "smtp:" + a).ToArray();
+                    if (drop.Count > 0) ops["Remove"] = drop.Select(a => "smtp:" + a).ToArray();
+                    p[setting.Parameter] = ops;
+                    break;
             }
         }
-        if (p.Count == 0) throw new ExchangeException("There is nothing to save.");
-        return p;
+        return (p, unchanged);
 
         static bool Choice(string key, string value, string whenTrue, string whenFalse) =>
             value == whenTrue ? true
             : value == whenFalse ? false
             : throw new ExchangeException($"'{value}' isn't a value {key} accepts.");
+
+        static List<string> SplitList(string value) =>
+            value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                 .Where(s => s != "—").ToList();
+
+        static void ValidateAddress(string address)
+        {
+            // A type prefix is exactly how the reply address gets moved — "SMTP:" on any entry promotes it —
+            // so an operator must not be able to type one into this box at all.
+            if (address.Contains(':'))
+                throw new ExchangeException($"'{address}' must be a plain address, with no prefix before it.");
+            var at = address.IndexOf('@');
+            if (at <= 0 || at != address.LastIndexOf('@') || at == address.Length - 1 || address.Any(char.IsWhiteSpace))
+                throw new ExchangeException($"'{address}' is not a valid email address.");
+        }
     }
 
-    public async Task SetDistributionGroupPropertiesAsync(
-        string identity, IReadOnlyDictionary<string, string> changes, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<string>> SetDistributionGroupPropertiesAsync(
+        string identity, IReadOnlyList<CloudProperty> changes, CancellationToken cancellationToken = default)
     {
         // A Get- cmdlet given a blank identity returns EVERY group, and the write op reads before it writes.
         if (string.IsNullOrWhiteSpace(identity)) throw new ArgumentException("A group is required.", nameof(identity));
         if (changes is null || changes.Count == 0) throw new ArgumentException("Nothing to save.", nameof(changes));
 
-        var parameters = ToSetParameters(changes);
+        var (parameters, unchanged) = ToSetParameters(changes);
+        // Every edit turned out to be a no-op. Sending an empty change set would only earn an error from the
+        // host, and there is nothing for Exchange to do.
+        if (parameters.Count == 0) return unchanged;
         await RunOpAsync(new { op = "set-dl-properties", identity, changes = parameters }, cancellationToken)
             .ConfigureAwait(false);
+        return unchanged;
     }
 
     // The tooltip names the object type: a mailbox and a distribution group send the operator to different
@@ -601,7 +672,8 @@ public sealed class ExchangeService : IExchangeService, IDisposable
     /// <summary>Every Exchange-sourced row is read-only: these views report state, and the write paths live on
     /// their own confirmed actions rather than in a property grid.</summary>
     private static CloudProperty Prop(string key, string label, string value, string tooltip) =>
-        new(key, label, string.IsNullOrWhiteSpace(value) ? "—" : value, CloudPropertyEditability.SystemReadOnly, tooltip);
+        new(key, label, string.IsNullOrWhiteSpace(value) ? "—" : value, CloudPropertyEditability.SystemReadOnly, tooltip,
+            help: CloudPropertyHelp.For(key));
 
     private static CloudPropertySection Section(string title, params CloudProperty[] properties) =>
         new(title, properties);
@@ -1607,7 +1679,7 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 # can be checked before reaching a cmdlet that changes far more than this app
                                 # offers. Anything outside the list is a defect, so it stops here.
                                 $wAllowed = @(
-                                    'Alias', 'Description', 'MailTip', 'RoomList', 'HiddenFromAddressListsEnabled',
+                                    'Description', 'MailTip', 'RoomList', 'EmailAddresses', 'HiddenFromAddressListsEnabled',
                                     'MemberJoinRestriction', 'MemberDepartRestriction', 'RequireSenderAuthenticationEnabled',
                                     'BccBlocked', 'ReportToOriginatorEnabled', 'ReportToManagerEnabled',
                                     'SendOofMessageToOriginatorEnabled', 'ModerationEnabled', 'SendModerationNotifications'
@@ -1616,6 +1688,36 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 foreach ($wp in $r.changes.PSObject.Properties) {
                                     if ($wAllowed -notcontains $wp.Name) {
                                         throw "'$($wp.Name)' is not a distribution group setting this app may change."
+                                    }
+                                    if ($wp.Name -eq 'EmailAddresses') {
+                                        # Addresses arrive as an add/remove, never as a replacement collection:
+                                        # handing Exchange the whole set is how a primary address gets moved,
+                                        # and an uppercase SMTP: entry promotes itself to the reply address.
+                                        # JSON gives an object here, and the parameter needs a real hashtable.
+                                        $ea = @{}
+                                        foreach ($side in 'Add', 'Remove') {
+                                            $clean = @()
+                                            foreach ($av in @($wp.Value.$side)) {
+                                                $as = [string]$av
+                                                if ([string]::IsNullOrWhiteSpace($as)) { continue }
+                                                # Case-sensitive: lowercase smtp: is a secondary, uppercase is the primary.
+                                                if ($as -cnotmatch '^smtp:') {
+                                                    throw "'$as' must be a secondary address, written as smtp:<address>."
+                                                }
+                                                $abare = $as.Substring(5)
+                                                if ($abare -eq [string]$wg.PrimarySmtpAddress) {
+                                                    throw "'$abare' is this group's primary address, which is not changed here."
+                                                }
+                                                if ($abare -like '*.onmicrosoft.com') {
+                                                    throw "'$abare' is a routing address Microsoft 365 maintains, which is not changed here."
+                                                }
+                                                $clean += $as
+                                            }
+                                            if ($clean.Count -gt 0) { $ea[$side] = $clean }
+                                        }
+                                        if ($ea.Count -eq 0) { continue }
+                                        $wsp['EmailAddresses'] = $ea
+                                        continue
                                     }
                                     $wsp[$wp.Name] = $wp.Value
                                 }

@@ -10,11 +10,13 @@
         <!-- The value control for one property row. Exactly ONE of these is ever instantiated per row: a
              ComboBox whose ItemsSource is null resets its SelectedItem to null and, on a two-way binding,
              writes that null straight back over the property, so the unused editor must not exist at all
-             rather than merely be collapsed. -->
+             rather than merely be collapsed.
+             Neither carries a tooltip of its own: an explanation on every field turned into clutter that
+             followed the pointer around. The "?" beside the label is the one place that explains a row. -->
         <DataTemplate x:Key="PropertyTextEditor">
             <TextBox Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"
                      IsReadOnly="{Binding IsEditable, Converter={StaticResource InverseBool}}"
-                     ToolTip="{Binding Tooltip}" TextWrapping="Wrap">
+                     TextWrapping="Wrap">
                 <TextBox.Style>
                     <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
                         <Setter Property="Background" Value="White" />
@@ -31,25 +33,55 @@
         </DataTemplate>
         <DataTemplate x:Key="PropertyChoiceEditor">
             <ComboBox ItemsSource="{Binding Choices}"
-                      SelectedItem="{Binding Value, UpdateSourceTrigger=PropertyChanged}"
-                      ToolTip="{Binding Tooltip}" />
+                      SelectedItem="{Binding Value, UpdateSourceTrigger=PropertyChanged}" />
         </DataTemplate>
         <!-- One property row: label + value. Editable free-text props are white text boxes; editable yes/no
              and enum props are drop-downs, because typing the value would be a spelling test whose wrong
-             answers are silent. On-prem-mastered and system props are grayed, read-only text with a hover
-             tooltip explaining why. -->
+             answers are silent. On-prem-mastered and system props are grayed, read-only text.
+
+             The label column is fixed, so the label has to be bounded: given unbounded width it runs straight
+             under the value control ("Membership hidden (permanent)", "Send auto-replies to sender"). It wraps
+             rather than being trimmed, because with no tooltip on the field there would be nowhere left to
+             read the rest of a truncated name. -->
         <DataTemplate x:Key="PropertyRow">
             <Grid Margin="0,2">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="150" />
+                    <ColumnDefinition Width="190" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="{Binding Label}" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" />
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
+                    <TextBlock Text="{Binding Label}" Style="{StaticResource FieldLabel}" Margin="0"
+                               TextWrapping="Wrap" MaxWidth="164" VerticalAlignment="Center" />
+                    <!-- Quiet on purpose: one of these sits on nearly every row, so it reads as punctuation
+                         until it is wanted. Lighter than the label it follows, and outlined rather than
+                         filled. Hover shows the explanation; so does a click, which is what a touch or
+                         pointer-shy user reaches for first. -->
+                    <Border Width="14" Height="14" CornerRadius="7" Margin="5,0,0,0"
+                            BorderBrush="#C4C4C4" BorderThickness="1" Background="Transparent"
+                            VerticalAlignment="Center" Cursor="Hand"
+                            MouseLeftButtonUp="OnHelpGlyphClick"
+                            ToolTipService.InitialShowDelay="150" ToolTipService.ShowDuration="60000"
+                            Visibility="{Binding HasHelp, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="?" FontSize="9" Foreground="#9B9B9B" Margin="0,-1,0,0"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <Border.ToolTip>
+                            <!-- A ToolTip element rather than a plain string, so the click handler has an
+                                 object to open. It inherits the row's DataContext from its placement target. -->
+                            <ToolTip Content="{Binding HelpText}" MaxWidth="380">
+                                <ToolTip.ContentTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}" TextWrapping="Wrap" />
+                                    </DataTemplate>
+                                </ToolTip.ContentTemplate>
+                            </ToolTip>
+                        </Border.ToolTip>
+                    </Border>
+                </StackPanel>
                 <!-- The default template is set through the style, not as a local value: a local ContentTemplate
-                     outranks a style trigger and the drop-down would never appear. -->
-                <!-- Focusable=False: the wrapper is a layout detail, and without this every row costs two Tab
+                     outranks a style trigger and the drop-down would never appear.
+                     Focusable=False: the wrapper is a layout detail, and without this every row costs two Tab
                      presses, the first landing on a cell that draws a focus rectangle and accepts no input. -->
-                <ContentControl Grid.Column="1" Content="{Binding}" Focusable="False">
+                <ContentControl Grid.Column="1" Content="{Binding}" Focusable="False" VerticalAlignment="Center">
                     <ContentControl.Style>
                         <Style TargetType="ContentControl">
                             <Setter Property="ContentTemplate" Value="{StaticResource PropertyTextEditor}" />

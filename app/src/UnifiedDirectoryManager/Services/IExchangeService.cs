@@ -141,14 +141,18 @@ public interface IExchangeService
     /// <c>Set-DistributionGroup</c>. <paramref name="changes"/> is keyed by the property-row key that
     /// <see cref="GetDistributionGroupDetailAsync"/> produced, carrying the value as the pane displays it; the
     /// implementation owns the translation to Exchange parameters and rejects any key it does not recognise,
-    /// because a change that is silently dropped is indistinguishable from one that was saved.
+    /// because a change that is silently dropped is indistinguishable from one that was saved. The rows are
+    /// passed whole rather than as key/value pairs because the address editor needs the ORIGINAL value too:
+    /// addresses are written as an add/remove against what was there, never as a replacement.
     ///
     /// Writes are refused for a group synced from on-premises Active Directory: Exchange rejects them anyway,
     /// but its own error names neither the group nor the reason. Runs with
     /// <c>-BypassSecurityGroupManagerCheck</c>, since the owner is usually a role group that no individual is a
     /// "manager of", and addresses the group by its Exchange GUID rather than by an address a rename may move.
     /// </summary>
-    Task SetDistributionGroupPropertiesAsync(string identity, IReadOnlyDictionary<string, string> changes, CancellationToken cancellationToken = default);
+    /// <returns>The keys of any rows that needed nothing sent after all — a row can be edited into an
+    /// equivalent value, and the caller must not report those as saved.</returns>
+    Task<IReadOnlyList<string>> SetDistributionGroupPropertiesAsync(string identity, IReadOnlyList<CloudProperty> changes, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Lists a distribution list's or mail-enabled security group's members. Reads the whole membership

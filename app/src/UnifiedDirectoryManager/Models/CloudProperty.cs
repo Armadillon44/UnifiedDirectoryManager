@@ -55,9 +55,31 @@ public sealed partial class CloudProperty : ObservableObject
     /// <summary>True when this row draws a text box — the default, and the fallback for every read-only row.</summary>
     public bool UsesTextEditor => !UsesChoiceEditor;
 
+    /// <summary>What this setting is, in one sentence. Null when nothing has been written for the key, in
+    /// which case no "?" is offered — an absent explanation beats a guessed one.</summary>
+    public string? Help { get; }
+
+    public bool HasHelp => !string.IsNullOrWhiteSpace(HelpText);
+
+    /// <summary>
+    /// What the "?" shows: what the setting is, and underneath it the reason it cannot be changed when that
+    /// applies. One place answers both questions, rather than making the reason a separate hover on the
+    /// control that an operator has to discover.
+    /// </summary>
+    public string HelpText =>
+        (Help, Tooltip) switch
+        {
+            (null, null) => string.Empty,
+            (null, var why) => why!,
+            (var what, null) => what!,
+            var (what, why) => what + "\n\n" + why,
+        };
+
     public CloudProperty(string key, string label, string value, CloudPropertyEditability editability, string? tooltip,
-                         CloudPropertyEditor editor = CloudPropertyEditor.Text, IReadOnlyList<string>? choices = null)
+                         CloudPropertyEditor editor = CloudPropertyEditor.Text, IReadOnlyList<string>? choices = null,
+                         string? help = null)
     {
+        Help = help;
         Key = key;
         Label = label;
         OriginalValue = value;
