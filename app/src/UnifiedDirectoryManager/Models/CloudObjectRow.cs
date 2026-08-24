@@ -35,6 +35,13 @@ public sealed partial class CloudObjectRow : ObservableObject
 
     public string Get(string key) => Values.TryGetValue(key, out var v) ? v : string.Empty;
 
+    /// <summary>
+    /// Announces that <see cref="Values"/> changed. The grid columns bind through <c>[key]</c>, and a plain
+    /// dictionary raises nothing on its own, so a value corrected after a save would otherwise stay stale on
+    /// screen while being right underneath.
+    /// </summary>
+    public void NotifyValuesChanged() => OnPropertyChanged("Item[]");
+
     /// <summary>Indexer used by the dynamic GridView columns (XAML <c>DisplayMemberBinding="[key]"</c>).</summary>
     public string this[string key] => Get(key);
 

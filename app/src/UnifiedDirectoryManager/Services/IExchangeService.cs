@@ -137,6 +137,20 @@ public interface IExchangeService
     Task<IReadOnlyList<CloudPropertySection>> GetDistributionGroupDetailAsync(string identity, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Applies scalar changes to a distribution list or mail-enabled security group via
+    /// <c>Set-DistributionGroup</c>. <paramref name="changes"/> is keyed by the property-row key that
+    /// <see cref="GetDistributionGroupDetailAsync"/> produced, carrying the value as the pane displays it; the
+    /// implementation owns the translation to Exchange parameters and rejects any key it does not recognise,
+    /// because a change that is silently dropped is indistinguishable from one that was saved.
+    ///
+    /// Writes are refused for a group synced from on-premises Active Directory: Exchange rejects them anyway,
+    /// but its own error names neither the group nor the reason. Runs with
+    /// <c>-BypassSecurityGroupManagerCheck</c>, since the owner is usually a role group that no individual is a
+    /// "manager of", and addresses the group by its Exchange GUID rather than by an address a rename may move.
+    /// </summary>
+    Task SetDistributionGroupPropertiesAsync(string identity, IReadOnlyDictionary<string, string> changes, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Lists a distribution list's or mail-enabled security group's members. Reads the whole membership
     /// (<c>-ResultSize Unlimited</c>): the default page is 1,000 and truncates in silence, which on a
     /// membership list would read as "these are all the members".

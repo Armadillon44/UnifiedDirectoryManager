@@ -7,8 +7,37 @@
              {Binding Sections} on it resolves to nothing. The proxy carries it in, which is what lets the
              per-section tabs and the kind-specific tabs share ONE tab strip instead of nesting. -->
         <views:BindingProxy x:Key="VmProxy" Data="{Binding}" />
-        <!-- One property row: label + value. Editable props are white text boxes; on-prem-mastered and
-             system props are grayed + read-only with a hover tooltip explaining why. -->
+        <!-- The value control for one property row. Exactly ONE of these is ever instantiated per row: a
+             ComboBox whose ItemsSource is null resets its SelectedItem to null and, on a two-way binding,
+             writes that null straight back over the property, so the unused editor must not exist at all
+             rather than merely be collapsed. -->
+        <DataTemplate x:Key="PropertyTextEditor">
+            <TextBox Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"
+                     IsReadOnly="{Binding IsEditable, Converter={StaticResource InverseBool}}"
+                     ToolTip="{Binding Tooltip}" TextWrapping="Wrap">
+                <TextBox.Style>
+                    <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+                        <Setter Property="Background" Value="White" />
+                        <Setter Property="Foreground" Value="#222" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsEditable}" Value="False">
+                                <Setter Property="Background" Value="#F3F3F3" />
+                                <Setter Property="Foreground" Value="#666" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBox.Style>
+            </TextBox>
+        </DataTemplate>
+        <DataTemplate x:Key="PropertyChoiceEditor">
+            <ComboBox ItemsSource="{Binding Choices}"
+                      SelectedItem="{Binding Value, UpdateSourceTrigger=PropertyChanged}"
+                      ToolTip="{Binding Tooltip}" />
+        </DataTemplate>
+        <!-- One property row: label + value. Editable free-text props are white text boxes; editable yes/no
+             and enum props are drop-downs, because typing the value would be a spelling test whose wrong
+             answers are silent. On-prem-mastered and system props are grayed, read-only text with a hover
+             tooltip explaining why. -->
         <DataTemplate x:Key="PropertyRow">
             <Grid Margin="0,2">
                 <Grid.ColumnDefinitions>
@@ -16,22 +45,22 @@
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="{Binding Label}" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" />
-                <TextBox Grid.Column="1" Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"
-                         IsReadOnly="{Binding IsEditable, Converter={StaticResource InverseBool}}"
-                         ToolTip="{Binding Tooltip}" TextWrapping="Wrap">
-                    <TextBox.Style>
-                        <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
-                            <Setter Property="Background" Value="White" />
-                            <Setter Property="Foreground" Value="#222" />
+                <!-- The default template is set through the style, not as a local value: a local ContentTemplate
+                     outranks a style trigger and the drop-down would never appear. -->
+                <!-- Focusable=False: the wrapper is a layout detail, and without this every row costs two Tab
+                     presses, the first landing on a cell that draws a focus rectangle and accepts no input. -->
+                <ContentControl Grid.Column="1" Content="{Binding}" Focusable="False">
+                    <ContentControl.Style>
+                        <Style TargetType="ContentControl">
+                            <Setter Property="ContentTemplate" Value="{StaticResource PropertyTextEditor}" />
                             <Style.Triggers>
-                                <DataTrigger Binding="{Binding IsEditable}" Value="False">
-                                    <Setter Property="Background" Value="#F3F3F3" />
-                                    <Setter Property="Foreground" Value="#666" />
+                                <DataTrigger Binding="{Binding UsesChoiceEditor}" Value="True">
+                                    <Setter Property="ContentTemplate" Value="{StaticResource PropertyChoiceEditor}" />
                                 </DataTrigger>
                             </Style.Triggers>
                         </Style>
-                    </TextBox.Style>
-                </TextBox>
+                    </ContentControl.Style>
+                </ContentControl>
             </Grid>
         </DataTemplate>
     </UserControl.Resources>

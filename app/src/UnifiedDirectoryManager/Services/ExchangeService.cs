@@ -329,54 +329,266 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         var (primary, secondary, other) = SplitAddresses(d);
         static CloudProperty P(string key, string label, string value) => Prop(key, label, value, GroupRowTip);
 
+        // Three facts decide what this pane may offer to change.
+        var synced = S("IsDirSynced") == "Yes";
+        var typeDetails = S("RecipientTypeDetails");
+        var isSecurity = string.Equals(typeDetails, "MailUniversalSecurityGroup", StringComparison.OrdinalIgnoreCase);
+        var isRoomList = string.Equals(typeDetails, "RoomList", StringComparison.OrdinalIgnoreCase);
+
+        // One editable row. The blocked argument gives the reason this particular setting is not offered, if
+        // any; a synced group overrides every such reason, because Exchange rejects all writes against one.
+        CloudProperty E(string key, string label, string value, string? blocked = null, string[]? choices = null)
+        {
+            if (synced) return new(key, label, Show(value), CloudPropertyEditability.OnPremMastered, SyncedRowTip);
+            if (blocked is not null) return new(key, label, Show(value), CloudPropertyEditability.SystemReadOnly, blocked);
+            // A drop-down whose current value is not one of its own choices means Exchange answered with
+            // something this pane does not understand, or did not answer at all. Editing from there would
+            // write over a value that was never read.
+            if (choices is not null && !choices.Contains(value, StringComparer.Ordinal))
+                return new(key, label, Show(value), CloudPropertyEditability.SystemReadOnly, UnreadRowTip);
+            return new(key, label, value, CloudPropertyEditability.Editable, EditableRowTip,
+                       choices is null ? CloudPropertyEditor.Text : CloudPropertyEditor.Choice, choices);
+        }
+
+        // Join and depart restrictions are type-specific. Exchange rejects Open on a mail-enabled security
+        // group outright, and accepts ApprovalRequired there while never routing the request to an owner: a
+        // setting that appears to work and does not. Closed is the only honest value for one, so both rows
+        // are shown rather than offered.
+        var restrictionBlocked = isSecurity
+            ? "A mail-enabled security group can only be Closed. Exchange rejects Open, and accepts "
+              + "ApprovalRequired without ever sending join requests to an owner."
+            : null;
+
+        // ReportToManagerEnabled and ReportToOriginatorEnabled are one decision wearing two flags. Microsoft
+        // documents that setting both, or neither, leaves messages to the group without a return path, which
+        // some mail servers reject outright. Presented as a single choice so neither state can be created
+        // here; a group already in one of them is shown as it really is rather than quietly normalised.
+        var toManager = S("ReportToManagerEnabled") == Yes;
+        var toOriginator = S("ReportToOriginatorEnabled") == Yes;
+        var reportsInvalid = toManager == toOriginator;
+        var reportsValue = (toManager, toOriginator) switch
+        {
+            (false, true) => ReportsToSender,
+            (true, false) => ReportsToOwner,
+            (true, true) => "Both the sender and the group owner",
+            _ => "Nobody",
+        };
+
         return new List<CloudPropertySection>
         {
             Section("Identity",
+                // Not editable: a group naming policy rewrites a display name on edit as well as on create,
+                // and administrators are exempt from it, so the same save behaves differently for others.
                 P("displayName", "Display name", S("DisplayName")),
                 P("name", "Name", S("Name")),
-                P("alias", "Alias", S("Alias")),
-                P("groupType", "Group type", FriendlyRecipientType(S("RecipientTypeDetails"))),
+                E("alias", "Alias", S("Alias")),
+                P("groupType", "Group type", FriendlyRecipientType(typeDetails)),
+                // A room list is a distribution list whose members are all room mailboxes; Outlook uses it to
+                // offer a building when booking a meeting. Exchange has no room-list form of a security group.
+                //
+                // Offered in ONE direction only. -RoomList is a switch with no documented off value, and the
+                // repair Microsoft documents for a room list that needs to become an ordinary group again is
+                // an Active Directory attribute, which a cloud-only group does not have. A Yes-to-No choice
+                // would therefore report success and change nothing, so the row is closed once it reads Yes.
+                E("roomList", "Room list", isRoomList ? Yes : No,
+                    blocked: isSecurity ? "Only a distribution list can be marked as a room list."
+                        : isRoomList ? "Exchange Online has no supported way to turn a room list back into an "
+                            + "ordinary distribution list, so this is not offered here once it is set."
+                        : null,
+                    choices: YesNoChoices),
+                // Shown because it explains why changing the alias can move the primary address.
+                P("emailAddressPolicy", "Email address policy",
+                    S("EmailAddressPolicyEnabled") == Yes ? "Applied - the alias sets the primary address" : "Not applied"),
                 P("id", "Object ID", S("ExternalDirectoryObjectId")),
                 P("exchangeGuid", "Exchange GUID", S("Guid")),
                 P("created", "Created", S("WhenCreated")),
                 P("changed", "Last changed", S("WhenChanged")),
                 // The one property that decides whether anything here can be edited at all.
-                P("dirSynced", "Directory sync", S("IsDirSynced") == "Yes"
+                P("dirSynced", "Directory sync", synced
                     ? "Synced from on-premises — read-only in Exchange Online"
                     : "Cloud-only")),
             Section("Description",
-                P("description", "Description", S("Description")),
-                P("mailTip", "MailTip", S("MailTip"))),
+                E("description", "Description", S("Description")),
+                E("mailTip", "MailTip", S("MailTip"))),
             Section("Addresses",
-                P("primaryAddress", "Primary", primary ?? string.Empty),
-                P("secondaryAddresses", "Secondary", string.Join("; ", secondary)),
-                P("otherAddresses", "Other", string.Join("; ", other))),
+                E("primaryAddress", "Primary", primary ?? string.Empty, blocked: AddressBlockedTip),
+                E("secondaryAddresses", "Secondary", string.Join("; ", secondary), blocked: AddressBlockedTip),
+                E("otherAddresses", "Other", string.Join("; ", other), blocked: AddressBlockedTip)),
             Section("Visibility",
-                P("hiddenFromAddressLists", "Hidden from address lists", S("HiddenFromAddressLists")),
+                E("hiddenFromAddressLists", "Hidden from address lists", S("HiddenFromAddressLists"), choices: YesNoChoices),
                 // Shown because it cannot be undone: an operator needs to know it is already on.
                 P("hiddenGroupMembership", "Membership hidden (permanent)", S("HiddenGroupMembership"))),
             Section("Ownership and joining",
-                P("managedBy", "Owners", S("ManagedBy")),
-                P("joinRestriction", "Members can join", S("MemberJoinRestriction")),
-                P("departRestriction", "Members can leave", S("MemberDepartRestriction")),
-                P("grantSendOnBehalfTo", "Send on behalf", S("GrantSendOnBehalfTo"))),
+                E("managedBy", "Owners", S("ManagedBy"), blocked: RecipientPendingTip),
+                E("joinRestriction", "Members can join", S("MemberJoinRestriction"),
+                    blocked: restrictionBlocked, choices: JoinChoices),
+                E("departRestriction", "Members can leave", S("MemberDepartRestriction"),
+                    blocked: restrictionBlocked, choices: DepartChoices),
+                E("grantSendOnBehalfTo", "Send on behalf", S("GrantSendOnBehalfTo"), blocked: RecipientPendingTip)),
             Section("Mail flow",
                 // Exchange stores the double negative; this is how an operator thinks about it.
-                P("externalSenders", "External senders", S("RequireSenderAuthenticationEnabled") == "Yes" ? "Blocked" : "Allowed"),
-                P("acceptFrom", "Accept only from", S("AcceptMessagesOnlyFromSendersOrMembers")),
-                P("rejectFrom", "Reject from", S("RejectMessagesFromSendersOrMembers")),
-                P("bccBlocked", "BCC blocked", S("BccBlocked")),
-                P("maxSendSize", "Max send size", S("MaxSendSize")),
-                P("maxReceiveSize", "Max receive size", S("MaxReceiveSize")),
-                P("reportToManager", "Delivery reports to owners", S("ReportToManagerEnabled")),
-                P("reportToOriginator", "Delivery reports to sender", S("ReportToOriginatorEnabled")),
-                P("sendOof", "Send auto-replies to sender", S("SendOofMessageToOriginatorEnabled"))),
+                E("externalSenders", "External senders",
+                    S("RequireSenderAuthenticationEnabled") == Yes ? Blocked : Allowed, choices: SenderChoices),
+                E("acceptFrom", "Accept only from", S("AcceptMessagesOnlyFromSendersOrMembers"), blocked: RecipientPendingTip),
+                E("rejectFrom", "Reject from", S("RejectMessagesFromSendersOrMembers"), blocked: RecipientPendingTip),
+                E("bccBlocked", "BCC blocked", S("BccBlocked"), choices: YesNoChoices),
+                // Microsoft documents both size parameters as on-premises only. Exchange Online takes the
+                // message-size limit from the organization, so an editor here would be one that never works.
+                E("maxSendSize", "Max send size", S("MaxSendSize"), blocked: SizeBlockedTip),
+                E("maxReceiveSize", "Max receive size", S("MaxReceiveSize"), blocked: SizeBlockedTip),
+                E("deliveryReports", "Delivery reports go to", reportsValue,
+                    blocked: reportsInvalid
+                        ? "This group currently sends delivery reports to "
+                          + (toManager ? "both the sender and its owner" : "nobody")
+                          + ". Microsoft documents that as leaving messages to the group without a return path, "
+                          + "which some mail servers reject. Correct it in the Exchange admin center and this "
+                          + "becomes editable."
+                        : null,
+                    choices: ReportChoices),
+                E("sendOof", "Send auto-replies to sender", S("SendOofMessageToOriginatorEnabled"), choices: YesNoChoices)),
             Section("Moderation",
-                P("moderationEnabled", "Moderated", S("ModerationEnabled")),
-                P("moderatedBy", "Moderators", S("ModeratedBy")),
-                P("moderationNotifications", "Notify senders", S("SendModerationNotifications")),
-                P("bypassModeration", "Bypass moderation", S("BypassModerationFromSendersOrMembers"))),
+                E("moderationEnabled", "Moderated", S("ModerationEnabled"), choices: YesNoChoices),
+                E("moderatedBy", "Moderators", S("ModeratedBy"), blocked: RecipientPendingTip),
+                E("moderationNotifications", "Notify senders", S("SendModerationNotifications"), choices: NotifyChoices),
+                E("bypassModeration", "Bypass moderation", S("BypassModerationFromSendersOrMembers"), blocked: RecipientPendingTip)),
         };
+    }
+
+    // The vocabulary shared by the read projection above and the write translation below. They must agree
+    // exactly: a drop-down offers these strings, and the translation is the only thing that understands them.
+    private const string Yes = "Yes";
+    private const string No = "No";
+    private const string Allowed = "Allowed";
+    private const string Blocked = "Blocked";
+    private const string ReportsToSender = "Message sender";
+    private const string ReportsToOwner = "Group owner";
+    private static readonly string[] YesNoChoices = [Yes, No];
+    private static readonly string[] SenderChoices = [Allowed, Blocked];
+    private static readonly string[] ReportChoices = [ReportsToSender, ReportsToOwner];
+    private static readonly string[] JoinChoices = ["Open", "Closed", "ApprovalRequired"];
+    private static readonly string[] DepartChoices = ["Open", "Closed"];
+    private static readonly string[] NotifyChoices = ["Always", "Internal", "Never"];
+
+    private const string SyncedRowTip =
+        "Synchronized from on-premises Active Directory. Exchange Online rejects every write against a synced "
+        + "group, so this has to be changed in Active Directory.";
+    private const string EditableRowTip =
+        "Editable. Save applies the change to Exchange Online; Revert discards it.";
+    private const string UnreadRowTip =
+        "Exchange Online did not return a value this pane recognises for this setting, so it is not offered "
+        + "for editing rather than overwriting something that was never read.";
+    private const string AddressBlockedTip =
+        "Changing a group's addresses redirects its mail and stops the old address working, so it is left to "
+        + "the Exchange admin center.";
+    private const string SizeBlockedTip =
+        "Exchange Online does not accept a per-group message size limit; Microsoft documents the parameter as "
+        + "on-premises only. The limit comes from the organization.";
+    private const string RecipientPendingTip =
+        "Read-only here. This setting holds recipients, which need the picker rather than a text box.";
+
+    /// <summary>The pane renders an absent value as an em dash; it must never be mistaken for a value.</summary>
+    private static string Show(string value) => string.IsNullOrWhiteSpace(value) ? "—" : value;
+
+    /// <summary>How one editable row is written back. The pane speaks in display values; Exchange does not.</summary>
+    private enum DlValue { Text, YesNo, SenderPolicy, DeliveryReports }
+
+    /// <param name="Parameter">The Set-DistributionGroup parameter this row writes.</param>
+    /// <param name="Clearable">Whether an empty value is a legitimate instruction to clear the setting.</param>
+    private sealed record DlSetting(string Parameter, DlValue Kind, bool Clearable = false, int MaxLength = 0);
+
+    /// <summary>
+    /// The only distribution group settings this app writes, keyed by the property-row key that
+    /// <see cref="GetDistributionGroupDetailAsync"/> produces. A row that becomes editable without an entry
+    /// here fails loudly on save rather than silently doing nothing, which is the failure that would otherwise
+    /// look exactly like a successful save.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, DlSetting> DlEditable =
+        new Dictionary<string, DlSetting>(StringComparer.OrdinalIgnoreCase)
+        {
+            // 64 characters is the documented maximum; Exchange also restricts the character set, which it
+            // reports clearly enough to leave to it.
+            ["alias"] = new("Alias", DlValue.Text, MaxLength: 64),
+            ["description"] = new("Description", DlValue.Text, Clearable: true),
+            // 175 displayed characters is the documented maximum.
+            ["mailTip"] = new("MailTip", DlValue.Text, Clearable: true, MaxLength: 175),
+            ["roomList"] = new("RoomList", DlValue.YesNo),
+            ["hiddenFromAddressLists"] = new("HiddenFromAddressListsEnabled", DlValue.YesNo),
+            ["joinRestriction"] = new("MemberJoinRestriction", DlValue.Text),
+            ["departRestriction"] = new("MemberDepartRestriction", DlValue.Text),
+            ["externalSenders"] = new("RequireSenderAuthenticationEnabled", DlValue.SenderPolicy),
+            ["bccBlocked"] = new("BccBlocked", DlValue.YesNo),
+            ["deliveryReports"] = new("ReportToOriginatorEnabled", DlValue.DeliveryReports),
+            ["sendOof"] = new("SendOofMessageToOriginatorEnabled", DlValue.YesNo),
+            ["moderationEnabled"] = new("ModerationEnabled", DlValue.YesNo),
+            ["moderationNotifications"] = new("SendModerationNotifications", DlValue.Text),
+        };
+
+    /// <summary>
+    /// Turns the pane's display values into Set-DistributionGroup parameters. Throws rather than guessing:
+    /// every value here came from a drop-down or a text box this class defined, so anything unrecognised is a
+    /// defect in this file, not something a user typed.
+    /// </summary>
+    private static Dictionary<string, object?> ToSetParameters(IReadOnlyDictionary<string, string> changes)
+    {
+        var p = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var (key, raw) in changes)
+        {
+            if (!DlEditable.TryGetValue(key, out var setting))
+                throw new ExchangeException($"'{key}' is not a distribution group setting this app can change.");
+
+            // The pane renders an absent value as an em dash. It is a placeholder, never something to save.
+            var value = (raw ?? string.Empty).Trim();
+            if (value == "—") value = string.Empty;
+
+            switch (setting.Kind)
+            {
+                case DlValue.Text:
+                    if (value.Length == 0 && !setting.Clearable)
+                        throw new ExchangeException($"{key} can't be emptied.");
+                    if (setting.MaxLength > 0 && value.Length > setting.MaxLength)
+                        throw new ExchangeException(
+                            $"{key} is {value.Length} characters; Exchange allows at most {setting.MaxLength}.");
+                    // null, not "", is how Exchange clears a value — an empty string sets an empty one.
+                    p[setting.Parameter] = value.Length == 0 ? null : value;
+                    break;
+
+                case DlValue.YesNo:
+                    p[setting.Parameter] = Choice(key, value, Yes, No);
+                    break;
+
+                case DlValue.SenderPolicy:
+                    // Exchange stores the double negative: requiring authentication is what blocks outsiders.
+                    p[setting.Parameter] = Choice(key, value, Blocked, Allowed);
+                    break;
+
+                case DlValue.DeliveryReports:
+                    // One row, two parameters, always written together. Microsoft documents both-on and
+                    // both-off as leaving messages to the group without a return path.
+                    var toSender = Choice(key, value, ReportsToSender, ReportsToOwner);
+                    p["ReportToOriginatorEnabled"] = toSender;
+                    p["ReportToManagerEnabled"] = !toSender;
+                    break;
+            }
+        }
+        if (p.Count == 0) throw new ExchangeException("There is nothing to save.");
+        return p;
+
+        static bool Choice(string key, string value, string whenTrue, string whenFalse) =>
+            value == whenTrue ? true
+            : value == whenFalse ? false
+            : throw new ExchangeException($"'{value}' isn't a value {key} accepts.");
+    }
+
+    public async Task SetDistributionGroupPropertiesAsync(
+        string identity, IReadOnlyDictionary<string, string> changes, CancellationToken cancellationToken = default)
+    {
+        // A Get- cmdlet given a blank identity returns EVERY group, and the write op reads before it writes.
+        if (string.IsNullOrWhiteSpace(identity)) throw new ArgumentException("A group is required.", nameof(identity));
+        if (changes is null || changes.Count == 0) throw new ArgumentException("Nothing to save.", nameof(changes));
+
+        var parameters = ToSetParameters(changes);
+        await RunOpAsync(new { op = "set-dl-properties", identity, changes = parameters }, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     // The tooltip names the object type: a mailbox and a distribution group send the operator to different
@@ -1348,6 +1560,8 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                     Guid = [string]$g.Guid
                                     RecipientTypeDetails = [string]$g.RecipientTypeDetails
                                     IsDirSynced = (__yn $g.IsDirSynced)
+                                    # Decides whether an alias change also rewrites the primary address.
+                                    EmailAddressPolicyEnabled = (__yn $g.EmailAddressPolicyEnabled)
                                     WhenCreated = $created
                                     WhenChanged = $changed
                                     Description = (@($g.Description | ForEach-Object { [string]$_ }) -join ' ')
@@ -1374,6 +1588,49 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                     SendModerationNotifications = [string]$g.SendModerationNotifications
                                     BypassModerationFromSendersOrMembers = ((__recipNames $g.BypassModerationFromSendersOrMembersWithDisplayNames $g.BypassModerationFromSendersOrMembers) -join '; ')
                                 }; detail = (__ownerDiag) }
+                            }
+                            'set-dl-properties' {
+                                $wantW = ([string]$r.identity).Trim()
+                                if ([string]::IsNullOrWhiteSpace($wantW)) { throw 'A group is required.' }
+                                # Read before writing. A non-existent -Identity makes an Exchange Get- cmdlet
+                                # return EVERY object, so this both proves the group exists and pins down which
+                                # one is about to be changed.
+                                $wg = Get-DistributionGroup -Identity $r.identity -ErrorAction Stop | Select-Object -First 1
+                                if ($null -eq $wg) { throw "No group was returned for '$wantW'." }
+                                if (-not (__isWanted $wg $wantW)) { throw "Exchange did not return the group '$wantW'." }
+                                # Exchange rejects every write against a synced object, and its own error names
+                                # neither the group nor the reason. Say it plainly instead.
+                                if ([string]$wg.IsDirSynced -eq 'True') {
+                                    throw "'$([string]$wg.DisplayName)' is synchronized from on-premises Active Directory. Exchange Online cannot change a synced group; edit it in Active Directory."
+                                }
+                                # The parameter names are chosen in C#, but this is the last point at which they
+                                # can be checked before reaching a cmdlet that changes far more than this app
+                                # offers. Anything outside the list is a defect, so it stops here.
+                                $wAllowed = @(
+                                    'Alias', 'Description', 'MailTip', 'RoomList', 'HiddenFromAddressListsEnabled',
+                                    'MemberJoinRestriction', 'MemberDepartRestriction', 'RequireSenderAuthenticationEnabled',
+                                    'BccBlocked', 'ReportToOriginatorEnabled', 'ReportToManagerEnabled',
+                                    'SendOofMessageToOriginatorEnabled', 'ModerationEnabled', 'SendModerationNotifications'
+                                )
+                                $wsp = @{}
+                                foreach ($wp in $r.changes.PSObject.Properties) {
+                                    if ($wAllowed -notcontains $wp.Name) {
+                                        throw "'$($wp.Name)' is not a distribution group setting this app may change."
+                                    }
+                                    $wsp[$wp.Name] = $wp.Value
+                                }
+                                if ($wsp.Count -eq 0) { throw 'No changes were supplied.' }
+                                # Address the write by GUID, not by the identity that was searched for: changing
+                                # the alias can rewrite the primary address, and the value used to find the group
+                                # may no longer name it a moment later.
+                                $wsp['Identity'] = ([string]$wg.Guid)
+                                # The owner of a group is usually a role group, so no individual passes Exchange's
+                                # "manager of the group" check and every edit would fail for a reason unrelated to
+                                # the edit.
+                                $wsp['BypassSecurityGroupManagerCheck'] = $true
+                                $wsp['ErrorAction'] = 'Stop'
+                                Set-DistributionGroup @wsp
+                                __emit @{ ok = $true }
                             }
                             'list-dl-members' {
                                 # -ResultSize Unlimited: the default page is 1,000 and truncates silently, which

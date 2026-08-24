@@ -12,6 +12,9 @@
        against a stubbed Get-Recipient.
     3. Unit-tests __newDgParams, the New-DistributionGroup splat. Every value it decides is create-time
        only, so a mistake there cannot be corrected on the group afterwards.
+    4. Checks the distribution group WRITE path: that the C# translation and the host allow-list name the
+       same parameters, that every editable row has a write mapping, and that the op refuses a synced
+       group, a mismatched identity and an unlisted parameter.
 
   Run it after editing HostScript.
 
@@ -387,6 +390,146 @@ Check 'security: MemberDepartRestriction pinned Closed' 'Closed' $np['MemberDepa
 $np = __newDgParams (NewR @{ type = 'Distribution' })
 Check 'distribution: join restriction left alone'   $false $np.ContainsKey('MemberJoinRestriction')
 Check 'distribution: depart restriction left alone' $false $np.ContainsKey('MemberDepartRestriction')
+
+# --- 5. the distribution group write path ------------------------------------------------------------
+# Set-DistributionGroup is the only cmdlet in this host script that changes a group, and every guard around
+# it (identity verification, the synced refusal, the parameter allow-list) is the difference between a
+# refused edit and one applied to the wrong object.
+$csText = $src -join "`n"
+
+Write-Host "`n== the C# translation and the host allow-list agree ==" -ForegroundColor Cyan
+# The parameter names are decided in C# and permitted in PowerShell. If the two lists drift, either a save
+# fails for a reason unrelated to the edit, or the host permits something nothing produces.
+$csParams = @()
+$csParams += [regex]::Matches($csText, 'new\("([A-Za-z]+)", DlValue') | ForEach-Object { $_.Groups[1].Value }
+$csParams += [regex]::Matches($csText, 'p\["([A-Za-z]+)"\] =') | ForEach-Object { $_.Groups[1].Value }
+$csParams = @($csParams | Select-Object -Unique | Sort-Object)
+Check 'the C# translation produces parameters' $true ($csParams.Count -ge 13)
+
+$alStart = ($all | Select-String -Pattern '^\s*\$wAllowed = @\($' | Select-Object -First 1).LineNumber
+if (-not $alStart) { throw 'Could not locate the host allow-list.' }
+$alEnd = $null
+for ($i = $alStart; $i -lt $all.Count; $i++) { if ($all[$i] -match '^\s*\)\s*$') { $alEnd = $i; break } }
+if (-not $alEnd) { throw 'Could not locate the end of the host allow-list.' }
+$allowText = ($all[$alStart..($alEnd - 1)]) -join "`n"
+$hostAllowed = @([regex]::Matches($allowText, "'([A-Za-z]+)'") | ForEach-Object { $_.Groups[1].Value } | Sort-Object)
+Check 'the host allow-list was read' $true ($hostAllowed.Count -ge 13)
+foreach ($cp in $csParams) { Check "host permits $cp" $true ($hostAllowed -contains $cp) }
+foreach ($hp in $hostAllowed) { Check "$hp is actually produced" $true ($csParams -contains $hp) }
+
+Write-Host "`n== every editable row has a write mapping ==" -ForegroundColor Cyan
+# An editable row with no entry in the translation table throws on save. A row that is editable and MISSING
+# from the table would otherwise be the worst outcome available: a save that reports success and changes
+# nothing. Rows blocked for a permanent reason are view-only by design and need no mapping.
+$dlKeys = @([regex]::Matches($csText, '\["([a-zA-Z]+)"\] = new\("') | ForEach-Object { $_.Groups[1].Value })
+Check 'the translation table was read' $true ($dlKeys.Count -ge 13)
+$permanentTips = @('AddressBlockedTip', 'SizeBlockedTip', 'RecipientPendingTip')
+$checkedRows = 0
+foreach ($m in [regex]::Matches($csText, 'E\("([a-zA-Z]+)",')) {
+    $rowKey = $m.Groups[1].Value
+    $slice = $csText.Substring($m.Index, [Math]::Min(500, $csText.Length - $m.Index))
+    # Stop at the next row, so one row's reason is never attributed to the row above it.
+    $nextRow = [regex]::Match($slice.Substring(1), '\n\s+[EP]\("')
+    if ($nextRow.Success) { $slice = $slice.Substring(0, $nextRow.Index + 1) }
+    $forever = $false
+    foreach ($tip in $permanentTips) { if ($slice -match $tip) { $forever = $true } }
+    if ($forever) { continue }
+    $checkedRows++
+    Check "editable row $rowKey has a write mapping" $true ($dlKeys -contains $rowKey)
+}
+Check 'editable rows were found to check' $true ($checkedRows -ge 10)
+
+Write-Host "`n== set-dl-properties: the guards around the write ==" -ForegroundColor Cyan
+# Extract the op body and run it against stubs. Everything it protects against is unrecoverable or wrong:
+# writing to a group Exchange returned instead of the one asked for, writing to a synced group, or handing
+# Set-DistributionGroup a parameter this app never meant to expose.
+$sdStart = ($all | Select-String -Pattern "^\s*'set-dl-properties' \{\s*$" | Select-Object -First 1).LineNumber
+if (-not $sdStart) { throw 'Could not locate the set-dl-properties op.' }
+$depth = 0; $sdEnd = $null
+for ($i = $sdStart - 1; $i -lt $all.Count; $i++) {
+    $depth += ([regex]::Matches($all[$i], '\{')).Count
+    $depth -= ([regex]::Matches($all[$i], '\}')).Count
+    if ($depth -le 0) { $sdEnd = $i; break }
+}
+if (-not $sdEnd) { throw 'Could not locate the end of the set-dl-properties op.' }
+$sdBody = ($all[$sdStart..($sdEnd - 1)]) -join "`n"
+if ($sdBody -notmatch 'Set-DistributionGroup') { throw 'The extracted op does not contain the write.' }
+if ($sdBody -match '__emit @\{ ok = \$false') { throw 'The extracted op swallows its own errors.' }
+
+$script:setCalls = @()
+$script:emitted = @()
+function __emit($obj) { $script:emitted += $obj }
+function Set-DistributionGroup {
+    [CmdletBinding()]
+    param(
+        $Identity, $Alias, $Description, $MailTip, [switch]$RoomList, $HiddenFromAddressListsEnabled,
+        $MemberJoinRestriction, $MemberDepartRestriction, $RequireSenderAuthenticationEnabled,
+        $BccBlocked, $ReportToOriginatorEnabled, $ReportToManagerEnabled,
+        $SendOofMessageToOriginatorEnabled, $ModerationEnabled, $SendModerationNotifications,
+        [switch]$BypassSecurityGroupManagerCheck
+    )
+    $script:setCalls += , $PSBoundParameters
+}
+$script:theGroup = $null
+function Get-DistributionGroup {
+    [CmdletBinding()]
+    param([string]$Identity)
+    return $script:theGroup
+}
+function NewGroup([bool]$synced) {
+    [pscustomobject]@{
+        DisplayName = 'All Staff'; Name = 'All Staff'; Alias = 'allstaff'
+        PrimarySmtpAddress = 'allstaff@contoso.com'
+        Guid = '77777777-7777-7777-7777-777777777777'
+        ExternalDirectoryObjectId = '66666666-6666-6666-6666-666666666666'
+        Identity = 'contoso.onmicrosoft.com/Groups/All Staff'
+        IsDirSynced = $(if ($synced) { 'True' } else { 'False' })
+    }
+}
+# Runs the op body and returns the error message, or $null when it succeeded.
+function RunSet($identity, $changes) {
+    $script:setCalls = @(); $script:emitted = @()
+    $r = [pscustomobject]@{ identity = $identity; changes = $changes }
+    try { Invoke-Expression $sdBody; return $null } catch { return $_.Exception.Message }
+}
+
+$script:theGroup = NewGroup $false
+$err = RunSet 'allstaff@contoso.com' ([pscustomobject]@{ Alias = 'staff'; BccBlocked = $true })
+Check 'a clean edit succeeds'        $null $err
+Check 'and calls the cmdlet once'    1     $script:setCalls.Count
+Check 'and emits success'            $true ($script:emitted.Count -eq 1 -and $script:emitted[0].ok -eq $true)
+$sent = $script:setCalls[0]
+Check 'addressed by the Exchange GUID' '77777777-7777-7777-7777-777777777777' $sent['Identity']
+Check 'the manager check is bypassed'  $true ([bool]$sent['BypassSecurityGroupManagerCheck'])
+Check 'the supplied values are passed' 'staff' $sent['Alias']
+Check 'booleans survive the trip'      $true  $sent['BccBlocked']
+
+# A synced group: Exchange rejects the write anyway, but names neither the group nor the reason.
+$script:theGroup = NewGroup $true
+$err = RunSet 'allstaff@contoso.com' ([pscustomobject]@{ Alias = 'staff' })
+Check 'a synced group is refused'          $true ($err -like '*synchronized from on-premises*')
+Check 'and the refusal names the group'    $true ($err -like '*All Staff*')
+Check 'and nothing is written'             0     $script:setCalls.Count
+
+# The returns-everything trap, on the write side: -First 1 on a wrong answer would edit a stranger.
+$script:theGroup = NewGroup $false
+$err = RunSet 'someone-else@contoso.com' ([pscustomobject]@{ Alias = 'staff' })
+Check 'a different group is refused'  $true ($err -like '*did not return the group*')
+Check 'and nothing is written'        0     $script:setCalls.Count
+
+# The allow-list is the last point at which a parameter can be stopped.
+$script:theGroup = NewGroup $false
+$err = RunSet 'allstaff@contoso.com' ([pscustomobject]@{ PrimarySmtpAddress = 'hijack@contoso.com' })
+Check 'an unlisted parameter is refused' $true ($err -like '*not a distribution group setting this app may change*')
+Check 'and nothing is written'           0    $script:setCalls.Count
+
+$err = RunSet '' ([pscustomobject]@{ Alias = 'staff' })
+Check 'a blank identity is refused' $true ($err -like '*group is required*')
+Check 'and nothing is written'      0    $script:setCalls.Count
+
+$err = RunSet 'allstaff@contoso.com' ([pscustomobject]@{})
+Check 'an empty change set is refused' $true ($err -like '*No changes were supplied*')
+Check 'and nothing is written'         0    $script:setCalls.Count
 
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

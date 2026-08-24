@@ -13,6 +13,16 @@ public enum CloudPropertyEditability
     SystemReadOnly,
 }
 
+/// <summary>Which control edits a property, for the rows that can be edited at all.</summary>
+public enum CloudPropertyEditor
+{
+    /// <summary>Free text.</summary>
+    Text,
+    /// <summary>One of <see cref="CloudProperty.Choices"/>. Used for every yes/no and enum setting: typing
+    /// "Yes" into a text box is a spelling test, and a wrong answer is either a silent no-op or a service error.</summary>
+    Choice,
+}
+
 /// <summary>
 /// One property row in a cloud object's details. <see cref="Value"/> is editable (two-way) for
 /// <see cref="Editability"/> == <see cref="CloudPropertyEditability.Editable"/>; otherwise the row is shown
@@ -25,19 +35,36 @@ public sealed partial class CloudProperty : ObservableObject
     public string OriginalValue { get; }
     public CloudPropertyEditability Editability { get; }
     public string? Tooltip { get; }
+    public CloudPropertyEditor Editor { get; }
+
+    /// <summary>The allowed values for <see cref="CloudPropertyEditor.Choice"/>; null otherwise.</summary>
+    public IReadOnlyList<string>? Choices { get; }
 
     [ObservableProperty] private string _value;
 
     public bool IsEditable => Editability == CloudPropertyEditability.Editable;
     public bool IsDirty => IsEditable && !string.Equals(Value, OriginalValue, StringComparison.Ordinal);
 
-    public CloudProperty(string key, string label, string value, CloudPropertyEditability editability, string? tooltip)
+    /// <summary>
+    /// True when this row draws a drop-down. A read-only row never does, whatever its editor: the grayed text
+    /// box is how every uneditable row in this pane already reads, and a disabled drop-down would suggest the
+    /// value is merely unavailable right now rather than not this app's to change.
+    /// </summary>
+    public bool UsesChoiceEditor => IsEditable && Editor == CloudPropertyEditor.Choice && Choices is { Count: > 0 };
+
+    /// <summary>True when this row draws a text box — the default, and the fallback for every read-only row.</summary>
+    public bool UsesTextEditor => !UsesChoiceEditor;
+
+    public CloudProperty(string key, string label, string value, CloudPropertyEditability editability, string? tooltip,
+                         CloudPropertyEditor editor = CloudPropertyEditor.Text, IReadOnlyList<string>? choices = null)
     {
         Key = key;
         Label = label;
         OriginalValue = value;
         Editability = editability;
         Tooltip = tooltip;
+        Editor = editor;
+        Choices = choices;
         _value = value;
     }
 }

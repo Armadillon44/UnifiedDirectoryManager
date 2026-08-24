@@ -26,6 +26,10 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     /// <summary>The selected mailbox's ExchangeGuid, captured from the detail read; null for other kinds.</summary>
     private string? _mailboxExchangeGuid;
 
+    /// <summary>The group's Exchange GUID, captured on load: the identifier a write addresses, because
+    /// changing the alias can rewrite the address the row was found by.</summary>
+    private string? _exchangeGroupGuid;
+
     [ObservableProperty] private bool _hasTarget;
     // User action-bar visibility (cloud user writes).
     [ObservableProperty] private bool _showEnable;
@@ -120,6 +124,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         IsUser = IsGroup = IsDevice = IsMailbox = IsExchangeGroup = false;
         HasUsage = false;
         _mailboxExchangeGuid = null;
+        _exchangeGroupGuid = null;
         ShowEnable = ShowDisable = false;
         CanAddMembers = false;
         CanManageLicenses = false;
@@ -171,14 +176,57 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         var dirty = Sections.SelectMany(s => s.Properties).Where(p => p.IsDirty).ToList();
         if (dirty.Count == 0) return;
 
-        var changes = dirty.ToDictionary(p => p.Key, p => string.IsNullOrWhiteSpace(p.Value) ? (string?)null : p.Value.Trim());
-        var lines = dirty.Select(p => $"{p.Label}: {(string.IsNullOrWhiteSpace(p.Value) ? "(clear)" : p.Value)}");
-        if (!_dialogs.Confirm("Save cloud changes", $"Apply {changes.Count} change(s) to “{row.DisplayName}”?", lines))
+        var lines = dirty.Select(p => $"{p.Label}: {(string.IsNullOrWhiteSpace(p.Value) ? "(clear)" : p.Value)}").ToList();
+        // A distribution list and an Entra security group are both CloudObjectKind.Group; only the source says
+        // which service owns the write, and Graph answers a write to a distribution list with 400.
+        var toExchange = row.Kind == CloudObjectKind.Group && row.Source == CloudObjectSource.Exchange;
+        if (toExchange && dirty.Any(p => p.Key == "alias") && AliasChangeMovesAddress())
+            lines.Add("Note: an email address policy applies to this group, so changing the alias also rewrites "
+                      + "its primary email address. The current address stops working.");
+        // The one edit on this pane with no way back through this app.
+        if (toExchange && dirty.Any(p => p.Key == "roomList" && p.Value == "Yes"))
+            lines.Add("Note: marking a group as a room list cannot be undone here. Exchange Online has no "
+                      + "supported way to turn a room list back into an ordinary distribution list.");
+        if (!_dialogs.Confirm("Save cloud changes", $"Apply {dirty.Count} change(s) to “{row.DisplayName}”?", lines))
             return;
 
         IsBusy = true;
         try
         {
+            if (toExchange)
+            {
+                // Address the write by the GUID captured on load, not by the value the row was found with: an
+                // alias change can rewrite the primary address, and the reload afterwards has to still find it.
+                var identity = _exchangeGroupGuid ?? row.Get("primarySmtpAddress");
+                if (string.IsNullOrWhiteSpace(identity))
+                {
+                    Status = "This group has no identifier to save against."; IsBusy = false; return;
+                }
+                await _exchange.SetDistributionGroupPropertiesAsync(identity, dirty.ToDictionary(p => p.Key, p => p.Value));
+                var saved = $"Saved {dirty.Count} change(s).";
+                IsBusy = false;
+                if (await LoadExchangeDetailAsync(row, mailbox: false, identityOverride: identity))
+                {
+                    SyncRowFromSections(row);
+                    Status = saved;
+                }
+                else if (ReferenceEquals(_currentTarget, row))
+                {
+                    // The write landed; only the re-read failed. Leaving the edited rows on screen would keep
+                    // the Save bar armed over changes that are already applied, and invite a second send of the
+                    // same edit. Fall back to the list-row summary, which is read-only and still true, and keep
+                    // both facts in the status rather than letting the failure erase the success.
+                    var why = Status;
+                    UnwireSections();
+                    Sections.Clear();
+                    Sections.Add(BuildSummary(row));
+                    WireSections();
+                    Status = saved + " " + why;
+                }
+                return;
+            }
+
+            var changes = dirty.ToDictionary(p => p.Key, p => string.IsNullOrWhiteSpace(p.Value) ? (string?)null : p.Value.Trim());
             if (row.Kind == CloudObjectKind.User) await _graph.UpdateUserAsync(row.Id, changes);
             else if (row.Kind == CloudObjectKind.Group) await _graph.UpdateGroupAsync(row.Id, changes);
             else { Status = "This object type can't be edited."; IsBusy = false; return; }
@@ -193,6 +241,14 @@ public partial class CloudObjectDetailViewModel : ObservableObject
             IsBusy = false;
         }
     }
+
+    /// <summary>
+    /// True when an email address policy applies to the group, which is what makes changing the alias rewrite
+    /// the primary address. Read from the row the properties projection already shows for exactly this reason.
+    /// </summary>
+    private bool AliasChangeMovesAddress() =>
+        Sections.SelectMany(s => s.Properties).FirstOrDefault(p => p.Key == "emailAddressPolicy")?.Value
+            .StartsWith("Applied", StringComparison.Ordinal) == true;
 
     [RelayCommand]
     private void Revert()
@@ -345,18 +401,22 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     /// method because everything around the call is identical — identity resolution, the staleness guard, and
     /// leaving the row summary on screen when the read fails. Only the service call differs.
     /// </summary>
-    private async Task LoadExchangeDetailAsync(CloudObjectRow row, bool mailbox)
+    /// <param name="identityOverride">Addresses this read directly instead of resolving it from the row. Used
+    /// after a save, where changing the alias may have rewritten the address the row still carries.</param>
+    /// <returns>False only when the read itself failed. A read superseded by another selection reports true:
+    /// the pane has moved on, and its caller must not act on a target that is no longer on screen.</returns>
+    private async Task<bool> LoadExchangeDetailAsync(CloudObjectRow row, bool mailbox, string? identityOverride = null)
     {
         // A group is addressed by its SMTP; a mailbox may be reached by UPN too.
-        var identity = mailbox
+        var identity = identityOverride ?? (mailbox
             ? MailboxIdentityFor(row) ?? row.Get("primarySmtpAddress")
-            : row.Get("primarySmtpAddress");
+            : row.Get("primarySmtpAddress"));
         if (string.IsNullOrWhiteSpace(identity))
         {
             Status = mailbox
                 ? "This mailbox has no address, so Exchange can't be asked about it."
                 : "This group has no email address, so Exchange can't be asked about it.";
-            return;
+            return false;
         }
 
         var token = _detailToken;
@@ -366,7 +426,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
             var sections = mailbox
                 ? await _exchange.GetMailboxDetailAsync(identity)
                 : await _exchange.GetDistributionGroupDetailAsync(identity);
-            if (token != _detailToken || !ReferenceEquals(_currentTarget, row)) return; // superseded
+            if (token != _detailToken || !ReferenceEquals(_currentTarget, row)) return true; // superseded
             UnwireSections();
             Sections.Clear();
             foreach (var s in sections) Sections.Add(s);
@@ -374,11 +434,12 @@ public partial class CloudObjectDetailViewModel : ObservableObject
             HasUsage = false; // the rebuilt section list no longer holds the usage rows
             // Keep the ExchangeGuid: it is how the usage read addresses the mailbox exactly, and the only
             // identifier that read echoes back to be checked against.
-            if (mailbox)
-            {
-                var guid = sections.SelectMany(s => s.Properties).FirstOrDefault(p => p.Key == "exchangeGuid")?.Value;
-                _mailboxExchangeGuid = string.IsNullOrWhiteSpace(guid) || guid == "—" ? null : guid;
-            }
+            var guid = sections.SelectMany(s => s.Properties).FirstOrDefault(p => p.Key == "exchangeGuid")?.Value;
+            guid = string.IsNullOrWhiteSpace(guid) || guid == "—" ? null : guid;
+            // For a mailbox this addresses the usage read exactly. For a group it addresses the WRITE, which
+            // matters because changing the alias can rewrite the primary address the row was found by.
+            if (mailbox) _mailboxExchangeGuid = guid; else _exchangeGroupGuid = guid;
+            return true;
         }
         catch (Exception ex)
         {
@@ -386,8 +447,35 @@ public partial class CloudObjectDetailViewModel : ObservableObject
             // The summary built from the list row stays on screen, so the pane still shows something true.
             if (token == _detailToken)
                 Status = (mailbox ? "Could not load mailbox details: " : "Could not load group details: ") + ex.Message;
+            return false;
         }
         finally { if (token == _detailToken) IsBusy = false; }
+    }
+
+    /// <summary>
+    /// Copies the values a save can have changed out of the freshly-read sections and back into the list row.
+    /// The row is what every later identity resolution reads — the next detail load, Revert, and the instant
+    /// summary all address the group by <c>primarySmtpAddress</c> — and an alias change can move that address.
+    /// Without this the row keeps pointing at an address that no longer names the group.
+    /// </summary>
+    private void SyncRowFromSections(CloudObjectRow row)
+    {
+        var byKey = Sections.SelectMany(s => s.Properties)
+            .ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
+        void Copy(string rowKey, string propertyKey)
+        {
+            // The pane writes an em dash where there is no value. It is a placeholder, and a stale address in
+            // the row is less wrong than a placeholder that resolves to nothing.
+            if (byKey.TryGetValue(propertyKey, out var v) && !string.IsNullOrWhiteSpace(v) && v != "—")
+                row.Values[rowKey] = v;
+        }
+        Copy("primarySmtpAddress", "primaryAddress");
+        Copy("alias", "alias");
+        Copy("groupType", "groupType");
+        Copy("hiddenFromAddressLists", "hiddenFromAddressLists");
+        Copy("externalSenders", "externalSenders");
+        Copy("joinRestriction", "joinRestriction");
+        row.NotifyValuesChanged(); // the grid columns bind through the indexer
     }
 
     /// <summary>
