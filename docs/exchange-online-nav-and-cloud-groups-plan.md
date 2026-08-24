@@ -1,6 +1,6 @@
 # Exchange Online navigation + cloud group creation
 
-Status: **in progress — commits 1-4 done and live-tested; commits 5-7 specced. All decisions locked.** Branch `release/2.3.0` (new
+Status: **in progress — commits 1-5 done (1-4 live-tested); commits 6-7 specced. All decisions locked.** Branch `release/2.3.0` (new
 features → minor bump), branched from `master` at v2.2.0. See the sequencing section at the bottom for what
 has landed; update it as commits land rather than leaving this line to go stale.
 
@@ -337,6 +337,14 @@ For a pure-cloud tenant use `ArchiveGuid -ne [guid]::Empty`.
 `Get-DistributionGroup` returns `ExternalDirectoryObjectId`, which is the bridge. Carry **both** on the Exchange row
 model, otherwise double-clicking an Exchange DL can never open its Entra detail.
 
+**G10 · Display-name switches do not cover every recipient field.** `Get-DistributionGroup` has
+`-Include*WithDisplayNames` switches for `ManagedBy`, `ModeratedBy`, `GrantSendOnBehalfTo`,
+`AcceptMessagesOnlyFromSendersOrMembers` and `BypassModerationFromSendersOrMembers` (all in parameter set
+**(All)**, so they bind with `-Identity`). Without the switch the field comes back as **bare GUIDs** and the
+parallel `*WithDisplayNames` property is empty. There is **no** switch for
+`RejectMessagesFromSendersOrMembers` — that one always needs local resolution. Always keep the raw property
+as a fallback: an unbindable switch or an empty variant must degrade to today's answer, not to nothing.
+
 **G9 · The `"Distribution"` / `"Mail-enabled security"` string test is duplicated in five places**
 (`HybridGroupPickerViewModel.cs:71`, `BulkUserCsvImporter.cs:216`, `ScenarioRunner.cs:302`, `CopyUserViewModel.cs:180`,
 `CopyToTemplateViewModel.cs:152`). Adding a sixth and seventh consumer is the moment to centralise it next to
@@ -369,10 +377,12 @@ model, otherwise double-clicking an Exchange DL can never open its Entra detail.
 5. ~~Commit 3: distribution group members, picker basket, synced-group blocking, Entra-side routing fix.~~ **Done** (`c6d7172`), live-tested.
 6. ~~Commit 4: mailbox information view.~~ **Done** (`97eee52`), plus `c4bcfeb` for the usage fix, flat section
    tabs and the header button. Live-tested. The refactor this plan feared was never needed.
-   **Commit 5 is next.**
-7. Commit 5: distribution-group properties view. Cheaper than planned — commit 4 proved the detail pane
-   takes an Exchange source without the refactor this plan budgeted for, so this is one host op plus a
-   section projection.
+7. ~~Commit 5: distribution-group properties view.~~ **Done** (`68b42e9`). Cheaper than planned, as expected:
+   one host op plus a section projection, no detail-pane refactor. `CloudObjectRow` gained a `Source` so a
+   distribution list and an Entra security group stop being indistinguishable, which is what keeps the
+   Graph-backed Members tab off a DL. Review before landing caught a double-stripped primary address on the
+   mailbox pane, five recipient fields resolved by hand that Exchange will resolve server-side (see G10), and
+   a stale lookup-degradation counter. **Commit 6a is next.**
 8. Commit 6a: the scalar group edits — alias, description, MailTip, hidden from address lists, room list,
    join/depart restriction, external senders, size limits, BCC, delivery reports.
 9. Commit 6b: the recipient-valued edits — owners, send on behalf, accept/reject lists, moderation.
