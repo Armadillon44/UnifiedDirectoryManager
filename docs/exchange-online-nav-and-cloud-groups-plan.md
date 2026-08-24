@@ -1,6 +1,6 @@
 # Exchange Online navigation + cloud group creation
 
-Status: **in progress — commits 1-6a done (1-4 live-tested); 6b and 7 specced. All decisions locked, with two D5 corrections below.** Branch `release/2.3.0` (new
+Status: **in progress — commits 1-6b done (1-5 live-tested); commit 7 specced. All decisions locked, with the D5 corrections in G11.** Branch `release/2.3.0` (new
 features → minor bump), branched from `master` at v2.2.0. See the sequencing section at the bottom for what
 has landed; update it as commits land rather than leaving this line to go stale.
 
@@ -362,6 +362,20 @@ documents setting both, or neither, as leaving messages to the group with no ret
 servers reject. They are presented as one choice and always written as a pair; a group already in an invalid
 combination is shown as it really is rather than silently normalised.
 
+**G13 · A recipient list needs THREE outcomes per entry, not two.** Resolving one costs a `Get-Recipient`,
+so it happens on demand rather than on open. Each entry comes back resolved, *not found*, or *not looked up*
+(the per-read budget ran out) — and those last two must not share a representation. An empty address alone
+cannot carry the difference, and reporting a long list as one full of deleted accounts sends an operator
+looking for a problem in their directory that is really this app's limit. A mail contact or mail user can
+also have **no primary SMTP**: fall back to `ExternalEmailAddress` then `Name`, which
+`Set-DistributionGroup` accepts — `list-dl-members` already relied on this.
+
+**G14 · The detail pane's tab strip selects a collapsed tab.** The strip is a `CompositeCollection` of the
+section tabs plus fixed `TabItem`s that are `Collapsed` for whatever they do not apply to. Left alone the
+`TabControl` selects the first REAL `TabItem`, and at first measure the sections have not arrived — so it
+lands on a collapsed one and never moves, rendering the pane blank. Refilling the sections does not help.
+Every rebuild has to name the tab it means. `app/build/test-tabselection.ps1` reproduces it off-screen.
+
 **G9 · The `"Distribution"` / `"Mail-enabled security"` string test is duplicated in five places**
 (`HybridGroupPickerViewModel.cs:71`, `BulkUserCsvImporter.cs:216`, `ScenarioRunner.cs:302`, `CopyUserViewModel.cs:180`,
 `CopyToTemplateViewModel.cs:152`). Adding a sixth and seventh consumer is the moment to centralise it next to
@@ -404,7 +418,10 @@ combination is shown as it really is rather than silently normalised.
    description, MailTip, hidden from address lists, room list (one way), join/depart restriction, external
    senders, BCC, delivery reports, auto-replies, moderation on/off and moderation notifications.
    **Two D5 items could not be delivered as written — see G11. Commit 6b is next.**
-9. Commit 6b: the recipient-valued edits — owners, send on behalf, accept/reject lists, moderation.
+9. ~~Commit 6b: the recipient-valued edits.~~ **Done** (`e63996b`), NOT yet live-tested. All six lists edit
+   through the seeded recipient picker. The read stays on the display-name switches; addresses are resolved
+   on demand only when an editor opens, because a display name cannot be written back (see G13). Also added
+   the "Members…" button under the group name, and fixed the blank properties pane (G14).
 10. Commit 7: mailbox actions in the Exchange section, by hosting the existing ExchangeTabViewModel (D7).
 11. README + Wiki: the raised RBAC bar, the new nav section, the group-type routing table.
 
