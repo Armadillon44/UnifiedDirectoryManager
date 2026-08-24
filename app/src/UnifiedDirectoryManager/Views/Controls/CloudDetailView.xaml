@@ -35,6 +35,18 @@
             <ComboBox ItemsSource="{Binding Choices}"
                       SelectedItem="{Binding Value, UpdateSourceTrigger=PropertyChanged}" />
         </DataTemplate>
+        <!-- A recipient list shows names and writes addresses, so there is nothing here to type. The command
+             lives on the view model, which the row's DataContext is not, so it comes through the proxy. -->
+        <DataTemplate x:Key="PropertyRecipientEditor">
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Content="Edit…" Padding="8,2" Margin="6,0,0,0"
+                        VerticalAlignment="Top"
+                        Command="{Binding Data.EditRecipientsCommand, Source={StaticResource VmProxy}}"
+                        CommandParameter="{Binding}" />
+                <TextBox Text="{Binding Value, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap"
+                         Background="White" Foreground="#222" />
+            </DockPanel>
+        </DataTemplate>
         <!-- One property row: label + value. Editable free-text props are white text boxes; editable yes/no
              and enum props are drop-downs, because typing the value would be a spelling test whose wrong
              answers are silent. On-prem-mastered and system props are grayed, read-only text.
@@ -89,6 +101,9 @@
                                 <DataTrigger Binding="{Binding UsesChoiceEditor}" Value="True">
                                     <Setter Property="ContentTemplate" Value="{StaticResource PropertyChoiceEditor}" />
                                 </DataTrigger>
+                                <DataTrigger Binding="{Binding UsesRecipientEditor}" Value="True">
+                                    <Setter Property="ContentTemplate" Value="{StaticResource PropertyRecipientEditor}" />
+                                </DataTrigger>
                             </Style.Triggers>
                         </Style>
                     </ContentControl.Style>
@@ -116,9 +131,19 @@
                             ToolTip="Reads mailbox size, item counts and last logon. This queries the mailbox itself rather than the directory, so it is slower than the rest of this pane and is not loaded automatically." />
                     <StackPanel>
                         <TextBlock Text="{Binding Title}" FontWeight="SemiBold" FontSize="14" Foreground="White" TextWrapping="Wrap" />
-                        <TextBlock Foreground="#DDD" FontSize="11" Margin="0,2,0,0">
-                            <Run Text="{Binding SourceLabel, Mode=OneWay}" /><Run Text=" " /><Run Text="{Binding KindLabel, Mode=OneWay}" />
-                        </TextBlock>
+                        <!-- Membership sits directly under the group's name. It was reachable only by
+                             double-clicking the row, which nothing advertised; at the far edge of the header
+                             it was still easy to miss. The editor itself is unchanged: one implementation, so
+                             the two ways in cannot drift. -->
+                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                            <TextBlock Foreground="#DDD" FontSize="11" VerticalAlignment="Center">
+                                <Run Text="{Binding SourceLabel, Mode=OneWay}" /><Run Text=" " /><Run Text="{Binding KindLabel, Mode=OneWay}" />
+                            </TextBlock>
+                            <Button Content="Members…" Margin="12,0,0,0" Padding="8,1" FontSize="11"
+                                    Command="{Binding ManageMembersCommand}"
+                                    Visibility="{Binding IsExchangeGroup, Converter={StaticResource BoolToVis}}"
+                                    ToolTip="Add or remove the members of this distribution group." />
+                        </StackPanel>
                     </StackPanel>
                 </DockPanel>
             </Border>
@@ -154,7 +179,7 @@
                  kind-specific tabs below are declared inline. Mixing works because WPF uses an item that is
                  already a TabItem as its own container and skips the item templates for it, so the templates
                  apply only to the CloudPropertySection items. -->
-            <TabControl Margin="4">
+            <TabControl Margin="4" SelectedIndex="{Binding SelectedSectionIndex, Mode=TwoWay}">
                 <TabControl.ItemTemplate>
                     <DataTemplate>
                         <TextBlock Text="{Binding Title}" />

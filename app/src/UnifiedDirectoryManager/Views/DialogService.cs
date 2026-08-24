@@ -93,9 +93,9 @@ public sealed class DialogService : IDialogService
         return window.ShowDialog() == true && vm.Commit() ? vm.Picked[0] : null;
     }
 
-    public IReadOnlyList<MailboxRecipient>? PickMailboxRecipients(string title)
+    public IReadOnlyList<MailboxRecipient>? PickMailboxRecipients(string title, IReadOnlyList<MailboxRecipient>? initial = null)
     {
-        var vm = new MailboxRecipientPickerViewModel(_exchange, multiSelect: true);
+        var vm = new MailboxRecipientPickerViewModel(_exchange, multiSelect: true, initial);
         var window = new MailboxRecipientPickerWindow { DataContext = vm, Title = title, Owner = Owner };
         return window.ShowDialog() == true && vm.Commit() ? vm.Picked : null;
     }

@@ -26,6 +26,13 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     /// <summary>The selected mailbox's ExchangeGuid, captured from the detail read; null for other kinds.</summary>
     private string? _mailboxExchangeGuid;
 
+    /// <summary>
+    /// The recipients each editable list currently holds, including edits not yet saved. The row itself keeps
+    /// only addresses; reopening the editor has to show the same people the operator last chose, not the ones
+    /// Exchange still has. Dies with the pane, because the rows do.
+    /// </summary>
+    private readonly Dictionary<CloudProperty, List<MailboxRecipient>> _pendingRecipients = new();
+
     /// <summary>The group's Exchange GUID, captured on load: the identifier a write addresses, because
     /// changing the alias can rewrite the address the row was found by.</summary>
     private string? _exchangeGroupGuid;
@@ -113,6 +120,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
 
         // Instant summary from the list row, replaced by the full grouped set once it loads.
         Sections.Add(BuildSummary(row));
+        SelectSection(0);
         _ = LoadDetailAsync(row);
     }
 
@@ -125,6 +133,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         HasUsage = false;
         _mailboxExchangeGuid = null;
         _exchangeGroupGuid = null;
+        _pendingRecipients.Clear();
         ShowEnable = ShowDisable = false;
         CanAddMembers = false;
         CanManageLicenses = false;
@@ -144,6 +153,25 @@ public partial class CloudObjectDetailViewModel : ObservableObject
 
     partial void OnHasChangesChanged(bool value) => SaveCommand.NotifyCanExecuteChanged();
     partial void OnIsBusyChanged(bool value) => SaveCommand.NotifyCanExecuteChanged();
+
+    /// <summary>
+    /// Which tab the strip shows. The strip mixes the section tabs with fixed TabItems (Licenses, Member Of,
+    /// Members) that are Collapsed for whatever they do not apply to. Left to itself the TabControl selects
+    /// the first REAL TabItem it can find, and at first measure the sections have not arrived, so it lands on
+    /// a collapsed fixed tab and stays there — which is why a distribution group's pane rendered blank until
+    /// a tab was clicked. Refilling the sections never moves it. Every rebuild names the tab it means.
+    /// </summary>
+    [ObservableProperty] private int _selectedSectionIndex = -1;
+
+    /// <summary>
+    /// Selects a tab, forced through -1 first. If the property already holds the target value the binding
+    /// raises nothing, and the strip stays on the nothing it was left with by the rebuild.
+    /// </summary>
+    private void SelectSection(int index)
+    {
+        SelectedSectionIndex = -1;
+        if (index >= 0 && index < Sections.Count) SelectedSectionIndex = index;
+    }
 
     private void WireSections()
     {
@@ -227,6 +255,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
                     Sections.Clear();
                     Sections.Add(BuildSummary(row));
                     WireSections();
+                    SelectSection(0);
                     Status = saved + " " + why;
                 }
                 return;
@@ -246,6 +275,104 @@ public partial class CloudObjectDetailViewModel : ObservableObject
             Status = "Save failed: " + ex.Message;
             IsBusy = false;
         }
+    }
+
+    /// <summary>
+    /// Edits one recipient-valued setting through the picker. The addresses are resolved here rather than when
+    /// the pane opens: it costs a directory lookup per entry, and they are only needed to seed the picker.
+    /// </summary>
+    [RelayCommand]
+    private async Task EditRecipientsAsync(CloudProperty? property)
+    {
+        var row = _currentTarget;
+        if (row is null || property is null || !property.UsesRecipientEditor) return;
+
+        var identity = _exchangeGroupGuid ?? row.Get("primarySmtpAddress");
+        if (string.IsNullOrWhiteSpace(identity))
+        {
+            Status = "This group has no identifier, so its recipient lists can't be read.";
+            return;
+        }
+
+        // Reopening shows the operator what they last chose. Re-reading Exchange would replace a pending edit
+        // with the server's list, and they would have to make it again without being told it had gone.
+        var seed = _pendingRecipients.TryGetValue(property, out var pending) ? pending : null;
+        if (seed is null)
+        {
+            var token = _detailToken;
+            DlRecipientList resolved;
+            IsBusy = true;
+            try { resolved = await _exchange.GetDistributionGroupRecipientsAsync(identity, property.Key); }
+            catch (Exception ex)
+            {
+                AppLog.Instance.Warn($"Could not read '{property.Key}' for '{identity}': {ex.Message}");
+                if (token == _detailToken) Status = $"Could not read the current {property.Label}: {ex.Message}";
+                return;
+            }
+            finally { if (token == _detailToken) IsBusy = false; }
+
+            // The resolve is a real round trip on a serialised channel. If the operator has moved on, this
+            // property no longer belongs to anything on screen: editing it would write into an orphan.
+            if (token != _detailToken || !ReferenceEquals(_currentTarget, row)) return;
+
+            // A list longer than one read resolves is not a list full of deleted accounts, and saying so would
+            // send the operator looking for a problem that is this app's limit rather than their directory's.
+            if (resolved.NotLookedUp > 0)
+            {
+                _dialogs.Alert(property.Label,
+                    $"This list has more entries than can be resolved in one read ({resolved.NotLookedUp} of "
+                    + $"{resolved.Entries.Count} were not looked up), so it can't be edited here. Change it in "
+                    + "the Exchange admin center.");
+                return;
+            }
+
+            // An entry Exchange would not name cannot be written back. Saving the list without it would remove
+            // somebody the operator never saw, so the edit is refused rather than offered with a hole in it.
+            if (resolved.Unresolved.Count > 0)
+            {
+                _dialogs.Alert(property.Label,
+                    $"Exchange could not resolve {resolved.Unresolved.Count} of the {resolved.Entries.Count} "
+                    + $"entries in this list ({string.Join(", ", resolved.Unresolved)}). Editing it here would "
+                    + "drop them, so it isn't offered — most often they are accounts that no longer exist.");
+                return;
+            }
+
+            // Taken once, and only from the server: this is what the save diffs against.
+            property.SetRecipientBaseline(resolved.Entries.Select(r => r.PrimarySmtpAddress).ToList());
+            seed = resolved.Entries.ToList();
+            _pendingRecipients[property] = seed;
+        }
+
+        var picked = _dialogs.PickMailboxRecipients($"{property.Label} for “{row.DisplayName}”", seed);
+        if (picked is null) return; // cancelled: whatever was pending stays pending
+
+        _pendingRecipients[property] = picked.ToList();
+        property.SetRecipients(
+            picked.Select(r => r.PrimarySmtpAddress).ToList(),
+            string.Join("; ", picked.Select(r => r.DisplayName)));
+    }
+
+    /// <summary>
+    /// Opens the distribution group's membership editor — the same dialog activating the row opens, not a
+    /// second implementation of it. Membership is not shown in this pane because Microsoft Graph answers a
+    /// distribution list's membership with 403, so it is read through Exchange in its own window.
+    /// </summary>
+    [RelayCommand]
+    private void ManageMembers()
+    {
+        var row = _currentTarget;
+        if (row is null || !IsExchangeGroup) return;
+
+        // The GUID captured on load is exact; the address is the fallback before the detail has arrived.
+        var identity = _exchangeGroupGuid ?? row.Get("primarySmtpAddress");
+        if (string.IsNullOrWhiteSpace(identity))
+        {
+            Status = "This group has no identifier, so its members can't be read.";
+            return;
+        }
+        // The editor refuses every write for a synced group and says why, so it is told up front.
+        var synced = string.Equals(row.Get("dirSynced"), "Synced", StringComparison.OrdinalIgnoreCase);
+        _dialogs.ShowDistributionGroupMembers(identity, row.DisplayName, synced);
     }
 
     [RelayCommand]
@@ -344,6 +471,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
                 Sections.Clear();
                 foreach (var s in sections) Sections.Add(s);
                 WireSections();
+                SelectSection(0);
             }
 
             if (IsUser)
@@ -429,6 +557,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
             Sections.Clear();
             foreach (var s in sections) Sections.Add(s);
             WireSections();
+            SelectSection(0);
             HasUsage = false; // the rebuilt section list no longer holds the usage rows
             // Keep the ExchangeGuid: it is how the usage read addresses the mailbox exactly, and the only
             // identifier that read echoes back to be checked against.
@@ -500,6 +629,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
             UnwireSections();
             Sections.Add(usage);
             WireSections();
+            SelectSection(Sections.Count - 1);
             HasUsage = true;
         }
         catch (Exception ex)

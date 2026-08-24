@@ -318,6 +318,48 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         return (primary is null ? null : primary[5..], secondary, other);
     }
 
+    public async Task<DlRecipientList> GetDistributionGroupRecipientsAsync(
+        string identity, string rowKey, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(identity)) throw new ArgumentException("A group is required.", nameof(identity));
+        if (!DlRecipientFields.TryGetValue(rowKey, out var field))
+            throw new ExchangeException($"'{rowKey}' is not a recipient list this app reads.");
+
+        var data = await RunOpAsync(new { op = "list-dl-recipients", identity, field }, cancellationToken, ListTimeout)
+            .ConfigureAwait(false);
+
+        var entries = new List<MailboxRecipient>();
+        var unresolved = new List<string>();
+        var notLookedUp = 0;
+        void Take(JsonElement e)
+        {
+            var (recipient, reason) = MapResolvedRecipient(e);
+            entries.Add(recipient);
+            // Being over the budget is a different answer from not existing, and the two must not be
+            // reported as the same thing: one is this app's limit, the other is a deleted account.
+            if (reason == "skipped") notLookedUp++;
+            else if (string.IsNullOrWhiteSpace(recipient.PrimarySmtpAddress)) unresolved.Add(recipient.DisplayName);
+        }
+        if (data is { ValueKind: JsonValueKind.Array } arr)
+            foreach (var e in arr.EnumerateArray()) Take(e);
+        else if (data is { ValueKind: JsonValueKind.Object } one) // a single result serialises as an object
+            Take(one);
+        return new DlRecipientList(entries, unresolved, notLookedUp);
+    }
+
+    private static (MailboxRecipient Recipient, string Reason) MapResolvedRecipient(JsonElement e)
+    {
+        string S(string p) => e.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
+        var smtp = S("Smtp");
+        return (new MailboxRecipient
+        {
+            DisplayName = S("Name"),
+            PrimarySmtpAddress = smtp,
+            Identity = smtp,
+            RecipientType = S("Type"),
+        }, S("Reason"));
+    }
+
     public async Task<IReadOnlyList<CloudPropertySection>> GetDistributionGroupDetailAsync(string identity, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(identity)) throw new ArgumentException("A group is required.", nameof(identity));
@@ -338,11 +380,15 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         // One editable row. The blocked argument gives the reason this particular setting is not offered, if
         // any; a synced group overrides every such reason, because Exchange rejects all writes against one.
         CloudProperty E(string key, string label, string value, string? blocked = null, string[]? choices = null,
-                        string? editableTip = null)
+                        string? editableTip = null, bool recipients = false)
         {
             var help = CloudPropertyHelp.For(key);
             if (synced) return new(key, label, Show(value), CloudPropertyEditability.OnPremMastered, SyncedRowTip, help: help);
             if (blocked is not null) return new(key, label, Show(value), CloudPropertyEditability.SystemReadOnly, blocked, help: help);
+            // A recipient list shows names and writes addresses, so it is never typed and never validated here.
+            if (recipients)
+                return new(key, label, Show(value), CloudPropertyEditability.Editable, editableTip,
+                           CloudPropertyEditor.Recipients, help: help);
             // A drop-down whose current value is not one of its own choices means Exchange answered with
             // something this pane does not understand, or did not answer at all. Editing from there would
             // write over a value that was never read.
@@ -435,18 +481,18 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                 // Shown because it cannot be undone: an operator needs to know it is already on.
                 P("hiddenGroupMembership", "Membership hidden (permanent)", S("HiddenGroupMembership"))),
             Section("Ownership and joining",
-                E("managedBy", "Owners", S("ManagedBy"), blocked: RecipientPendingTip),
+                E("managedBy", "Owners", S("ManagedBy"), recipients: true),
                 E("joinRestriction", "Members can join", S("MemberJoinRestriction"),
                     blocked: restrictionBlocked, choices: JoinChoices),
                 E("departRestriction", "Members can leave", S("MemberDepartRestriction"),
                     blocked: restrictionBlocked, choices: DepartChoices),
-                E("grantSendOnBehalfTo", "Send on behalf", S("GrantSendOnBehalfTo"), blocked: RecipientPendingTip)),
+                E("grantSendOnBehalfTo", "Send on behalf", S("GrantSendOnBehalfTo"), recipients: true)),
             Section("Mail flow",
                 // Exchange stores the double negative; this is how an operator thinks about it.
                 E("externalSenders", "External senders",
                     S("RequireSenderAuthenticationEnabled") == Yes ? Blocked : Allowed, choices: SenderChoices),
-                E("acceptFrom", "Accept only from", S("AcceptMessagesOnlyFromSendersOrMembers"), blocked: RecipientPendingTip),
-                E("rejectFrom", "Reject from", S("RejectMessagesFromSendersOrMembers"), blocked: RecipientPendingTip),
+                E("acceptFrom", "Accept only from", S("AcceptMessagesOnlyFromSendersOrMembers"), recipients: true),
+                E("rejectFrom", "Reject from", S("RejectMessagesFromSendersOrMembers"), recipients: true),
                 E("bccBlocked", "BCC blocked", S("BccBlocked"), choices: YesNoChoices),
                 // Microsoft documents both size parameters as on-premises only. Exchange Online takes the
                 // message-size limit from the organization, so an editor here would be one that never works.
@@ -464,9 +510,9 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                 E("sendOof", "Send auto-replies to sender", S("SendOofMessageToOriginatorEnabled"), choices: YesNoChoices)),
             Section("Moderation",
                 E("moderationEnabled", "Moderated", S("ModerationEnabled"), choices: YesNoChoices),
-                E("moderatedBy", "Moderators", S("ModeratedBy"), blocked: RecipientPendingTip),
+                E("moderatedBy", "Moderators", S("ModeratedBy"), recipients: true),
                 E("moderationNotifications", "Notify senders", S("SendModerationNotifications"), choices: NotifyChoices),
-                E("bypassModeration", "Bypass moderation", S("BypassModerationFromSendersOrMembers"), blocked: RecipientPendingTip)),
+                E("bypassModeration", "Bypass moderation", S("BypassModerationFromSendersOrMembers"), recipients: true)),
         };
     }
 
@@ -512,14 +558,12 @@ public sealed class ExchangeService : IExchangeService, IDisposable
     private const string SizeBlockedTip =
         "Exchange Online does not accept a per-group message size limit; Microsoft documents the parameter as "
         + "on-premises only. The limit comes from the organization.";
-    private const string RecipientPendingTip =
-        "Read-only here. This setting holds recipients, which need the picker rather than a text box.";
 
     /// <summary>The pane renders an absent value as an em dash; it must never be mistaken for a value.</summary>
     private static string Show(string value) => string.IsNullOrWhiteSpace(value) ? "—" : value;
 
     /// <summary>How one editable row is written back. The pane speaks in display values; Exchange does not.</summary>
-    private enum DlValue { Text, YesNo, SenderPolicy, DeliveryReports, Addresses }
+    private enum DlValue { Text, YesNo, SenderPolicy, DeliveryReports, Addresses, Recipients }
 
     /// <param name="Parameter">The Set-DistributionGroup parameter this row writes.</param>
     /// <param name="Clearable">Whether an empty value is a legitimate instruction to clear the setting.</param>
@@ -548,6 +592,29 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             ["sendOof"] = new("SendOofMessageToOriginatorEnabled", DlValue.YesNo),
             ["moderationEnabled"] = new("ModerationEnabled", DlValue.YesNo),
             ["moderationNotifications"] = new("SendModerationNotifications", DlValue.Text),
+            // The recipient lists. Each is replaced whole: Exchange offers no add/remove form for them, and
+            // the picker always hands back the complete list it was seeded with.
+            ["managedBy"] = new("ManagedBy", DlValue.Recipients, Clearable: true),
+            ["grantSendOnBehalfTo"] = new("GrantSendOnBehalfTo", DlValue.Recipients, Clearable: true),
+            ["acceptFrom"] = new("AcceptMessagesOnlyFromSendersOrMembers", DlValue.Recipients, Clearable: true),
+            ["rejectFrom"] = new("RejectMessagesFromSendersOrMembers", DlValue.Recipients, Clearable: true),
+            ["moderatedBy"] = new("ModeratedBy", DlValue.Recipients, Clearable: true),
+            ["bypassModeration"] = new("BypassModerationFromSendersOrMembers", DlValue.Recipients, Clearable: true),
+        };
+
+    /// <summary>
+    /// The Exchange property behind each recipient row. The same name reads and writes, so one map serves the
+    /// on-demand resolution and the save, and they cannot name different fields.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> DlRecipientFields =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["managedBy"] = "ManagedBy",
+            ["grantSendOnBehalfTo"] = "GrantSendOnBehalfTo",
+            ["acceptFrom"] = "AcceptMessagesOnlyFromSendersOrMembers",
+            ["rejectFrom"] = "RejectMessagesFromSendersOrMembers",
+            ["moderatedBy"] = "ModeratedBy",
+            ["bypassModeration"] = "BypassModerationFromSendersOrMembers",
         };
 
     /// <summary>
@@ -605,6 +672,12 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                     p["ReportToManagerEnabled"] = !toSender;
                     break;
 
+                case DlValue.Recipients:
+                    // Replaced whole. An empty array is a legitimate instruction to clear the list.
+                    if (SameRecipients(row.Identities, row.OriginalIdentities)) { unchanged.Add(key); break; }
+                    p[setting.Parameter] = row.Identities.ToArray();
+                    break;
+
                 case DlValue.Addresses:
                     // Add and remove, never a replacement. Handing Exchange a whole collection is how a primary
                     // address gets moved by accident: with no uppercase SMTP: entry it promotes the first one.
@@ -629,6 +702,9 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             value == whenTrue ? true
             : value == whenFalse ? false
             : throw new ExchangeException($"'{value}' isn't a value {key} accepts.");
+
+        static bool SameRecipients(IReadOnlyList<string> a, IReadOnlyList<string> b) =>
+            a.Count == b.Count && !a.Except(b, StringComparer.OrdinalIgnoreCase).Any();
 
         static List<string> SplitList(string value) =>
             value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -1170,6 +1246,7 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         $script:__ownerBudget = 0
         $script:__ownerSkipped = 0
         $script:__ownerErrors = @()
+        $script:__recipCache = @{}
         function __ownerNames($values) {
             $out = @()
             foreach ($v in @($values)) {
@@ -1219,6 +1296,7 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         # degradation. Resetting through one function is what stops an op from forgetting one of them.
         function __ownerReset($budget) {
             $script:__ownerCache = @{}
+            $script:__recipCache = @{}
             $script:__ownerBudget = $budget
             $script:__ownerSkipped = 0
             $script:__ownerErrors = @()
@@ -1240,6 +1318,59 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             if ($script:__ownerSkipped -gt 0) { $d += "recipient lookups skipped (budget): $($script:__ownerSkipped)" }
             if ($script:__ownerErrors.Count -gt 0) { $d += "recipient lookup errors: $(($script:__ownerErrors | Select-Object -Unique) -join ' | ')" }
             return ($d -join '; ')
+        }
+        # Resolves recipient entries to a name AND an address. __ownerNames answers "what do I show"; this
+        # answers "what can I write back", which needs an identity a cmdlet will accept. An entry that cannot
+        # be resolved comes back with an empty Smtp, and the caller refuses to edit the list rather than
+        # dropping the entry it could not name.
+        function __recipList($values) {
+            $out = @()
+            foreach ($v in @($values)) {
+                $s = [string]$v
+                if ([string]::IsNullOrWhiteSpace($s)) { continue }
+                # Same canonical-name reduction as __ownerNames, and for the same reason: Exchange Online
+                # replaces the Name of a synced recipient with its object id, so the leaf is often a GUID.
+                if ($s -match '^[^/]+\.[^/]+/') { $s = ($s -split '/')[-1] }
+                $key = $s.Trim('{', '}')
+                if ($script:__recipCache.ContainsKey($key)) { $out += $script:__recipCache[$key]; continue }
+                if ($script:__ownerBudget -le 0) {
+                    $script:__ownerSkipped++
+                    # 'skipped' is NOT 'does not exist'. The caller has to tell an operator which happened,
+                    # and an empty address alone cannot carry that difference.
+                    $out += @{ Name = $s; Smtp = ''; Type = ''; Reason = 'skipped' }
+                    continue
+                }
+                $script:__ownerBudget--
+                $entry = @{ Name = $s; Smtp = ''; Type = ''; Reason = 'notfound' }
+                try {
+                    $rc = Get-Recipient -Identity $key -ErrorAction Stop | Select-Object -First 1
+                    # The returns-everything trap: only accept a result that carries the identifier asked for.
+                    if ($rc -and (__isWanted $rc $key)) {
+                        # A mail contact or mail user can have no primary SMTP; list-dl-members already relies
+                        # on that and falls back to Name, which Set-DistributionGroup accepts just as well.
+                        $addr = [string]$rc.PrimarySmtpAddress
+                        if ([string]::IsNullOrWhiteSpace($addr)) {
+                            $addr = ([string]$rc.ExternalEmailAddress) -replace '^SMTP:', ''
+                        }
+                        if ([string]::IsNullOrWhiteSpace($addr)) { $addr = [string]$rc.Name }
+                        $entry = @{
+                            Name = [string]$rc.DisplayName
+                            Smtp = $addr
+                            Type = [string]$rc.RecipientTypeDetails
+                            Reason = $(if ([string]::IsNullOrWhiteSpace($addr)) { 'noaddress' } else { '' })
+                        }
+                    }
+                } catch {
+                    if ($_.Exception.Message -notmatch "couldn't be found|not found|does not exist|wasn't found") {
+                        $script:__ownerErrors += $_.Exception.Message
+                        $out += @{ Name = "Lookup failed ($key)"; Smtp = ''; Type = ''; Reason = 'error' }
+                        continue
+                    }
+                }
+                $script:__recipCache[$key] = $entry
+                $out += $entry
+            }
+            return $out
         }
         # --- end recipient projection ----------------------------------------------------------------------
         function __delAdd($map, $who, $perm) {
@@ -1679,6 +1810,9 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 # can be checked before reaching a cmdlet that changes far more than this app
                                 # offers. Anything outside the list is a defect, so it stops here.
                                 $wAllowed = @(
+                                    'ManagedBy', 'GrantSendOnBehalfTo', 'ModeratedBy',
+                                    'AcceptMessagesOnlyFromSendersOrMembers', 'RejectMessagesFromSendersOrMembers',
+                                    'BypassModerationFromSendersOrMembers',
                                     'Description', 'MailTip', 'RoomList', 'EmailAddresses', 'HiddenFromAddressListsEnabled',
                                     'MemberJoinRestriction', 'MemberDepartRestriction', 'RequireSenderAuthenticationEnabled',
                                     'BccBlocked', 'ReportToOriginatorEnabled', 'ReportToManagerEnabled',
@@ -1733,6 +1867,35 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 $wsp['ErrorAction'] = 'Stop'
                                 Set-DistributionGroup @wsp
                                 __emit @{ ok = $true }
+                            }
+                            'list-dl-recipients' {
+                                # Resolves ONE recipient-valued property to names and addresses, on demand.
+                                # Not part of opening a group: it costs a lookup per entry on a channel that
+                                # serialises every call, and the pane only needs addresses when an operator
+                                # actually opens the editor. The read path keeps using the display-name
+                                # switches, which cost nothing.
+                                __ownerReset 200
+                                $wantR = ([string]$r.identity).Trim()
+                                if ([string]::IsNullOrWhiteSpace($wantR)) { throw 'A group is required.' }
+                                # Same allow-list discipline as the write: the field name is chosen in C#, but
+                                # this is the last place it can be checked before it indexes a live object.
+                                $rAllowed = @(
+                                    'ManagedBy', 'GrantSendOnBehalfTo', 'ModeratedBy',
+                                    'AcceptMessagesOnlyFromSendersOrMembers', 'RejectMessagesFromSendersOrMembers',
+                                    'BypassModerationFromSendersOrMembers'
+                                )
+                                $rField = [string]$r.field
+                                if ($rAllowed -notcontains $rField) { throw "'$rField' is not a recipient property this app reads." }
+
+                                $rg = Get-DistributionGroup -Identity $r.identity -ErrorAction Stop | Select-Object -First 1
+                                if ($null -eq $rg) { throw "No group was returned for '$wantR'." }
+                                # A non-existent -Identity makes an Exchange Get- cmdlet return EVERY object.
+                                if (-not (__isWanted $rg $wantR)) { throw "Exchange did not return the group '$wantR'." }
+
+                                # The RAW property, not the display-name variant: a display name cannot be
+                                # written back, and these entries have to survive a round trip.
+                                $data = @(__recipList $rg.$rField)
+                                __emit @{ ok = $true; data = $data; detail = (__ownerDiag) }
                             }
                             'list-dl-members' {
                                 # -ResultSize Unlimited: the default page is 1,000 and truncates silently, which

@@ -137,6 +137,17 @@ public interface IExchangeService
     Task<IReadOnlyList<CloudPropertySection>> GetDistributionGroupDetailAsync(string identity, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Resolves ONE recipient-valued property of a distribution group to names and addresses, on demand.
+    /// Separate from <see cref="GetDistributionGroupDetailAsync"/> and never part of opening a group: it costs
+    /// a directory lookup per entry on a channel that serialises every call, and the addresses are only needed
+    /// when an operator opens the editor. An entry that could not be resolved comes back with an empty
+    /// <see cref="MailboxRecipient.PrimarySmtpAddress"/> — it cannot be written back, so the caller must
+    /// refuse to edit the list rather than save it and drop that entry.
+    /// </summary>
+    /// <param name="rowKey">The property-row key, e.g. <c>managedBy</c>; the implementation owns the mapping.</param>
+    Task<DlRecipientList> GetDistributionGroupRecipientsAsync(string identity, string rowKey, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Applies scalar changes to a distribution list or mail-enabled security group via
     /// <c>Set-DistributionGroup</c>. <paramref name="changes"/> is keyed by the property-row key that
     /// <see cref="GetDistributionGroupDetailAsync"/> produced, carrying the value as the pane displays it; the

@@ -484,6 +484,7 @@ function NewGroup([bool]$synced) {
         Guid = '77777777-7777-7777-7777-777777777777'
         ExternalDirectoryObjectId = '66666666-6666-6666-6666-666666666666'
         Identity = 'contoso.onmicrosoft.com/Groups/All Staff'
+        ManagedBy = @('11111111-1111-1111-1111-111111111111')
         IsDirSynced = $(if ($synced) { 'True' } else { 'False' })
     }
 }
@@ -570,6 +571,120 @@ Check 'and nothing is written'                0    $script:setCalls.Count
 $err = RunSet 'allstaff@contoso.com' (Addr @('smtp:new@contoso.com') $null)
 Check 'an add alone is fine'   $null $err
 Check 'and Remove is omitted'  $false ((Ea 0).ContainsKey('Remove'))
+
+
+# --- 6. the recipient resolution behind the pickers ---------------------------------------------------
+# __ownerNames answers "what do I show". __recipList answers "what can I write back", which needs an
+# address. The distinction is the whole safety property: an entry resolved to a name but no address cannot
+# be written, and saving the list without it would remove somebody the operator never saw.
+#
+# Its own stub, deliberately: three Get-Recipient stubs are defined earlier in this file for other sections,
+# and depending on which one happened to be declared last is how a test ends up asserting nothing.
+function Get-Recipient {
+    [CmdletBinding()]
+    param([string]$Identity)
+    $script:lookups++
+    if ($KNOWN.ContainsKey($Identity)) {
+        return [pscustomobject]@{
+            DisplayName = $KNOWN[$Identity]; Guid = $Identity; ExternalDirectoryObjectId = $Identity
+            PrimarySmtpAddress = "$($KNOWN[$Identity] -replace ' ', '.')@contoso.com"
+            RecipientTypeDetails = 'UserMailbox'
+        }
+    }
+    if ($script:stubReturnsEverything) {
+        return @(
+            [pscustomobject]@{ DisplayName = 'Totally Unrelated Person'; Guid = '99999999-9999-9999-9999-999999999999'
+                               ExternalDirectoryObjectId = '99999999-9999-9999-9999-999999999999'
+                               PrimarySmtpAddress = 'stranger@contoso.com'; RecipientTypeDetails = 'UserMailbox' }
+        )
+    }
+    throw "The operation couldn't be performed because object '$Identity' couldn't be found."
+}
+
+Write-Host "`n== __recipList: a name AND an address, or neither ==" -ForegroundColor Cyan
+__ownerReset 25; $script:lookups = 0
+$rl = @(__recipList @('11111111-1111-1111-1111-111111111111'))
+Check 'a GUID resolves to a name' 'Dana Scully'             $rl[0].Name
+Check 'and to an address'         'Dana.Scully@contoso.com' $rl[0].Smtp
+Check 'and to a type'             'UserMailbox'             $rl[0].Type
+__ownerReset 25
+$rl = @(__recipList @('contoso.onmicrosoft.com/Users/11111111-1111-1111-1111-111111111111'))
+Check 'a canonical name is reduced, then resolved' 'Dana Scully' $rl[0].Name
+__ownerReset 25
+$rl = @(__recipList @('22222222-2222-2222-2222-222222222222'))
+Check 'an entry that does not resolve keeps its raw value' '22222222-2222-2222-2222-222222222222' $rl[0].Name
+Check 'and carries no address'                             ''                                     $rl[0].Smtp
+__ownerReset 0
+$rl = @(__recipList @('11111111-1111-1111-1111-111111111111'))
+Check 'a skipped entry carries no address' '' $rl[0].Smtp
+Check 'and is counted as skipped'          1  $script:__ownerSkipped
+# The documented returns-everything trap, on the resolution path: a deleted owner's GUID is exactly the
+# non-existent identity that makes an Exchange Get- cmdlet hand back the whole directory.
+$script:stubReturnsEverything = $true
+__ownerReset 25
+$rl = @(__recipList @('55555555-5555-5555-5555-555555555555'))
+Check 'a stranger is not accepted as the answer' '55555555-5555-5555-5555-555555555555' $rl[0].Name
+Check 'and contributes no address'               ''                                     $rl[0].Smtp
+$script:stubReturnsEverything = $false
+
+Write-Host "`n== list-dl-recipients: the guards ==" -ForegroundColor Cyan
+$lrStart = ($all | Select-String -Pattern "^\s*'list-dl-recipients' \{\s*$" | Select-Object -First 1).LineNumber
+if (-not $lrStart) { throw 'Could not locate the list-dl-recipients op.' }
+$depth = 0; $lrEnd = $null
+for ($i = $lrStart - 1; $i -lt $all.Count; $i++) {
+    $depth += ([regex]::Matches($all[$i], '\{')).Count
+    $depth -= ([regex]::Matches($all[$i], '\}')).Count
+    if ($depth -le 0) { $lrEnd = $i; break }
+}
+if (-not $lrEnd) { throw 'Could not locate the end of the list-dl-recipients op.' }
+$lrBody = ($all[$lrStart..($lrEnd - 1)]) -join "`n"
+if ($lrBody -notmatch '__recipList') { throw 'The extracted op does not resolve anything.' }
+function RunList($identity, $field) {
+    $script:emitted = @()
+    $r = [pscustomobject]@{ identity = $identity; field = $field }
+    try { Invoke-Expression $lrBody; return $null } catch { return $_.Exception.Message }
+}
+function Emitted() { if ($script:emitted.Count -gt 0) { return $script:emitted[0] } return @{} }
+
+$script:theGroup = NewGroup $false
+$err = RunList 'allstaff@contoso.com' 'ManagedBy'
+Check 'a permitted field resolves' $null                    $err
+Check 'and the owners come back'   'Dana Scully'            (@((Emitted).data)[0].Name)
+Check 'with an address to write'   'Dana.Scully@contoso.com' (@((Emitted).data)[0].Smtp)
+
+# The field name is chosen in C#, but a property this app never meant to read must still stop here.
+$err = RunList 'allstaff@contoso.com' 'PrimarySmtpAddress'
+Check 'an unlisted field is refused' $true ($err -like '*not a recipient property*')
+
+$err = RunList 'someone-else@contoso.com' 'ManagedBy'
+Check 'a different group is refused' $true ($err -like '*did not return the group*')
+
+$err = RunList '' 'ManagedBy'
+Check 'a blank identity is refused'  $true ($err -like '*group is required*')
+
+
+Write-Host "`n== every recipient list is edited with the picker ==" -ForegroundColor Cyan
+# A recipient row that lost its picker becomes an ordinary text box. The save then looks for the addresses
+# the picker would have supplied, finds none, and reports the row as unchanged — a typed edit that vanishes
+# while the pane says the save succeeded.
+$recipKeys = @([regex]::Matches($csText, '\["([a-zA-Z]+)"\] = new\("[A-Za-z]+", DlValue\.Recipients') |
+               ForEach-Object { $_.Groups[1].Value })
+Check 'the recipient mappings were read' $true ($recipKeys.Count -ge 6)
+foreach ($rk in $recipKeys) {
+    $rm = [regex]::Match($csText, 'E\("' + [regex]::Escape($rk) + '"[^\n]*')
+    Check "$rk is edited with the picker" $true ($rm.Success -and $rm.Value -match 'recipients: true')
+}
+
+# The same property has to be read and written, or the editor seeds itself from one list and saves another.
+$fieldsStart = $csText.IndexOf('DlRecipientFields =')
+if ($fieldsStart -lt 0) { throw 'Could not locate DlRecipientFields.' }
+$fieldsBlock = $csText.Substring($fieldsStart, [Math]::Min(900, $csText.Length - $fieldsStart))
+$fieldsBlock = $fieldsBlock.Substring(0, $fieldsBlock.IndexOf('};') + 2)
+foreach ($rk in $recipKeys) {
+    $wm = [regex]::Match($csText, '\["' + [regex]::Escape($rk) + '"\] = new\("([A-Za-z]+)", DlValue\.Recipients')
+    $rmField = [regex]::Match($fieldsBlock, '\["' + [regex]::Escape($rk) + '"\] = "([A-Za-z]+)"')
+    Check "$rk is read and written through the same property" $wm.Groups[1].Value $rmField.Groups[1].Value
+}
 
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

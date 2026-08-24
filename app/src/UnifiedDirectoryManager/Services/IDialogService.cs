@@ -27,7 +27,9 @@ public interface IDialogService
     MailboxRecipient? PickMailboxRecipient(string title);
 
     /// <summary>Picks several internal Exchange recipients (the same picker, with a basket). Null if cancelled.</summary>
-    IReadOnlyList<MailboxRecipient>? PickMailboxRecipients(string title);
+    /// <param name="initial">Seeds the basket with the list being edited, so the dialog starts from what
+    /// Exchange holds rather than from nothing.</param>
+    IReadOnlyList<MailboxRecipient>? PickMailboxRecipients(string title, IReadOnlyList<MailboxRecipient>? initial = null);
 
     /// <summary>
     /// Opens the (modal) membership editor for a distribution list or mail-enabled security group.

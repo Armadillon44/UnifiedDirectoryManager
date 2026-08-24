@@ -21,6 +21,9 @@ public enum CloudPropertyEditor
     /// <summary>One of <see cref="CloudProperty.Choices"/>. Used for every yes/no and enum setting: typing
     /// "Yes" into a text box is a spelling test, and a wrong answer is either a silent no-op or a service error.</summary>
     Choice,
+    /// <summary>A list of recipients, chosen with the picker. The row displays names and writes addresses, so
+    /// there is nothing here a person could usefully type.</summary>
+    Recipients,
 }
 
 /// <summary>
@@ -43,7 +46,59 @@ public sealed partial class CloudProperty : ObservableObject
     [ObservableProperty] private string _value;
 
     public bool IsEditable => Editability == CloudPropertyEditability.Editable;
-    public bool IsDirty => IsEditable && !string.Equals(Value, OriginalValue, StringComparison.Ordinal);
+
+    /// <summary>
+    /// A recipient row compares the addresses it will write, not the names it shows. The two are resolved
+    /// separately and their orders need not agree, so comparing the display text would report an edit that
+    /// never happened — and miss one that did, when two recipients share a display name.
+    /// </summary>
+    public bool IsDirty => IsEditable && (Editor == CloudPropertyEditor.Recipients
+        ? !SameRecipients(_identities, _originalIdentities)
+        : !string.Equals(Value, OriginalValue, StringComparison.Ordinal));
+
+    private IReadOnlyList<string> _identities = [];
+    private IReadOnlyList<string> _originalIdentities = [];
+
+    /// <summary>The addresses this row will write. Empty until its editor has been opened at least once.</summary>
+    public IReadOnlyList<string> Identities => _identities;
+
+    /// <summary>What Exchange held when the editor was opened, and what the save diffs against.</summary>
+    public IReadOnlyList<string> OriginalIdentities => _originalIdentities;
+
+    /// <summary>
+    /// True once the baseline has been taken. An empty list is a legitimate baseline, so a count cannot stand
+    /// in for this — and taking the baseline twice would overwrite an edit that has not been saved yet.
+    /// </summary>
+    public bool HasRecipientBaseline { get; private set; }
+
+    /// <summary>
+    /// Records what Exchange holds. The read that builds this row returns display names only, so the baseline
+    /// is not known until the addresses are resolved on demand — which is when the editor first opens. It is
+    /// taken ONCE: a second open would otherwise reset a pending edit back to the server's list while the row
+    /// went on displaying the edit, leaving the pane and the model disagreeing.
+    /// </summary>
+    public void SetRecipientBaseline(IReadOnlyList<string> identities)
+    {
+        if (HasRecipientBaseline) return;
+        _originalIdentities = identities;
+        _identities = identities;
+        HasRecipientBaseline = true;
+        // The dirty state is recomputed off this notification, and the identities just moved.
+        OnPropertyChanged(nameof(Value));
+    }
+
+    /// <summary>Applies a picked list: addresses to write, names to show.</summary>
+    public void SetRecipients(IReadOnlyList<string> identities, string display)
+    {
+        _identities = identities;
+        Value = display;
+        // Forced, not incidental: two different people can share a display name, so the text can be unchanged
+        // while the list genuinely is not, and the dirty check listens for this notification.
+        OnPropertyChanged(nameof(Value));
+    }
+
+    private static bool SameRecipients(IReadOnlyList<string> a, IReadOnlyList<string> b) =>
+        a.Count == b.Count && !a.Except(b, StringComparer.OrdinalIgnoreCase).Any();
 
     /// <summary>
     /// True when this row draws a drop-down. A read-only row never does, whatever its editor: the grayed text
@@ -53,7 +108,10 @@ public sealed partial class CloudProperty : ObservableObject
     public bool UsesChoiceEditor => IsEditable && Editor == CloudPropertyEditor.Choice && Choices is { Count: > 0 };
 
     /// <summary>True when this row draws a text box — the default, and the fallback for every read-only row.</summary>
-    public bool UsesTextEditor => !UsesChoiceEditor;
+    /// <summary>True when this row is edited through the recipient picker rather than in place.</summary>
+    public bool UsesRecipientEditor => IsEditable && Editor == CloudPropertyEditor.Recipients;
+
+    public bool UsesTextEditor => !UsesChoiceEditor && !UsesRecipientEditor;
 
     /// <summary>What this setting is, in one sentence. Null when nothing has been written for the key, in
     /// which case no "?" is offered — an absent explanation beats a guessed one.</summary>

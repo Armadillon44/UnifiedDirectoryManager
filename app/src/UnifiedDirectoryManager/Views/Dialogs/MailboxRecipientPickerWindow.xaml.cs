@@ -21,7 +21,9 @@ public partial class MailboxRecipientPickerWindow : Window
             // closing on an empty basket — which returns null, indistinguishable from Cancel, and adds nobody
             // without a word to say so.
             if (vm.Basket.Count == 0) vm.AddToBasketCommand.Execute(ResultsList.SelectedItems);
-            if (vm.Basket.Count == 0)
+            // An emptied basket that STARTED with entries is a deliberate clear, and refusing it is what
+            // makes a list that declares itself clearable impossible to clear.
+            if (vm.Basket.Count == 0 && !vm.AllowEmpty)
             {
                 vm.Status = "Add at least one recipient to the list on the right.";
                 return; // stay open

@@ -32,6 +32,13 @@ public partial class MailboxRecipientPickerViewModel : ObservableObject
     /// <summary>True when the dialog collects several recipients rather than one.</summary>
     public bool MultiSelect { get; }
 
+    /// <summary>
+    /// True when the basket was seeded, which makes emptying it a deliberate instruction to clear the list
+    /// rather than a person who has not chosen anybody yet. Without this the six recipient settings declare
+    /// themselves clearable and offer no way to clear them.
+    /// </summary>
+    public bool AllowEmpty { get; }
+
     /// <summary>Drives the results list's selection mode.</summary>
     public string ResultsSelectionMode => MultiSelect ? "Extended" : "Single";
 
@@ -46,12 +53,22 @@ public partial class MailboxRecipientPickerViewModel : ObservableObject
     /// <summary>The final selection, set on OK. A list in both modes; the single-select caller takes the first.</summary>
     public List<MailboxRecipient> Picked { get; } = new();
 
-    public MailboxRecipientPickerViewModel(IExchangeService exchange, bool multiSelect = false)
+    /// <param name="initial">Seeds the basket. Editing an existing list means starting from what is already
+    /// there — an empty basket would make every edit a replacement typed from memory.</param>
+    public MailboxRecipientPickerViewModel(IExchangeService exchange, bool multiSelect = false,
+                                          IEnumerable<MailboxRecipient>? initial = null)
     {
         _exchange = exchange;
         MultiSelect = multiSelect;
+        AllowEmpty = multiSelect && initial is not null;
         if (multiSelect)
-            Status = "Search for recipients, add the ones you want, then click OK.";
+        {
+            if (initial is not null)
+                foreach (var r in initial) Basket.Add(r);
+            Status = Basket.Count > 0
+                ? $"{Basket.Count} already in the list. Add or remove, then click OK."
+                : "Search for recipients, add the ones you want, then click OK.";
+        }
     }
 
     [RelayCommand]
@@ -114,6 +131,7 @@ public partial class MailboxRecipientPickerViewModel : ObservableObject
         Picked.Clear();
         if (MultiSelect) Picked.AddRange(Basket);
         else if (SelectedResult is not null) Picked.Add(SelectedResult);
-        return Picked.Count > 0;
+        // An emptied seeded basket is an answer, not an absence of one.
+        return Picked.Count > 0 || AllowEmpty;
     }
 }
