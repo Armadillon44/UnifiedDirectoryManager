@@ -1,6 +1,6 @@
 # Exchange Online navigation + cloud group creation
 
-Status: **in progress — commits 1-5 done (1-4 live-tested); commits 6-7 specced. All decisions locked.** Branch `release/2.3.0` (new
+Status: **in progress — commits 1-6a done (1-4 live-tested); 6b and 7 specced. All decisions locked, with two D5 corrections below.** Branch `release/2.3.0` (new
 features → minor bump), branched from `master` at v2.2.0. See the sequencing section at the bottom for what
 has landed; update it as commits land rather than leaving this line to go stale.
 
@@ -345,6 +345,23 @@ parallel `*WithDisplayNames` property is empty. There is **no** switch for
 `RejectMessagesFromSendersOrMembers` — that one always needs local resolution. Always keep the raw property
 as a fallback: an unbindable switch or an empty variant must degrade to today's answer, not to nothing.
 
+**G11 · Two D5 choices do not survive contact with the cmdlet.**
+• `MaxSendSize` / `MaxReceiveSize` on `Set-DistributionGroup` are documented **"available only in
+on-premises Exchange"**. Exchange Online takes the message-size limit from the organization, so these can be
+read but never written. Both rows stay read-only.
+• `-RoomList` is a **SwitchParameter with no documented off value**, and the repair Microsoft documents for
+a room list that must become an ordinary group again is the `msExchRecipientTypeDetails` AD attribute — which
+a cloud-only group does not have. So the setting is offered in ONE direction: editable while the group is not
+a room list, closed once it is. A Yes-to-No choice would report success and change nothing.
+• Related, and the reason the pane shows an "Email address policy" row: **changing the Alias rewrites the
+primary SMTP address** whenever `EmailAddressPolicyEnabled` is True, which is the usual case for a cloud
+group. That is the same consequence D5 excluded address editing to avoid, arrived at by another route.
+
+**G12 · `ReportToManagerEnabled` and `ReportToOriginatorEnabled` are one decision, not two.** Microsoft
+documents setting both, or neither, as leaving messages to the group with no return path, which some mail
+servers reject. They are presented as one choice and always written as a pair; a group already in an invalid
+combination is shown as it really is rather than silently normalised.
+
 **G9 · The `"Distribution"` / `"Mail-enabled security"` string test is duplicated in five places**
 (`HybridGroupPickerViewModel.cs:71`, `BulkUserCsvImporter.cs:216`, `ScenarioRunner.cs:302`, `CopyUserViewModel.cs:180`,
 `CopyToTemplateViewModel.cs:152`). Adding a sixth and seventh consumer is the moment to centralise it next to
@@ -383,8 +400,10 @@ as a fallback: an unbindable switch or an empty variant must degrade to today's 
    Graph-backed Members tab off a DL. Review before landing caught a double-stripped primary address on the
    mailbox pane, five recipient fields resolved by hand that Exchange will resolve server-side (see G10), and
    a stale lookup-degradation counter. **Commit 6a is next.**
-8. Commit 6a: the scalar group edits — alias, description, MailTip, hidden from address lists, room list,
-   join/depart restriction, external senders, size limits, BCC, delivery reports.
+8. ~~Commit 6a: the scalar group edits.~~ **Done** (`b89b046`), NOT yet live-tested. Delivered alias,
+   description, MailTip, hidden from address lists, room list (one way), join/depart restriction, external
+   senders, BCC, delivery reports, auto-replies, moderation on/off and moderation notifications.
+   **Two D5 items could not be delivered as written — see G11. Commit 6b is next.**
 9. Commit 6b: the recipient-valued edits — owners, send on behalf, accept/reject lists, moderation.
 10. Commit 7: mailbox actions in the Exchange section, by hosting the existing ExchangeTabViewModel (D7).
 11. README + Wiki: the raised RBAC bar, the new nav section, the group-type routing table.
