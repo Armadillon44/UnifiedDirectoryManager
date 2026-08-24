@@ -93,6 +93,9 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         _exchange = exchange;
         _dialogs = dialogs;
         Exchange = new ExchangeTabViewModel(exchange, graph, dialogs);
+        // A convert or a forwarding change makes this pane's sections and the list row wrong. Every other
+        // write here re-reads; these were the only ones leaving the surrounding view asserting the old state.
+        Exchange.MailboxChanged += (_, _) => _ = RefreshAfterMailboxActionAsync();
     }
 
     /// <summary>Shows a row's details (null clears the pane).</summary>
@@ -369,6 +372,32 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         property.SetRecipients(
             picked.Select(r => r.PrimarySmtpAddress).ToList(),
             string.Join("; ", retained.Concat(picked.Select(r => r.DisplayName))));
+    }
+
+    /// <summary>
+    /// Re-reads the mailbox after an action committed. Deliberately NOT SetTarget: Clear() would reset the
+    /// actions tab and throw away the result the operator just produced.
+    /// </summary>
+    private async Task RefreshAfterMailboxActionAsync()
+    {
+        var row = _currentTarget;
+        if (row is null || !IsMailbox) return;
+        if (!await LoadExchangeDetailAsync(row, mailbox: true)) return;
+        if (!ReferenceEquals(_currentTarget, row)) return;
+
+        // The grid keeps asserting the old mailbox type otherwise, and it is a visible column.
+        var byKey = Sections.SelectMany(s => s.Properties)
+            .ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
+        void Copy(string rowKey, string propertyKey)
+        {
+            if (byKey.TryGetValue(propertyKey, out var v) && !string.IsNullOrWhiteSpace(v) && v != "—")
+                row.Values[rowKey] = v;
+        }
+        Copy("mailboxType", "recipientTypeDetails");
+        Copy("primarySmtpAddress", "primarySmtpAddress");
+        Copy("alias", "alias");
+        Copy("hiddenFromAddressLists", "hiddenFromAddressLists");
+        row.NotifyValuesChanged();
     }
 
     /// <summary>

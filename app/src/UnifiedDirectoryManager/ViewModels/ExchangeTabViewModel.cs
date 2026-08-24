@@ -342,5 +342,12 @@ public partial class ExchangeTabViewModel : ObservableObject
             StatusMessage = successStatus + " — couldn't refresh the view; click Look up mailbox.";
         }
         finally { IsBusy = false; }
+
+        // The mailbox itself changed, not just this tab. A host showing its own view of the same mailbox is
+        // now asserting the state before the write, and only it knows how to put that right.
+        MailboxChanged?.Invoke(this, EventArgs.Empty);
     }
+
+    /// <summary>Raised after a write commits, so a host pane can re-read what it shows of the same mailbox.</summary>
+    public event EventHandler? MailboxChanged;
 }

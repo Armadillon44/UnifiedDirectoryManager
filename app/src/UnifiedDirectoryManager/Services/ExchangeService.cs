@@ -235,7 +235,7 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                 P("whenMailboxCreated", "Mailbox created", S("WhenMailboxCreated")),
                 P("isDirSynced", "Directory sync", S("IsDirSynced") == "Yes" ? "Synced from on-premises" : "Cloud-only")),
             Section("Type and visibility",
-                P("recipientTypeDetails", "Mailbox type", S("RecipientTypeDetails")),
+                P("recipientTypeDetails", "Mailbox type", FriendlyRecipientType(S("RecipientTypeDetails"))),
                 P("hiddenFromAddressLists", "Hidden from address lists", S("HiddenFromAddressLists"))),
             Section("Addresses",
                 P("primaryAddress", "Primary", primary ?? string.Empty),
