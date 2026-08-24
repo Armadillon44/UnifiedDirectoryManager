@@ -467,6 +467,8 @@ function Set-DistributionGroup {
         $MemberJoinRestriction, $MemberDepartRestriction, $RequireSenderAuthenticationEnabled,
         $BccBlocked, $ReportToOriginatorEnabled, $ReportToManagerEnabled,
         $SendOofMessageToOriginatorEnabled, $ModerationEnabled, $SendModerationNotifications,
+        $ManagedBy, $GrantSendOnBehalfTo, $ModeratedBy, $AcceptMessagesOnlyFromSendersOrMembers,
+        $RejectMessagesFromSendersOrMembers, $BypassModerationFromSendersOrMembers,
         [switch]$BypassSecurityGroupManagerCheck
     )
     $script:setCalls += , $PSBoundParameters
@@ -684,6 +686,53 @@ foreach ($rk in $recipKeys) {
     $wm = [regex]::Match($csText, '\["' + [regex]::Escape($rk) + '"\] = new\("([A-Za-z]+)", DlValue\.Recipients')
     $rmField = [regex]::Match($fieldsBlock, '\["' + [regex]::Escape($rk) + '"\] = "([A-Za-z]+)"')
     Check "$rk is read and written through the same property" $wm.Groups[1].Value $rmField.Groups[1].Value
+}
+
+
+Write-Host "`n== set-dl-properties: a recipient list is a delta, never a replacement ==" -ForegroundColor Cyan
+# These lists can hold entries this app cannot resolve — a role group such as Organization Management is not
+# a mail recipient and Set-DistributionGroup will not take one back. Replacing the list would delete it, so
+# only the difference is ever sent and everything else is left exactly as it was.
+function Recip($param, $add, $remove) {
+    $o = @{}
+    if ($add) { $o['Add'] = $add }
+    if ($remove) { $o['Remove'] = $remove }
+    $outer = @{}; $outer[$param] = [pscustomobject]$o
+    return [pscustomobject]$outer
+}
+function Param($i, $name) { $v = (Sent $i)[$name]; if ($null -eq $v) { return @{} } return $v }
+
+$script:theGroup = NewGroup $false
+$err = RunSet 'allstaff@contoso.com' (Recip 'ManagedBy' @('jane@contoso.com') @('bob@contoso.com'))
+Check 'a recipient delta succeeds'     $null              $err
+Check 'and arrives as a hashtable'     $true              ((Param 0 'ManagedBy') -is [hashtable])
+Check 'carrying the addition'          'jane@contoso.com' ((Param 0 'ManagedBy')['Add'] -join ';')
+Check 'and the removal'                'bob@contoso.com'  ((Param 0 'ManagedBy')['Remove'] -join ';')
+
+$err = RunSet 'allstaff@contoso.com' (Recip 'ModeratedBy' @('jane@contoso.com') $null)
+Check 'an add alone omits Remove'      $false ((Param 0 'ModeratedBy').ContainsKey('Remove'))
+$err = RunSet 'allstaff@contoso.com' (Recip 'ModeratedBy' $null @('bob@contoso.com'))
+Check 'a remove alone omits Add'       $false ((Param 0 'ModeratedBy').ContainsKey('Add'))
+
+# Nothing on either side means nothing to send — and nothing is what a replacement would have deleted.
+$err = RunSet 'allstaff@contoso.com' (Recip 'ManagedBy' $null $null)
+Check 'an empty delta sends nothing'   $true ($err -like '*No changes were supplied*')
+Check 'and nothing is written'         0     $script:setCalls.Count
+
+Write-Host "`n== the host and the C# agree on which lists are deltas ==" -ForegroundColor Cyan
+# A list C# treats as a delta but the host does not would be splatted as an object into a MultiValuedProperty
+# parameter, which fails at the cmdlet for a reason that names nothing useful.
+$wrStart = ($all | Select-String -Pattern '^\s*\$wRecipient = @\($' | Select-Object -First 1).LineNumber
+if (-not $wrStart) { throw 'Could not locate the host recipient list.' }
+$wrEnd = $null
+for ($i = $wrStart; $i -lt $all.Count; $i++) { if ($all[$i] -match '^\s*\)\s*$') { $wrEnd = $i; break } }
+if (-not $wrEnd) { throw 'Could not locate the end of the host recipient list.' }
+$hostRecip = @([regex]::Matches((($all[$wrStart..($wrEnd - 1)]) -join "`n"), "'([A-Za-z]+)'") |
+              ForEach-Object { $_.Groups[1].Value })
+Check 'the host recipient list was read' $true ($hostRecip.Count -ge 6)
+foreach ($rk in $recipKeys) {
+    $wm = [regex]::Match($csText, '\["' + [regex]::Escape($rk) + '"\] = new\("([A-Za-z]+)", DlValue\.Recipients')
+    Check "the host treats $($wm.Groups[1].Value) as a delta" $true ($hostRecip -contains $wm.Groups[1].Value)
 }
 
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })

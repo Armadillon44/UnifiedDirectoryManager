@@ -33,6 +33,13 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     /// </summary>
     private readonly Dictionary<CloudProperty, List<MailboxRecipient>> _pendingRecipients = new();
 
+    /// <summary>
+    /// Entries a list holds that this app cannot write back — a role group such as Organization Management is
+    /// not a mail recipient, and neither is a deleted account. They are left exactly as they are, so they stay
+    /// in what the row displays: dropping them from the text would make the pane lie about the group.
+    /// </summary>
+    private readonly Dictionary<CloudProperty, List<string>> _retainedRecipients = new();
+
     /// <summary>The group's Exchange GUID, captured on load: the identifier a write addresses, because
     /// changing the alias can rewrite the address the row was found by.</summary>
     private string? _exchangeGroupGuid;
@@ -134,6 +141,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         _mailboxExchangeGuid = null;
         _exchangeGroupGuid = null;
         _pendingRecipients.Clear();
+        _retainedRecipients.Clear();
         ShowEnable = ShowDisable = false;
         CanAddMembers = false;
         CanManageLicenses = false;
@@ -315,8 +323,8 @@ public partial class CloudObjectDetailViewModel : ObservableObject
             // property no longer belongs to anything on screen: editing it would write into an orphan.
             if (token != _detailToken || !ReferenceEquals(_currentTarget, row)) return;
 
-            // A list longer than one read resolves is not a list full of deleted accounts, and saying so would
-            // send the operator looking for a problem that is this app's limit rather than their directory's.
+            // Only a list too long to resolve in one read is refused: the picker would show part of it, and
+            // an operator cannot sensibly edit a list whose remainder is hidden from them.
             if (resolved.NotLookedUp > 0)
             {
                 _dialogs.Alert(property.Label,
@@ -326,20 +334,15 @@ public partial class CloudObjectDetailViewModel : ObservableObject
                 return;
             }
 
-            // An entry Exchange would not name cannot be written back. Saving the list without it would remove
-            // somebody the operator never saw, so the edit is refused rather than offered with a hole in it.
-            if (resolved.Unresolved.Count > 0)
-            {
-                _dialogs.Alert(property.Label,
-                    $"Exchange could not resolve {resolved.Unresolved.Count} of the {resolved.Entries.Count} "
-                    + $"entries in this list ({string.Join(", ", resolved.Unresolved)}). Editing it here would "
-                    + "drop them, so it isn't offered — most often they are accounts that no longer exist.");
-                return;
-            }
+            // Entries with no usable identity are NOT a reason to refuse. They are left exactly as they are:
+            // the save sends only the difference, so a role group like Organization Management stays an owner
+            // whatever else changes. They stay in the row's text so the pane keeps telling the truth.
+            _retainedRecipients[property] = resolved.Unresolved.ToList();
+            var writable = resolved.Entries.Where(r => !string.IsNullOrWhiteSpace(r.PrimarySmtpAddress)).ToList();
 
             // Taken once, and only from the server: this is what the save diffs against.
-            property.SetRecipientBaseline(resolved.Entries.Select(r => r.PrimarySmtpAddress).ToList());
-            seed = resolved.Entries.ToList();
+            property.SetRecipientBaseline(writable.Select(r => r.PrimarySmtpAddress).ToList());
+            seed = writable;
             _pendingRecipients[property] = seed;
         }
 
@@ -347,9 +350,12 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         if (picked is null) return; // cancelled: whatever was pending stays pending
 
         _pendingRecipients[property] = picked.ToList();
+        // The retained entries lead, because that is the order Exchange returned them in and they are still
+        // part of the list whether or not this app can name them.
+        var retained = _retainedRecipients.TryGetValue(property, out var kept) ? kept : [];
         property.SetRecipients(
             picked.Select(r => r.PrimarySmtpAddress).ToList(),
-            string.Join("; ", picked.Select(r => r.DisplayName)));
+            string.Join("; ", retained.Concat(picked.Select(r => r.DisplayName))));
     }
 
     /// <summary>

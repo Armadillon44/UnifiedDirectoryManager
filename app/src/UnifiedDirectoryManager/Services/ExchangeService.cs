@@ -673,9 +673,18 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                     break;
 
                 case DlValue.Recipients:
-                    // Replaced whole. An empty array is a legitimate instruction to clear the list.
-                    if (SameRecipients(row.Identities, row.OriginalIdentities)) { unchanged.Add(key); break; }
-                    p[setting.Parameter] = row.Identities.ToArray();
+                    // A delta, never a replacement. These lists can hold entries this app could not resolve —
+                    // a role group is not a mail recipient and Exchange will not take one back — and replacing
+                    // the list would silently delete them. Sending only the difference leaves them alone.
+                    var wanted = row.Identities;
+                    var had = row.OriginalIdentities;
+                    var addRecipients = wanted.Except(had, StringComparer.OrdinalIgnoreCase).ToArray();
+                    var dropRecipients = had.Except(wanted, StringComparer.OrdinalIgnoreCase).ToArray();
+                    if (addRecipients.Length == 0 && dropRecipients.Length == 0) { unchanged.Add(key); break; }
+                    var delta = new Dictionary<string, object?>(StringComparer.Ordinal);
+                    if (addRecipients.Length > 0) delta["Add"] = addRecipients;
+                    if (dropRecipients.Length > 0) delta["Remove"] = dropRecipients;
+                    p[setting.Parameter] = delta;
                     break;
 
                 case DlValue.Addresses:
@@ -702,9 +711,6 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             value == whenTrue ? true
             : value == whenFalse ? false
             : throw new ExchangeException($"'{value}' isn't a value {key} accepts.");
-
-        static bool SameRecipients(IReadOnlyList<string> a, IReadOnlyList<string> b) =>
-            a.Count == b.Count && !a.Except(b, StringComparer.OrdinalIgnoreCase).Any();
 
         static List<string> SplitList(string value) =>
             value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -1822,6 +1828,29 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 foreach ($wp in $r.changes.PSObject.Properties) {
                                     if ($wAllowed -notcontains $wp.Name) {
                                         throw "'$($wp.Name)' is not a distribution group setting this app may change."
+                                    }
+                                    # These six can hold entries this app cannot resolve — a role group such
+                                    # as Organization Management is not a mail recipient, and Set-DistributionGroup
+                                    # will not accept one back. Replacing the list would delete them, so only
+                                    # the difference is ever sent and everything else is left untouched.
+                                    $wRecipient = @(
+                                        'ManagedBy', 'GrantSendOnBehalfTo', 'ModeratedBy',
+                                        'AcceptMessagesOnlyFromSendersOrMembers', 'RejectMessagesFromSendersOrMembers',
+                                        'BypassModerationFromSendersOrMembers'
+                                    )
+                                    if ($wRecipient -contains $wp.Name) {
+                                        $ra = @{}
+                                        foreach ($side in 'Add', 'Remove') {
+                                            $rvals = @()
+                                            foreach ($rv in @($wp.Value.$side)) {
+                                                $rs = [string]$rv
+                                                if (-not [string]::IsNullOrWhiteSpace($rs)) { $rvals += $rs }
+                                            }
+                                            if ($rvals.Count -gt 0) { $ra[$side] = $rvals }
+                                        }
+                                        if ($ra.Count -eq 0) { continue }
+                                        $wsp[$wp.Name] = $ra
+                                        continue
                                     }
                                     if ($wp.Name -eq 'EmailAddresses') {
                                         # Addresses arrive as an add/remove, never as a replacement collection:
