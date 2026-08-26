@@ -127,13 +127,8 @@
                 </DockPanel>
                 <Border BorderBrush="#DDD" BorderThickness="1" MaxHeight="170">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <ItemsControl ItemsSource="{Binding ProgressSteps}" Margin="4">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,1" FontSize="12" />
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
+                        <ItemsControl ItemsSource="{Binding ProgressSteps}" Margin="4"
+                                      ItemTemplate="{StaticResource ProgressLine}" />
                     </ScrollViewer>
                 </Border>
             </DockPanel>
