@@ -98,10 +98,57 @@ public sealed class CloudProvisioningService
         int ok = 0, failed = 0;
         foreach (var g in groups)
         {
-            try { await _graph.AddMemberToGroupAsync(g.Id, userId); ok++; report($"   ✓ {g.Name}"); }
+            // Appearing in Entra ID is not the same as being usable as a membership target: the directory
+            // answers "does not exist or one of its queried reference-property objects are not present" for a
+            // few more moments after the object itself is readable.
+            try
+            {
+                await RetryWhileCatchingUpAsync(() => _graph.AddMemberToGroupAsync(g.Id, userId), g.Name, report);
+                ok++; report($"   ✓ {g.Name}");
+            }
             catch (Exception ex) { failed++; report($"   ✗ {g.Name}: {GraphErrors.Friendly(ex)}"); }
         }
         return (ok, failed);
+    }
+
+    // How long to keep trying an operation that failed only because the directory has not caught up. Four
+    // waits of eight seconds is about half a minute per item — long enough for the usual lag, short enough
+    // that a genuinely missing object does not hold the run up.
+    private const int CatchUpAttempts = 5;
+    private static readonly TimeSpan CatchUpWait = TimeSpan.FromSeconds(8);
+
+    /// <summary>
+    /// Runs an operation, retrying ONLY the failures that mean "not visible yet" or "the tenant is busy".
+    /// Deliberately narrow: it matches the specific wordings Microsoft returns and retries nothing else,
+    /// because a broad retry turns a real, permanent failure into a long wait ending in the same error.
+    /// The last attempt is allowed to throw, so a failure still surfaces exactly as it did before.
+    /// </summary>
+    private static async Task RetryWhileCatchingUpAsync(Func<Task> action, string what, Action<string> report)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try { await action(); return; }
+            catch (Exception ex) when (attempt < CatchUpAttempts && IsStillCatchingUp(ex))
+            {
+                report($"   … {what}: the directory hasn't caught up yet — retrying in {CatchUpWait.TotalSeconds:0}s "
+                       + $"({attempt} of {CatchUpAttempts - 1})");
+                await Task.Delay(CatchUpWait);
+            }
+        }
+    }
+
+    /// <summary>
+    /// True for the errors that mean "ask me again shortly". Two shapes: the object is not yet visible to the
+    /// service being asked, and the tenant is refusing concurrent writes. Anything else is a real failure.
+    /// </summary>
+    private static bool IsStillCatchingUp(Exception ex)
+    {
+        var m = ex.Message ?? string.Empty;
+        return m.Contains("queried reference-property objects are not present", StringComparison.OrdinalIgnoreCase)
+            || m.Contains("Couldn't find object", StringComparison.OrdinalIgnoreCase)
+            || m.Contains("couldn't be found", StringComparison.OrdinalIgnoreCase)
+            || m.Contains("concurrent requests", StringComparison.OrdinalIgnoreCase)
+            || m.Contains("Please wait briefly and retry", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -119,7 +166,14 @@ public sealed class CloudProvisioningService
         {
             var groupId = !string.IsNullOrWhiteSpace(g.Smtp) ? g.Smtp
                         : !string.IsNullOrWhiteSpace(g.Id) ? g.Id : g.Name;
-            try { await _exchange.AddDistributionGroupMemberAsync(groupId, memberIdentity); ok++; report($"   ✓ {g.Name} (Exchange)"); }
+            // Exchange provisions a recipient for a freshly-synced user some time after Entra ID has the
+            // object, so "Couldn't find object" here means "not yet", not "never".
+            try
+            {
+                await RetryWhileCatchingUpAsync(
+                    () => _exchange.AddDistributionGroupMemberAsync(groupId, memberIdentity), g.Name, report);
+                ok++; report($"   ✓ {g.Name} (Exchange)");
+            }
             catch (Exception ex) { failed++; report($"   ✗ {g.Name} (Exchange): {ex.Message}"); }
         }
         return (ok, failed);
@@ -135,7 +189,12 @@ public sealed class CloudProvisioningService
     {
         try
         {
-            var tap = await _graph.CreateTemporaryAccessPassAsync(userId, lifetimeMinutes, isUsableOnce);
+            // The tenant rejects concurrent writes with "please wait briefly and retry", which is exactly what
+            // the group adds just before this were doing to it.
+            TemporaryAccessPassResult? tap = null;
+            await RetryWhileCatchingUpAsync(
+                async () => tap = await _graph.CreateTemporaryAccessPassAsync(userId, lifetimeMinutes, isUsableOnce),
+                "Temporary Access Pass", report);
             report($"   ✓ Temporary Access Pass issued (valid {lifetimeMinutes} min, {(isUsableOnce ? "one-time use" : "multi-use")}).");
             return tap;
         }
