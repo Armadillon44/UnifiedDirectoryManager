@@ -119,6 +119,13 @@ public interface IDialogService
     /// description, and the editable accidental-deletion protection flag.</summary>
     void ShowOuProperties(string distinguishedName, string name);
 
+    /// <summary>
+    /// Opens one Active Directory object's properties in its own window. Non-modal, so several can be open
+    /// and the pane behind stays on whatever was being worked on — opening a member in place loses the group
+    /// you opened it from.
+    /// </summary>
+    void ShowAdObjectProperties(string distinguishedName, AdObjectType type);
+
     /// <summary>Opens the (modal) "new OU" dialog to create an organizational unit under <paramref name="parentDn"/>.
     /// Returns the new OU's distinguished name if one was created, or null if cancelled.</summary>
     string? ShowNewOu(string parentDn);

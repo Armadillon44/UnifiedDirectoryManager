@@ -1,0 +1,17 @@
+<Window x:Class="UnifiedDirectoryManager.Views.Dialogs.AdObjectPropertiesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ctrl="clr-namespace:UnifiedDirectoryManager.Views.Controls"
+        Title="{Binding Title, StringFormat='{}{0} — Properties', FallbackValue='Properties'}"
+        Height="700" Width="820"
+        WindowStartupLocation="CenterOwner">
+    <!-- The same edit pane the main window shows, on its own view model pointed at one object. Hosting the
+         control rather than reimplementing it means an object opened in a window and one opened in the pane
+         cannot drift apart — the same reasoning as the cloud properties window beside it. -->
+    <DockPanel>
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="10">
+            <Button Content="Close" IsCancel="True" Click="OnClose" MinWidth="90" />
+        </StackPanel>
+        <ctrl:EditPaneView />
+    </DockPanel>
+</Window>

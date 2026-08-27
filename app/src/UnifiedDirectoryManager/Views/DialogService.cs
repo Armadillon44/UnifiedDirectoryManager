@@ -301,6 +301,14 @@ public sealed class DialogService : IDialogService
         new CloudObjectPropertiesWindow { DataContext = vm, Owner = Owner }.Show(); // non-modal
     }
 
+    public void ShowAdObjectProperties(string distinguishedName, AdObjectType type)
+    {
+        // Its own view model, so the window and the main pane cannot fight over one object's edit state.
+        var vm = new EditPaneViewModel(_directory, this, msg => Alert("Error", msg), _graph, _exchange);
+        _ = vm.LoadAsync(distinguishedName, type);
+        new AdObjectPropertiesWindow { DataContext = vm, Owner = Owner }.Show(); // non-modal
+    }
+
     public void ShowOuProperties(string distinguishedName, string name)
     {
         var vm = new OuPropertiesViewModel(_directory, distinguishedName, name);

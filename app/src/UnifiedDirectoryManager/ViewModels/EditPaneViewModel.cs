@@ -684,10 +684,13 @@ public partial class EditPaneViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Opens a member of this group — the pane moves to that object, which is where its properties are.
-    /// The type has to be known first: LoadAsync uses it to pick the field layout, and the members list holds
-    /// only a name and a DN because resolving every member on load meant a bind each, thousands of them on a
-    /// large group. One lookup for the ONE member being opened is a different proposition entirely.
+    /// Opens a member of this group in its OWN window. Not in this pane: the pane is showing the group being
+    /// worked on, and replacing it to look at one member loses that.
+    ///
+    /// The type has to be known first — the edit pane uses it to pick the field layout, and the members list
+    /// holds only a name and a DN. That is deliberate: the list derives names from each DN's RDN because
+    /// resolving every member meant a bind each, thousands of them on a large group. One lookup for the ONE
+    /// member being opened is a different proposition entirely.
     /// </summary>
     [RelayCommand]
     private async Task OpenMemberAsync(GroupMemberRow? member)
@@ -706,7 +709,7 @@ public partial class EditPaneViewModel : ObservableObject
             _dialogs.Alert("Open member", "Could not open that member: " + DirectoryService.Friendly(ex));
             return;
         }
-        await LoadAsync(member.Dn, type);
+        _dialogs.ShowAdObjectProperties(member.Dn, type);
     }
 
     /// <summary>
