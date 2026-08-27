@@ -58,6 +58,30 @@ public static class Favorites
         return true;
     }
 
+    /// <summary>
+    /// Moves a favourite up or down the list. Returns false when it is not pinned, or when it is already at
+    /// the end it is being moved towards — the caller then does nothing rather than reporting a move that did
+    /// not happen. The order is the operator's, so it is stored, not derived.
+    /// </summary>
+    /// <param name="delta">-1 to move it earlier, +1 later. Any other value is refused.</param>
+    public static bool Move(AppSettings settings, string? domain, FavoriteEntry entry, int delta)
+    {
+        if (delta != -1 && delta != 1) return false;
+
+        var key = KeyFor(domain);
+        if (key is null || settings.Favorites is null) return false;
+        if (!settings.Favorites.TryGetValue(key, out var list)) return false;
+
+        var from = list.FindIndex(e => e.SameAs(entry));
+        if (from < 0) return false;
+
+        var to = from + delta;
+        if (to < 0 || to >= list.Count) return false;
+
+        (list[from], list[to]) = (list[to], list[from]);
+        return true;
+    }
+
     /// <summary>Unpins something. Returns false when it was not pinned in the first place.</summary>
     public static bool Remove(AppSettings settings, string? domain, FavoriteEntry entry)
     {

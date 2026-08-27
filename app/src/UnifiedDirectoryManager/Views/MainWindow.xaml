@@ -155,6 +155,10 @@
                                                   Visibility="{Binding CanCreateCloudGroup, Converter={StaticResource BoolToVis}}" />
                                         <MenuItem Header="Pin to Favourites" Click="OnNodePinClick"
                                                   Visibility="{Binding CanPin, Converter={StaticResource BoolToVis}}" />
+                                        <MenuItem Header="Move up" Click="OnNodeMoveFavoriteUpClick"
+                                                  Visibility="{Binding IsFavorite, Converter={StaticResource BoolToVis}}" />
+                                        <MenuItem Header="Move down" Click="OnNodeMoveFavoriteDownClick"
+                                                  Visibility="{Binding IsFavorite, Converter={StaticResource BoolToVis}}" />
                                         <MenuItem Header="Unpin" Click="OnNodeUnpinClick"
                                                   Visibility="{Binding IsFavorite, Converter={StaticResource BoolToVis}}" />
                                         <MenuItem Header="Properties" Click="OnNodePropertiesClick"

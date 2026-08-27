@@ -1,6 +1,6 @@
 # Pinned favourites ([issue #7](../../issues/7))
 
-Status: **agreed, not started.**
+Status: **done** — shipped over three commits on `release/2.3.0`.
 
 Pin the OUs, containers and saved searches you use most to the top of the navigation tree, so reaching them
 is one click instead of a drill-down through the OU structure.
@@ -22,6 +22,13 @@ domain is therefore pinned only there; the query itself stays in the shared stor
 **D3 — a favourite shows the object's own name.** No custom labels. The name comes from the entry itself each
 time it is shown, never from a copy taken when it was pinned, so a favourite cannot drift from the thing it
 points at.
+
+**D4 — the order is the operator's, and is stored.** Added during step 3, at the operator's request. Move up
+and move down from a favourite's own right-click menu, swapping with its neighbour; the resulting order goes
+into settings rather than being derived from pin time or name. A move that cannot happen — already at the end
+it is being moved towards, or not pinned at all — reports failure and changes nothing, so the caller does not
+save and redraw for a move that did not occur. Re-selecting the moved row is suppressed: reordering a pin is
+not a request to open it again.
 
 ---
 
@@ -71,6 +78,23 @@ later if renames turn out to be common.
 2. **The Favourites root and container pinning** — the node, the two menu entries, activation, the unavailable
    state.
 3. **Saved-search favourites** — pinning from the Advanced Search dialog, and running one on activation.
+   Reordering landed here too.
+
+## What shipped
+
+| Step | Commit | Covered by |
+|---|---|---|
+| 1 — model and persistence | `FavoriteEntry`, `Favorites`, `AppSettings.Favorites` | `test-favorites.ps1` |
+| 2 — the Favourites row, pinning, unpinning | `TreeNodeViewModel`, `MainViewModel`, `MainWindow` | `test-favorites.ps1` |
+| 3 — saved searches and reordering | `Favorites.Move`, `SavedSearchPinning`, `AdvancedSearchViewModel` | `test-favorites.ps1`, `test-search-dialog.ps1` |
+
+**The dialog does not own the favourites.** `AppSettings` lives with `MainViewModel`, which knows the
+connected domain; `DialogService` does not hold one. Rather than hand a dialog the whole settings object,
+`ShowAdvancedSearch` takes a `SavedSearchPinning` — two hooks, *is this pinned* and *toggle it* — and
+passes null when there is no connection, which hides the button entirely. Ownership stays where it was.
+
+**The Pin button is disabled until a saved search is selected.** An enabled button that does nothing when
+pressed reads as broken, and this one had exactly that shape until the off-screen harness clicked it.
 
 ## Sharp edges
 

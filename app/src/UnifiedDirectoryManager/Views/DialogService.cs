@@ -345,9 +345,9 @@ public sealed class DialogService : IDialogService
             : null;
     }
 
-    public SearchQuery? ShowAdvancedSearch(string defaultBaseDn)
+    public SearchQuery? ShowAdvancedSearch(string defaultBaseDn, SavedSearchPinning? pinning = null)
     {
-        var vm = new AdvancedSearchViewModel(this, _savedSearches);
+        var vm = new AdvancedSearchViewModel(this, _savedSearches, pinning);
         if (!string.IsNullOrWhiteSpace(defaultBaseDn))
             vm.AddBase(defaultBaseDn);
         new AdvancedSearchWindow { DataContext = vm, Owner = Owner }.ShowDialog();

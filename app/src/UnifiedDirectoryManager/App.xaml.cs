@@ -66,7 +66,7 @@ public partial class App : Application
         // (non-blocking) warning bar and the app continues — useful for cloud-only / Entra-only sessions.
         try
         {
-            var mainVm = new MainViewModel(_directory, dialogs, scenarios, settingsStore, settings, graph, exchange, credentials);
+            var mainVm = new MainViewModel(_directory, dialogs, scenarios, settingsStore, settings, graph, exchange, credentials, savedSearches);
             var main = new MainWindow { DataContext = mainVm };
             MainWindow = main;
             ShutdownMode = ShutdownMode.OnMainWindowClose;

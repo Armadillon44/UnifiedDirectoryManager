@@ -95,6 +95,16 @@ public partial class MainWindow : Window
         if (_vm is not null && NodeFromMenu(sender) is { } node) _vm.PinNode(node);
     }
 
+    private void OnNodeMoveFavoriteUpClick(object sender, RoutedEventArgs e)
+    {
+        if (_vm is not null && NodeFromMenu(sender) is { } node) _vm.MoveFavorite(node, -1);
+    }
+
+    private void OnNodeMoveFavoriteDownClick(object sender, RoutedEventArgs e)
+    {
+        if (_vm is not null && NodeFromMenu(sender) is { } node) _vm.MoveFavorite(node, +1);
+    }
+
     private void OnNodeUnpinClick(object sender, RoutedEventArgs e)
     {
         if (_vm is not null && NodeFromMenu(sender) is { } node) _vm.UnpinNode(node);

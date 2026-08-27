@@ -76,8 +76,45 @@ public partial class AdvancedSearchViewModel : ObservableObject
     /// <summary>Set when the user runs the search; the dialog closes and the host runs it.</summary>
     public SearchQuery? Result { get; private set; }
 
-    public AdvancedSearchViewModel(IDialogService dialogs, ISavedSearchStore savedSearches)
+    private readonly SavedSearchPinning? _pinning;
+
+    /// <summary>True only when the host offered somewhere to pin to — no favourites, no button.</summary>
+    public bool CanPinSearches => _pinning is not null;
+
+    /// <summary>Reads as Unpin once the selected search is pinned, so one button says which way it goes.</summary>
+    public string PinButtonText => IsSelectedPinned ? "Unpin" : "Pin";
+
+    /// <summary>Whether the selected saved search is pinned to the tree's Favourites.</summary>
+    public bool IsSelectedPinned =>
+        _pinning is not null
+        && !string.IsNullOrWhiteSpace(SelectedSavedSearch?.Name)
+        && _pinning.IsPinned(SelectedSavedSearch!.Name);
+
+    /// <summary>Nothing selected means there is no search to pin, so the button greys out rather than
+    /// sitting there enabled and doing nothing when it is pressed.</summary>
+    private bool CanTogglePin() => _pinning is not null && !string.IsNullOrWhiteSpace(SelectedSavedSearch?.Name);
+
+    [RelayCommand(CanExecute = nameof(CanTogglePin))]
+    private void TogglePin()
     {
+        if (!CanTogglePin()) return;
+        _pinning!.TogglePin(SelectedSavedSearch!.Name);
+        OnPropertyChanged(nameof(IsSelectedPinned));
+        OnPropertyChanged(nameof(PinButtonText));
+    }
+
+    partial void OnSelectedSavedSearchChanged(SavedSearch? value)
+    {
+        // The button describes the SELECTED search, so it has to be recomputed when the selection moves.
+        OnPropertyChanged(nameof(IsSelectedPinned));
+        OnPropertyChanged(nameof(PinButtonText));
+        TogglePinCommand.NotifyCanExecuteChanged();
+    }
+
+    public AdvancedSearchViewModel(IDialogService dialogs, ISavedSearchStore savedSearches,
+                                   SavedSearchPinning? pinning = null)
+    {
+        _pinning = pinning;
         _dialogs = dialogs;
         _savedSearches = savedSearches;
         Conditions.CollectionChanged += OnConditionsChanged;

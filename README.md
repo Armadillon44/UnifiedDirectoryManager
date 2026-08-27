@@ -93,6 +93,10 @@ templates, and logs live under `%APPDATA%\UnifiedDirectoryManager\` and follow y
   provision many users in one phased pass with per-user passphrases and Temporary Access Passes.
 - **Advanced search → Bulk Edit** — build conditions by friendly attribute name (or raw LDAP), **save and
   recall** searches/queries, then set attributes / enable-disable / add-remove groups across all matches.
+- **Pinned favourites** — pin the OUs and saved searches you use most to a **Favourites** row at the top of the
+  tree, reorder them, and reach them in one click instead of a drill-down. Pins are kept **per domain**, since
+  a distinguished name only means something in the domain it came from, and a pin whose target has been
+  renamed or deleted is greyed out and left in place rather than quietly dropped.
 - **Entra ID (cloud)** — manage a synced object's Entra groups and account state, and run an **Entra
   Connect delta sync** on demand.
 - **Exchange Online** — its own nav section for **mailboxes** and **distribution groups**: read every property

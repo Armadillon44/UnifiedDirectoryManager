@@ -74,6 +74,50 @@ foreach ($n in 'OU=A,DC=x', 'OU=B,DC=x', 'OU=C,DC=x') { [void]$F::Add($s, 'x.net
 Check 'first stays first' 'OU=A,DC=x' (@($F::For($s, 'x.net')))[0].Value
 Check 'last stays last'   'OU=C,DC=x' (@($F::For($s, 'x.net')))[2].Value
 
+Write-Host "`n== reordering ==" -ForegroundColor Cyan
+# The order is the operator's, so it is stored rather than derived. A move that cannot happen has to report
+# false: the caller saves and rebuilds on true, and a silent "true" for a move off the end would rewrite the
+# settings file and redraw the tree for nothing.
+$s = NewSettings
+foreach ($n in 'OU=A,DC=x', 'OU=B,DC=x', 'OU=C,DC=x') { [void]$F::Add($s, 'x.net', (Ou $n)) }
+function Order { (@($F::For($s, 'x.net')) | ForEach-Object { $_.Value }) -join ',' }
+
+Check 'moving the last one up reports success' $true $F::Move($s, 'x.net', (Ou 'OU=C,DC=x'), -1)
+Check 'and it swaps with the one above'  'OU=A,DC=x,OU=C,DC=x,OU=B,DC=x' (Order)
+Check 'moving it up again'               $true $F::Move($s, 'x.net', (Ou 'OU=C,DC=x'), -1)
+Check 'takes it to the top'              'OU=C,DC=x,OU=A,DC=x,OU=B,DC=x' (Order)
+# Already at the top: nothing to swap with, so nothing happens and the caller is told so.
+Check 'moving past the top is refused'   $false $F::Move($s, 'x.net', (Ou 'OU=C,DC=x'), -1)
+Check 'and the order is untouched'       'OU=C,DC=x,OU=A,DC=x,OU=B,DC=x' (Order)
+Check 'moving down works the same way'   $true $F::Move($s, 'x.net', (Ou 'OU=C,DC=x'), 1)
+Check 'in the other direction'           'OU=A,DC=x,OU=C,DC=x,OU=B,DC=x' (Order)
+Check 'and stops at the bottom'          $false $F::Move($s, 'x.net', (Ou 'OU=B,DC=x'), 1)
+Check 'leaving the order untouched'      'OU=A,DC=x,OU=C,DC=x,OU=B,DC=x' (Order)
+
+# A move is a swap with a neighbour. Anything else is a caller bug, not a bigger jump to honour.
+Check 'a delta of zero is refused'       $false $F::Move($s, 'x.net', (Ou 'OU=B,DC=x'), 0)
+Check 'and so is a jump of two'          $false $F::Move($s, 'x.net', (Ou 'OU=B,DC=x'), -2)
+Check 'the order survives both'          'OU=A,DC=x,OU=C,DC=x,OU=B,DC=x' (Order)
+
+# Nothing to move: an unpinned entry, an unknown domain, or no domain at all.
+Check 'an unpinned entry cannot move'    $false $F::Move($s, 'x.net', (Ou 'OU=Z,DC=x'), -1)
+# Both directions: moving an unpinned entry UP is refused by the lower bound whether or not it is found,
+# so only moving one DOWN proves the not-found check is there.
+Check 'in either direction'              $false $F::Move($s, 'x.net', (Ou 'OU=Z,DC=x'), 1)
+Check 'nor can one in another domain'    $false $F::Move($s, 'other.net', (Ou 'OU=C,DC=x'), -1)
+Check 'nor one with no domain'           $false $F::Move($s, '', (Ou 'OU=C,DC=x'), -1)
+# Casing is not a different favourite, here as everywhere else.
+Check 'a differently-cased entry moves'  $true  $F::Move($s, 'X.NET', (Ou 'ou=c,dc=x'), -1)
+Check 'and lands where expected'         'OU=C,DC=x,OU=A,DC=x,OU=B,DC=x' (Order)
+
+# The order is only worth storing if it comes back.
+$dir = Join-Path ([System.IO.Path]::GetTempPath()) ("udm-fav-" + [System.Guid]::NewGuid().ToString('N'))
+$store = New-Object UnifiedDirectoryManager.Services.SettingsStore $dir
+$store.Save($s)
+$s = $store.Load()
+Check 'the order survives a round trip'  'OU=C,DC=x,OU=A,DC=x,OU=B,DC=x' (Order)
+Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+
 Write-Host "`n== one domain's pins never show in another ==" -ForegroundColor Cyan
 # The whole reason for scoping: a DN from one domain is meaningless in another and fails when clicked.
 $s = NewSettings
@@ -158,6 +202,82 @@ $search = $Node::new((Search 'Disabled users'), 'Disabled users', $null, $onErr)
 Check 'a pinned search has its own glyph' '🔎' $search.Glyph
 # A saved search has no DN, so it must not be mistaken for a container to load.
 Check 'and is not a container'            $false $search.IsContainerNode
+
+Write-Host "`n== pinning a saved search from the Advanced Search dialog ==" -ForegroundColor Cyan
+# The dialog does not own the favourites; it is handed two hooks by whoever does. Test through the real view
+# model, because the button's label and visibility are what an operator actually sees.
+$searchDir = Join-Path ([System.IO.Path]::GetTempPath()) ("udm-srch-" + [System.Guid]::NewGuid().ToString('N'))
+$searchStore = New-Object UnifiedDirectoryManager.Services.SavedSearchStore $searchDir
+foreach ($n in 'Disabled users', 'Stale accounts') {
+    $sv = New-Object UnifiedDirectoryManager.Models.SavedSearch
+    $sv.Name = $n
+    $searchStore.Save($sv, $null)
+}
+
+# Stand in for MainViewModel's hooks with the same Favorites calls it makes.
+$fs = NewSettings
+$isPinned = [System.Func[string, bool]]{ param($name) $F::Contains($fs, 'contoso.net', (Search $name)) }
+$toggled = New-Object System.Collections.Generic.List[string]
+$togglePin = [System.Action[string]]{
+    param($name)
+    $toggled.Add($name)
+    if ($F::Contains($fs, 'contoso.net', (Search $name))) { [void]$F::Remove($fs, 'contoso.net', (Search $name)) }
+    else { [void]$F::Add($fs, 'contoso.net', (Search $name)) }
+}
+$pinning = New-Object UnifiedDirectoryManager.Services.SavedSearchPinning $isPinned, $togglePin
+
+# IDialogService is only reached by save/delete confirmations, which this does not exercise.
+$Vm = [UnifiedDirectoryManager.ViewModels.AdvancedSearchViewModel]
+$vm = $Vm::new([UnifiedDirectoryManager.Services.IDialogService]$null, $searchStore, $pinning)
+Check 'the dialog offers pinning'      $true  $vm.CanPinSearches
+# The store seeds a couple of built-in searches the first time it is used, so look for the two added here
+# rather than counting the lot.
+$names = @($vm.SavedSearches | ForEach-Object { $_.Name })
+Check 'the saved searches are listed' $true (($names -contains 'Disabled users') -and ($names -contains 'Stale accounts'))
+
+$vm.SelectedSavedSearch = $vm.SavedSearches[0]
+$name = $vm.SelectedSavedSearch.Name
+Check 'nothing is pinned yet'          $false $vm.IsSelectedPinned
+Check 'so the button offers to pin'    'Pin'  $vm.PinButtonText
+
+$vm.TogglePinCommand.Execute($null)
+Check 'pinning goes through the hook'  $true  ($toggled -contains $name)
+Check 'and the search is now pinned'   $true  $F::Contains($fs, 'contoso.net', (Search $name))
+Check 'the view model agrees'          $true  $vm.IsSelectedPinned
+# The button has to change, or the only way to unpin is to guess that Pin now unpins.
+Check 'and the button now offers Unpin' 'Unpin' $vm.PinButtonText
+
+$vm.TogglePinCommand.Execute($null)
+Check 'toggling again unpins'          $false $F::Contains($fs, 'contoso.net', (Search $name))
+Check 'and the button reverts'         'Pin'  $vm.PinButtonText
+
+# The button describes the SELECTED search. Move the selection and it has to be recomputed, or a pinned
+# search shows Pin and an unpinned one shows Unpin.
+[void]$F::Add($fs, 'contoso.net', (Search $vm.SavedSearches[1].Name))
+$raisedVm = New-Object System.Collections.Generic.List[string]
+$h = [System.ComponentModel.PropertyChangedEventHandler]{ param($s, $e) $raisedVm.Add($e.PropertyName) }
+$vm.add_PropertyChanged($h)
+$vm.SelectedSavedSearch = $vm.SavedSearches[1]
+$vm.remove_PropertyChanged($h)
+Check 'changing selection re-reads the pin' $true  $vm.IsSelectedPinned
+Check 'and says so on the button'           'Unpin' $vm.PinButtonText
+Check 'and the change is announced'         $true  ($raisedVm -contains 'PinButtonText')
+
+# Nothing selected: there is no search to pin, so the command must not call the hook with an empty name.
+$before = $toggled.Count
+$vm.SelectedSavedSearch = $null
+$vm.TogglePinCommand.Execute($null)
+Check 'no selection pins nothing'      $before $toggled.Count
+Check 'and reads as unpinned'          $false $vm.IsSelectedPinned
+
+# No connection means no domain to file a favourite under, so the button is not offered at all.
+$noPin = $Vm::new([UnifiedDirectoryManager.Services.IDialogService]$null, $searchStore, $null)
+Check 'without hooks there is no button' $false $noPin.CanPinSearches
+# It still must not throw when something calls it anyway.
+$noPin.SelectedSavedSearch = $noPin.SavedSearches[0]
+$noPin.TogglePinCommand.Execute($null)
+Check 'and toggling is harmless'         $false $noPin.IsSelectedPinned
+Remove-Item -Recurse -Force $searchDir -ErrorAction SilentlyContinue
 
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

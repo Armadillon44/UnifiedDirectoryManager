@@ -6,6 +6,15 @@ namespace UnifiedDirectoryManager.Services;
 /// <summary>
 /// Opens the app's dialogs/windows on behalf of view models, keeping window creation out of the VMs.
 /// </summary>
+/// <summary>
+/// Lets the Advanced Search dialog pin and unpin a saved search without owning the favourites. The settings
+/// live with the view model that has the connected domain; passing two small hooks keeps that ownership
+/// where it is rather than handing a dialog the whole settings object.
+/// </summary>
+/// <param name="IsPinned">Whether a saved search, by name, is currently pinned.</param>
+/// <param name="TogglePin">Pins it if it is not, unpins it if it is.</param>
+public sealed record SavedSearchPinning(Func<string, bool> IsPinned, Action<string> TogglePin);
+
 public interface IDialogService
 {
     /// <summary>Searchable picker. Returns selected rows, or null if cancelled.</summary>
@@ -144,7 +153,8 @@ public interface IDialogService
     (string Id, string Name, bool FromExchange)? ShowNewCloudGroup(CloudGroupType? initialType);
 
     /// <summary>Advanced search builder. Returns the query to run, or null if cancelled.</summary>
-    SearchQuery? ShowAdvancedSearch(string defaultBaseDn);
+    /// <param name="pinning">Supplied by whoever owns the favourites; null hides the Pin button entirely.</param>
+    SearchQuery? ShowAdvancedSearch(string defaultBaseDn, SavedSearchPinning? pinning = null);
 
     /// <summary>Bulk-edit dialog over the given targets. Returns true if changes were applied.</summary>
     bool ShowBulkEdit(IReadOnlyList<AdObjectRow> rows);

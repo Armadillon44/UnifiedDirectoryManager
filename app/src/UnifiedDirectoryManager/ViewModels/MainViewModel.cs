@@ -20,6 +20,7 @@ public partial class MainViewModel : ObservableObject
     private readonly IGraphService _graph;
     private readonly IExchangeService _exchange;
     private readonly ICredentialStore _credentials;
+    private readonly ISavedSearchStore _savedSearches;
     private TreeNodeViewModel? _cloudRoot;
     private TreeNodeViewModel? _exchangeRoot;
     private bool _scenarioRunning; // guards against a second (fire-and-forget) scenario run overlapping
@@ -76,6 +77,7 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     private async Task OpenFavoriteAsync(TreeNodeViewModel node)
     {
+        if (node.Favorite is { Kind: FavoriteKind.SavedSearch }) { RunFavoriteSearch(node); return; }
         if (node.Favorite is not { Kind: FavoriteKind.Container }) return;
         try
         {
@@ -94,6 +96,50 @@ public partial class MainViewModel : ObservableObject
         await List.LoadContainerAsync(node.DistinguishedName);
     }
 
+    /// <summary>
+    /// Runs a pinned saved search. The query is read from the store at the moment it is clicked, never
+    /// copied into the pin, so editing a saved search changes what its favourite does — which is what an
+    /// operator who edited it expects.
+    /// </summary>
+    private void RunFavoriteSearch(TreeNodeViewModel node)
+    {
+        var name = node.Favorite!.Value;
+        var search = _savedSearches.LoadAll()
+            .FirstOrDefault(s => string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (search?.Query is null)
+        {
+            // Same reasoning as a missing OU: mark it, leave it, and say what to do about it. The list
+            // swallows its own errors, so without this a deleted search would just show an empty list.
+            node.IsUnavailable = true;
+            SetError($"The saved search “{name}” could not be found — it may have been renamed or deleted. "
+                     + "Unpin it from its right-click menu.");
+            return;
+        }
+        node.IsUnavailable = false;
+        StatusMessage = $"Showing “{name}”.";
+        _ = List.LoadQueryAsync(search.Query);
+    }
+
+    /// <summary>
+    /// Hands the Advanced Search dialog just enough to pin a saved search, without handing it the settings.
+    /// Nothing is offered before a connection: favourites are filed per domain, so there would be nowhere
+    /// to file it.
+    /// </summary>
+    private SavedSearchPinning? SearchPinning() =>
+        FavoritesDomain is null ? null : new SavedSearchPinning(
+            name => Favorites.Contains(Settings, FavoritesDomain,
+                        new FavoriteEntry { Kind = FavoriteKind.SavedSearch, Value = name }),
+            name =>
+            {
+                var entry = new FavoriteEntry { Kind = FavoriteKind.SavedSearch, Value = name };
+                var pinned = Favorites.Contains(Settings, FavoritesDomain, entry);
+                if (pinned) Favorites.Remove(Settings, FavoritesDomain, entry);
+                else Favorites.Add(Settings, FavoritesDomain, entry);
+                _settingsStore.Save(Settings);
+                RebuildFavorites();
+                StatusMessage = pinned ? $"Unpinned “{name}”." : $"Pinned “{name}”.";
+            });
+
     /// <summary>Pins a container. Saves immediately: a pin lost to a crash is a pin the operator has to notice.</summary>
     public void PinNode(TreeNodeViewModel? node)
     {
@@ -107,6 +153,31 @@ public partial class MainViewModel : ObservableObject
         _settingsStore.Save(Settings);
         RebuildFavorites();
         StatusMessage = $"Pinned “{node.Name}”.";
+    }
+
+    /// <summary>
+    /// Moves a favourite up or down. The list is rebuilt from settings afterwards, so what is on screen is
+    /// always what was stored rather than a separately-maintained copy of it.
+    /// </summary>
+    public void MoveFavorite(TreeNodeViewModel? node, int delta)
+    {
+        if (node?.Favorite is null) return;
+        if (!Favorites.Move(Settings, FavoritesDomain, node.Favorite, delta)) return;
+        _settingsStore.Save(Settings);
+        RebuildFavorites();
+
+        // Keep the row the operator was acting on selected, so a second Move up moves the same favourite
+        // again instead of whatever has taken its place. Suppressed, because re-selecting it is not a
+        // request to open it again.
+        var moved = _favoritesRoot?.Children.FirstOrDefault(c => c.Favorite?.SameAs(node.Favorite) == true);
+        if (moved is null) return;
+        _suppressNodeLoad = true;
+        try
+        {
+            SelectedNode = moved;
+            moved.IsSelected = true;
+        }
+        finally { _suppressNodeLoad = false; }
     }
 
     /// <summary>Unpins a favourite. Only the shortcut goes; the object it pointed at is untouched.</summary>
@@ -154,7 +225,7 @@ public partial class MainViewModel : ObservableObject
 
     public MainViewModel(IDirectoryService directory, IDialogService dialogs, IScenarioStore scenarios,
         ISettingsStore settingsStore, AppSettings settings, IGraphService graph, IExchangeService exchange,
-        ICredentialStore credentials)
+        ICredentialStore credentials, ISavedSearchStore savedSearches)
     {
         _directory = directory;
         _dialogs = dialogs;
@@ -163,6 +234,7 @@ public partial class MainViewModel : ObservableObject
         _graph = graph;
         _exchange = exchange;
         _credentials = credentials;
+        _savedSearches = savedSearches;
         Settings = settings;
         _editDock = Enum.TryParse<EditPaneDock>(settings.EditDock, out var dock) ? dock : EditPaneDock.Right;
 
@@ -351,7 +423,10 @@ public partial class MainViewModel : ObservableObject
         // The Favourites row holds pins; it is not somewhere to navigate to.
         if (value is { IsFavoritesRoot: true }) return;
 
-        if (value is { IsFavorite: true }) { _ = OpenFavoriteAsync(value); return; }
+        // Reordering re-selects the row it moved, which lands here. Activating a favourite means loading a
+        // container or running a saved search, and neither is worth doing again just because the pin moved
+        // one place up the list.
+        if (value is { IsFavorite: true }) { if (!_suppressNodeLoad) _ = OpenFavoriteAsync(value); return; }
 
         if (value is { IsPlaceholder: false })
             _ = List.LoadContainerAsync(value.DistinguishedName);
@@ -500,7 +575,7 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void AdvancedSearch()
     {
-        var query = _dialogs.ShowAdvancedSearch(SelectedNode?.DistinguishedName ?? string.Empty);
+        var query = _dialogs.ShowAdvancedSearch(SelectedNode?.DistinguishedName ?? string.Empty, SearchPinning());
         if (query is not null)
         {
             StatusMessage = "Showing advanced search results.";
