@@ -35,6 +35,18 @@ seeing before writing to a group.
 group only. Multi-group targeting multiplies the failure modes and the report, for a task that is already the
 uncommon one.
 
+**D4 — the paste is capped at 100 lines.** A realistic largest paste. Beyond it the dialog says so and takes
+the first 100 rather than silently truncating or running into the 90-second op timeout, which kills the pwsh
+host and takes every open Exchange session with it (G1).
+
+**D5 — add only.** Removing several members at once already works in the membership editors, so removal is out
+of scope for this pass. It is also the more destructive direction and deserves its own confirmation design
+rather than inheriting this one.
+
+**D6 — only an EXACT match resolves itself; a fuzzy match always asks.** A search that happens to return one
+candidate is still a guess about a half-specified name. Rungs 1-3 can resolve a row on their own because they
+matched an identifier or a whole name; rung 4 always lands in *Choose*, even with a single hit.
+
 ---
 
 ## The resolution ladder
