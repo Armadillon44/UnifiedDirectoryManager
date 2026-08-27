@@ -41,6 +41,10 @@
                 <Button Content="Add members…" Command="{Binding AddMembersCommand}" MinWidth="110"
                         Visibility="{Binding CanEdit, Converter={StaticResource BoolToVis}}"
                         IsEnabled="{Binding CanWriteNow}" />
+                <Button Content="Paste a list…" Command="{Binding PasteMembersCommand}" MinWidth="110" Margin="6,0,0,0"
+                        Visibility="{Binding CanEdit, Converter={StaticResource BoolToVis}}"
+                        IsEnabled="{Binding CanWriteNow}"
+                        ToolTip="Paste many people at once — addresses, logon names or names — and review what each line resolved to before anything is added." />
                 <Button Content="Remove selected" Click="OnRemoveSelected" MinWidth="110" Margin="6,0,0,0"
                         Visibility="{Binding CanEdit, Converter={StaticResource BoolToVis}}"
                         IsEnabled="{Binding CanWriteNow}" />

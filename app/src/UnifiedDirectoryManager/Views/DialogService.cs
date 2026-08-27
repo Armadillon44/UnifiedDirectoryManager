@@ -100,6 +100,13 @@ public sealed class DialogService : IDialogService
         return window.ShowDialog() == true && vm.Commit() ? vm.Picked : null;
     }
 
+    public IReadOnlyList<MailboxRecipient>? PasteMembers(string title, IEnumerable<string> alreadyMembers, string? selfIdentity)
+    {
+        var vm = new PasteMembersViewModel(_exchange, alreadyMembers, selfIdentity);
+        var window = new PasteMembersWindow { DataContext = vm, Title = title, Owner = Owner };
+        return window.ShowDialog() == true ? vm.Accepted : null;
+    }
+
     public void ShowDistributionGroupMembers(string identity, string groupName, bool isSynced)
     {
         var vm = new DistributionGroupMembersViewModel(_exchange, this, identity, groupName, isSynced);

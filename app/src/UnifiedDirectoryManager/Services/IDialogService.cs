@@ -39,6 +39,15 @@ public interface IDialogService
     /// </summary>
     void ShowDistributionGroupMembers(string identity, string groupName, bool isSynced);
 
+    /// <summary>
+    /// Pastes a list of people, resolves each line, and returns the ones the operator settled on — or null if
+    /// cancelled. Resolution only; the caller does the adding, so there is one write path and one report.
+    /// </summary>
+    /// <param name="alreadyMembers">Identities already in the group, so those rows are marked and skipped
+    /// instead of costing a round trip to be told they are already there.</param>
+    /// <param name="selfIdentity">The group itself, which cannot be its own member.</param>
+    IReadOnlyList<MailboxRecipient>? PasteMembers(string title, IEnumerable<string> alreadyMembers, string? selfIdentity);
+
     /// <summary>Edits a delegate's mailbox access (which permissions + auto-map), pre-checked to <paramref name="current"/>.
     /// Returns the chosen permission set and auto-map preference, or null if cancelled.</summary>
     (DelegateAccess Access, bool AutoMapping)? EditDelegateAccess(string delegateName, DelegateAccess current);

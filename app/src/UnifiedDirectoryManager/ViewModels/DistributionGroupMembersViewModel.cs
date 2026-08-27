@@ -85,7 +85,27 @@ public partial class DistributionGroupMembersViewModel : ObservableObject
     private async Task AddMembersAsync()
     {
         var picked = _dialogs.PickMailboxRecipients($"Add members to “{GroupName}”");
-        if (picked is null || picked.Count == 0) return;
+        if (picked is not null) await AddResolvedAsync(picked);
+    }
+
+    /// <summary>
+    /// Adds many people at once from a pasted list. The dialog only resolves; the add below is the same one
+    /// the picker uses, so the dedupe, the confirmation and the per-member report cannot drift apart.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanRunWrite))]
+    private async Task PasteMembersAsync()
+    {
+        var resolved = _dialogs.PasteMembers(
+            $"Add members to “{GroupName}” from a list",
+            Members.Select(m => m.Identity),
+            _identity);
+        if (resolved is not null) await AddResolvedAsync(resolved);
+    }
+
+    /// <summary>The one add path, whichever dialog chose the people.</summary>
+    private async Task AddResolvedAsync(IReadOnlyList<MailboxRecipient> picked)
+    {
+        if (picked.Count == 0) return;
 
         // Skip anyone already in the group rather than spending a round trip to be told so. The add itself is
         // idempotent, so this is about time, not correctness.
