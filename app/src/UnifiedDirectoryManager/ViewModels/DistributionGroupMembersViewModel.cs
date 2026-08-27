@@ -97,9 +97,18 @@ public partial class DistributionGroupMembersViewModel : ObservableObject
     {
         var resolved = _dialogs.PasteMembers(
             $"Add members to “{GroupName}” from a list",
+            MemberBackend.Exchange,
             Members.Select(m => m.Identity),
             _identity);
-        if (resolved is not null) await AddResolvedAsync(resolved);
+        if (resolved is null) return;
+
+        await AddResolvedAsync(resolved.Select(c => new MailboxRecipient
+        {
+            Identity = c.Identity,
+            DisplayName = c.DisplayName,
+            PrimarySmtpAddress = c.Identity,
+            RecipientType = c.Kind ?? string.Empty,
+        }).ToList());
     }
 
     /// <summary>The one add path, whichever dialog chose the people.</summary>

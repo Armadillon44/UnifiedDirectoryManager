@@ -12,7 +12,8 @@ function Check([string]$n,$e,$a){ if($e -eq $a){$script:pass++;Write-Host "  PAS
 
 # The view model needs an IExchangeService; only ResolveMembersAsync is exercised, so a null is enough to
 # construct it and prove the window binds. Resolution itself is covered by the host-script suite.
-$vm = New-Object UnifiedDirectoryManager.ViewModels.PasteMembersViewModel @($null, [string[]]@(), $null)
+# Any IMemberResolver will do here; resolution itself is covered by the host-script suite.
+$vm = New-Object UnifiedDirectoryManager.ViewModels.PasteMembersViewModel @([UnifiedDirectoryManager.Services.IMemberResolver]$null, [string[]]@(), $null)
 $w = New-Object UnifiedDirectoryManager.Views.Dialogs.PasteMembersWindow
 $w.DataContext = $vm
 $w.WindowStyle='None'; $w.ShowInTaskbar=$false; $w.Left=-10000; $w.Top=-10000

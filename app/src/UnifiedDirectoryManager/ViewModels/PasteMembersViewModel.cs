@@ -99,7 +99,7 @@ public sealed partial class PastedMemberRow : ObservableObject
 /// </summary>
 public partial class PasteMembersViewModel : ObservableObject
 {
-    private readonly IExchangeService _exchange;
+    private readonly IMemberResolver _resolver;
     private readonly ISet<string> _alreadyMembers;
     private readonly string? _selfIdentity;
 
@@ -111,12 +111,15 @@ public partial class PasteMembersViewModel : ObservableObject
 
     public ObservableCollection<PastedMemberRow> Rows { get; } = new();
 
-    /// <summary>The recipients to add, once the operator accepts. Empty until then.</summary>
-    public List<MailboxRecipient> Accepted { get; } = new();
+    /// <summary>
+    /// The people to add, once the operator accepts. Backend-neutral: Identity is whatever that directory
+    /// writes a membership with — an SMTP address, an object id, or a distinguished name.
+    /// </summary>
+    public List<MemberCandidate> Accepted { get; } = new();
 
-    public PasteMembersViewModel(IExchangeService exchange, IEnumerable<string>? alreadyMembers, string? selfIdentity)
+    public PasteMembersViewModel(IMemberResolver resolver, IEnumerable<string>? alreadyMembers, string? selfIdentity)
     {
-        _exchange = exchange;
+        _resolver = resolver;
         _alreadyMembers = new HashSet<string>(alreadyMembers ?? [], StringComparer.OrdinalIgnoreCase);
         _selfIdentity = string.IsNullOrWhiteSpace(selfIdentity) ? null : selfIdentity;
     }
@@ -138,7 +141,7 @@ public partial class PasteMembersViewModel : ObservableObject
         try
         {
             var progress = new Progress<int>(done => Status = $"Resolving {done} of {parsed.Terms.Count}…");
-            var resolved = await _exchange.ResolveMembersAsync(parsed.Terms, progress);
+            var resolved = await _resolver.ResolveAsync(parsed.Terms, progress);
             foreach (var r in resolved) Rows.Add(new PastedMemberRow(r, _alreadyMembers, _selfIdentity));
             HasResolved = true;
             Status = Describe(parsed);
@@ -173,17 +176,7 @@ public partial class PasteMembersViewModel : ObservableObject
     public bool Commit()
     {
         Accepted.Clear();
-        foreach (var row in Rows.Where(r => r.WillAdd && r.Chosen is not null))
-        {
-            var c = row.Chosen!;
-            Accepted.Add(new MailboxRecipient
-            {
-                Identity = c.Identity,
-                DisplayName = c.DisplayName,
-                PrimarySmtpAddress = c.Identity,
-                RecipientType = c.Kind ?? string.Empty,
-            });
-        }
+        foreach (var row in Rows.Where(r => r.WillAdd && r.Chosen is not null)) Accepted.Add(row.Chosen!);
         return Accepted.Count > 0;
     }
 }

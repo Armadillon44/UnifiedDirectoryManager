@@ -683,6 +683,26 @@ public partial class EditPaneViewModel : ObservableObject
         await RunWrite(() => _directory.AddMembersAsync(_dn!, picked.Select(p => p.DistinguishedName).ToList()));
     }
 
+    /// <summary>
+    /// Adds many members at once from a pasted list. Resolved against Active Directory, because that is what
+    /// owns this group's membership — a cloud-only user has no distinguished name to add.
+    /// </summary>
+    [RelayCommand]
+    private async Task PasteMembersAsync()
+    {
+        if (_dn is null || !IsGroup) return;
+
+        var resolved = _dialogs.PasteMembers(
+            $"Add members to “{Title}” from a list", MemberBackend.ActiveDirectory, Members.Select(m => m.Dn), _dn);
+        if (resolved is null || resolved.Count == 0) return;
+
+        if (!_dialogs.Confirm("Confirm", $"Add {resolved.Count} member(s) to “{Title}”?",
+                resolved.Select(c => c.DisplayName)))
+            return;
+
+        await RunWrite(() => _directory.AddMembersAsync(_dn!, resolved.Select(c => c.Identity).ToList()));
+    }
+
     [RelayCommand]
     private async Task RemoveMemberAsync(object? selected)
     {

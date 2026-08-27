@@ -100,9 +100,16 @@ public sealed class DialogService : IDialogService
         return window.ShowDialog() == true && vm.Commit() ? vm.Picked : null;
     }
 
-    public IReadOnlyList<MailboxRecipient>? PasteMembers(string title, IEnumerable<string> alreadyMembers, string? selfIdentity)
+    public IReadOnlyList<MemberCandidate>? PasteMembers(string title, MemberBackend backend, IEnumerable<string> alreadyMembers, string? selfIdentity)
     {
-        var vm = new PasteMembersViewModel(_exchange, alreadyMembers, selfIdentity);
+        // The resolver is chosen by whoever owns the group's membership, never by what the operator pasted.
+        IMemberResolver resolver = backend switch
+        {
+            MemberBackend.ActiveDirectory => new AdMemberResolver(_directory),
+            MemberBackend.Entra => new EntraMemberResolver(_graph),
+            _ => new ExchangeMemberResolver(_exchange),
+        };
+        var vm = new PasteMembersViewModel(resolver, alreadyMembers, selfIdentity);
         var window = new PasteMembersWindow { DataContext = vm, Title = title, Owner = Owner };
         return window.ShowDialog() == true ? vm.Accepted : null;
     }

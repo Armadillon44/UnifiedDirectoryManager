@@ -261,6 +261,8 @@
                         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6"
                                     Visibility="{Binding CanAddMembers, Converter={StaticResource BoolToVis}}">
                             <Button Content="Add members…" Command="{Binding AddMembersCommand}" Margin="0,0,6,0" />
+                            <Button Content="Paste a list…" Command="{Binding PasteMembersCommand}" Margin="0,0,6,0"
+                                    ToolTip="Paste many people at once — addresses, logon names or names — and review what each line resolved to before anything is added." />
                             <Button Content="Remove selected" Command="{Binding RemoveMembersCommand}"
                                     CommandParameter="{Binding SelectedItems, ElementName=CloudMembersList}" />
                         </StackPanel>

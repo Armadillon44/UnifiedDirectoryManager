@@ -46,7 +46,8 @@ public interface IDialogService
     /// <param name="alreadyMembers">Identities already in the group, so those rows are marked and skipped
     /// instead of costing a round trip to be told they are already there.</param>
     /// <param name="selfIdentity">The group itself, which cannot be its own member.</param>
-    IReadOnlyList<MailboxRecipient>? PasteMembers(string title, IEnumerable<string> alreadyMembers, string? selfIdentity);
+    /// <param name="backend">Which directory to resolve against — the one that owns this group's membership.</param>
+    IReadOnlyList<MemberCandidate>? PasteMembers(string title, MemberBackend backend, IEnumerable<string> alreadyMembers, string? selfIdentity);
 
     /// <summary>Edits a delegate's mailbox access (which permissions + auto-map), pre-checked to <paramref name="current"/>.
     /// Returns the chosen permission set and auto-map preference, or null if cancelled.</summary>

@@ -438,16 +438,40 @@ public partial class CloudObjectDetailViewModel : ObservableObject
 
         var picked = _dialogs.PickCloudMembers($"Add members to “{row.DisplayName}”");
         if (picked is null || picked.Count == 0) return;
+        await AddMemberIdsAsync(row, picked.Select(p => (p.Id, p.DisplayName, p.Kind.ToString())).ToList());
+    }
+
+    /// <summary>
+    /// Adds many people at once from a pasted list. Resolved against Entra, because that is what owns this
+    /// group's membership; the add itself is the same one the picker uses.
+    /// </summary>
+    [RelayCommand]
+    private async Task PasteMembersAsync()
+    {
+        var row = _currentTarget;
+        if (row is null || row.Kind != CloudObjectKind.Group || row.Source == CloudObjectSource.Exchange) return;
+
+        var already = Members.Select(m => m.Id).Where(id => !string.IsNullOrWhiteSpace(id));
+        var resolved = _dialogs.PasteMembers(
+            $"Add members to “{row.DisplayName}” from a list", MemberBackend.Entra, already, row.Id);
+        if (resolved is null) return;
+        await AddMemberIdsAsync(row, resolved.Select(c => (c.Identity, c.DisplayName, c.Kind ?? "User")).ToList());
+    }
+
+    /// <summary>The one add path, whichever dialog chose the people.</summary>
+    private async Task AddMemberIdsAsync(CloudObjectRow row, IReadOnlyList<(string Id, string Name, string Kind)> picked)
+    {
+        if (picked.Count == 0) return;
         if (!_dialogs.Confirm("Add members", $"Add {picked.Count} member(s) to “{row.DisplayName}”?",
-                picked.Select(p => $"{p.Kind}: {p.DisplayName}")))
+                picked.Select(p => $"{p.Kind}: {p.Name}")))
             return;
 
         IsBusy = true;
         var items = new List<BulkItemResult>();
         foreach (var m in picked)
         {
-            try { await _graph.AddMemberToGroupAsync(row.Id, m.Id); items.Add(new BulkItemResult(m.Id, m.DisplayName, true, null)); }
-            catch (Exception ex) { items.Add(new BulkItemResult(m.Id, m.DisplayName, false, GraphErrors.Friendly(ex))); }
+            try { await _graph.AddMemberToGroupAsync(row.Id, m.Id); items.Add(new BulkItemResult(m.Id, m.Name, true, null)); }
+            catch (Exception ex) { items.Add(new BulkItemResult(m.Id, m.Name, false, GraphErrors.Friendly(ex))); }
         }
         IsBusy = false;
         _dialogs.ShowBulkResult(new BulkResult(items));
