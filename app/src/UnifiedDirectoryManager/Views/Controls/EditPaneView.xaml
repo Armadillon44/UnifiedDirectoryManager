@@ -290,7 +290,9 @@
                         </WrapPanel>
                         <ListView x:Name="MembersList" ItemsSource="{Binding Members}"
                                   SelectionMode="Extended" VirtualizingStackPanel.IsVirtualizing="False"
-                                  GridViewColumnHeader.Click="OnMembersHeaderClick">
+                                  GridViewColumnHeader.Click="OnMembersHeaderClick"
+                                  MouseDoubleClick="OnMemberDoubleClick"
+                                  ToolTip="Double-click a member to open it.">
                             <ListView.View>
                                 <GridView>
                                     <GridViewColumn Header="Name" Width="320" DisplayMemberBinding="{Binding Name}" />

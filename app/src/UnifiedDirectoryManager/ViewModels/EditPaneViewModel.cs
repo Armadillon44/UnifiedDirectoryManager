@@ -684,6 +684,51 @@ public partial class EditPaneViewModel : ObservableObject
     }
 
     /// <summary>
+    /// Opens a member of this group — the pane moves to that object, which is where its properties are.
+    /// The type has to be known first: LoadAsync uses it to pick the field layout, and the members list holds
+    /// only a name and a DN because resolving every member on load meant a bind each, thousands of them on a
+    /// large group. One lookup for the ONE member being opened is a different proposition entirely.
+    /// </summary>
+    [RelayCommand]
+    private async Task OpenMemberAsync(GroupMemberRow? member)
+    {
+        if (member is null || string.IsNullOrWhiteSpace(member.Dn)) return;
+
+        AdObjectType type;
+        try
+        {
+            var attrs = await _directory.LoadObjectAsync(member.Dn);
+            type = ClassifyFrom(attrs);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Instance.Warn($"Could not open '{member.Dn}': {DirectoryService.Friendly(ex)}");
+            _dialogs.Alert("Open member", "Could not open that member: " + DirectoryService.Friendly(ex));
+            return;
+        }
+        await LoadAsync(member.Dn, type);
+    }
+
+    /// <summary>
+    /// Reads the object type off objectClass. COMPUTER IS CHECKED FIRST on purpose: a computer's objectClass
+    /// contains "user" as well, because computer derives from user in the schema — testing for user first
+    /// would open every server as if it were a person.
+    /// </summary>
+    private static AdObjectType ClassifyFrom(IReadOnlyList<AdAttribute> attrs)
+    {
+        var classes = attrs
+            .Where(a => string.Equals(a.LdapName, "objectClass", StringComparison.OrdinalIgnoreCase))
+            .SelectMany(a => a.RawValues)
+            .ToList();
+        var all = string.Join(";", classes);
+
+        if (all.Contains("computer", StringComparison.OrdinalIgnoreCase)) return AdObjectType.Computer;
+        if (all.Contains("group", StringComparison.OrdinalIgnoreCase)) return AdObjectType.Group;
+        if (all.Contains("user", StringComparison.OrdinalIgnoreCase)) return AdObjectType.User;
+        return AdObjectType.Unknown;
+    }
+
+    /// <summary>
     /// Adds many members at once from a pasted list. Resolved against Active Directory, because that is what
     /// owns this group's membership — a cloud-only user has no distinguished name to add.
     /// </summary>

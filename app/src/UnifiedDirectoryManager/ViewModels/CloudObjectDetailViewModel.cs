@@ -401,6 +401,34 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     }
 
     /// <summary>
+    /// Opens a member's own properties. The members list holds only what Graph returns for a membership —
+    /// id, name, sign-in name and kind — which is enough to open the same properties window the object list
+    /// opens, and it reads the rest itself.
+    /// </summary>
+    [RelayCommand]
+    private void OpenMember(CloudMember? member)
+    {
+        if (member is null || string.IsNullOrWhiteSpace(member.Id)) return;
+
+        var row = new CloudObjectRow
+        {
+            Id = member.Id,
+            DisplayName = member.DisplayName,
+            // The kind decides which backend the properties pane reads through, so an unrecognised one is
+            // left as Other rather than guessed at as a user.
+            Kind = member.ObjectType switch
+            {
+                var t when string.Equals(t, "User", StringComparison.OrdinalIgnoreCase) => CloudObjectKind.User,
+                var t when string.Equals(t, "Group", StringComparison.OrdinalIgnoreCase) => CloudObjectKind.Group,
+                var t when string.Equals(t, "Device", StringComparison.OrdinalIgnoreCase) => CloudObjectKind.Device,
+                _ => CloudObjectKind.Other,
+            },
+        };
+        if (!string.IsNullOrWhiteSpace(member.Upn)) row.Values["userPrincipalName"] = member.Upn!;
+        _dialogs.ShowCloudObjectProperties(row);
+    }
+
+    /// <summary>
     /// Opens the distribution group's membership editor — the same dialog activating the row opens, not a
     /// second implementation of it. Membership is not shown in this pane because Microsoft Graph answers a
     /// distribution list's membership with 403, so it is read through Exchange in its own window.

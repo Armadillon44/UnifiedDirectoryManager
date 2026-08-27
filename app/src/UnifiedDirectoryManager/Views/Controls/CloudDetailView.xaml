@@ -265,7 +265,8 @@
                         </StackPanel>
                         <ListView x:Name="CloudMembersList" ItemsSource="{Binding Members}"
                                   SelectionMode="Extended" VirtualizingStackPanel.IsVirtualizing="False"
-                                  GridViewColumnHeader.Click="OnMembersHeaderClick">
+                                  GridViewColumnHeader.Click="OnMembersHeaderClick"
+                                  MouseDoubleClick="OnMemberDoubleClick">
                             <ListView.View>
                                 <GridView>
                                     <GridViewColumn Header="Name" Width="200" DisplayMemberBinding="{Binding DisplayName}" />

@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using UnifiedDirectoryManager.Models;
 using UnifiedDirectoryManager.ViewModels;
 using System.Windows.Input;
 
@@ -54,6 +55,24 @@ public partial class CloudDetailView : UserControl
             }
             return null;
         }
+    }
+
+    /// <summary>Double-clicking a member opens that member, which is what a row in a list of people is for.</summary>
+    private void OnMemberDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (DataContext is not CloudObjectDetailViewModel vm) return;
+        // Only a row: a double-click on the header or on blank space below the rows is not a request to open
+        // whatever happens to still be selected.
+        if (e.OriginalSource is not DependencyObject source) return;
+        if (Ancestor<ListViewItem>(source) is not { } item) return;
+        if (item.DataContext is CloudMember member) vm.OpenMemberCommand.Execute(member);
+    }
+
+    private static T? Ancestor<T>(DependencyObject from) where T : DependencyObject
+    {
+        for (var node = from; node is not null; node = VisualTreeHelper.GetParent(node))
+            if (node is T hit) return hit;
+        return null;
     }
 
     private void OnRemoveSelectedMembers(object sender, RoutedEventArgs e) =>
