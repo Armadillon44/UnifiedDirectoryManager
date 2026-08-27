@@ -21,11 +21,15 @@
                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                  IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" />
 
-        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,8,0,8">
-            <Button Content="Resolve" MinWidth="90" Command="{Binding ResolveCommand}" />
-            <TextBlock Text="{Binding Status}" Foreground="#666" VerticalAlignment="Center"
+        <Grid Grid.Row="2" Margin="0,8,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Button Grid.Column="0" Content="Resolve" MinWidth="90" Command="{Binding ResolveCommand}" />
+            <TextBlock Grid.Column="1" Text="{Binding Status}" Foreground="#666" VerticalAlignment="Center"
                        Margin="12,0,0,0" TextWrapping="Wrap" />
-        </StackPanel>
+        </Grid>
 
         <!-- One row per pasted line, showing what was pasted next to what it resolved to: the operator's
              question is always "is that the person I meant?", and both halves are needed to answer it. -->
@@ -47,20 +51,14 @@
                                               Visibility="{Binding NeedsChoice, Converter={StaticResource BoolToVis}}">
                                         <ComboBox.ItemTemplate>
                                             <DataTemplate>
-                                                <TextBlock>
-                                                    <Run Text="{Binding DisplayName, Mode=OneWay}" />
-                                                    <Run Text=" — " Foreground="#888" />
-                                                    <Run Text="{Binding Identity, Mode=OneWay}" Foreground="#666" />
-                                                </TextBlock>
+                                                <TextBlock Text="{Binding Label, Mode=OneWay}" />
                                             </DataTemplate>
                                         </ComboBox.ItemTemplate>
                                     </ComboBox>
-                                    <TextBlock VerticalAlignment="Center"
-                                               Visibility="{Binding ShowChosen, Converter={StaticResource BoolToVis}}">
-                                        <Run Text="{Binding Chosen.DisplayName, Mode=OneWay}" />
-                                        <Run Text=" " />
-                                        <Run Text="{Binding Chosen.Identity, Mode=OneWay}" Foreground="#666" />
-                                    </TextBlock>
+                                    <TextBlock VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                                               Text="{Binding Chosen.Label, Mode=OneWay}"
+                                               ToolTip="{Binding Chosen.Identity, Mode=OneWay}"
+                                               Visibility="{Binding ShowChosen, Converter={StaticResource BoolToVis}}" />
                                 </Grid>
                             </DataTemplate>
                         </GridViewColumn.CellTemplate>
@@ -75,7 +73,7 @@
 
         <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button Content="Add these members" MinWidth="140" Margin="0,0,8,0" IsDefault="True" Click="OnOk"
-                    IsEnabled="{Binding HasResolved}" />
+                    IsEnabled="{Binding CanCommit}" />
             <Button Content="Cancel" MinWidth="90" IsCancel="True" />
         </StackPanel>
     </Grid>

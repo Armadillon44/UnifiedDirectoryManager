@@ -92,20 +92,17 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         if (terms is null || terms.Count == 0) return [];
 
         var results = new List<MemberResolution>(terms.Count);
-        // Two pasted lines naming the same person cost one lookup, not two. A paste from a spreadsheet
-        // routinely repeats a manager or an assistant.
-        var seen = new Dictionary<string, MemberResolution>(StringComparer.OrdinalIgnoreCase);
 
         for (var offset = 0; offset < terms.Count; offset += ResolveChunk)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var chunk = terms.Skip(offset).Take(ResolveChunk).ToList();
-            var payload = chunk.Select(t => new { line = t.LineNumber, term = t.Term, search = t.SearchText }).ToArray();
+            var payload = chunk.Select(t => new { line = t.Index, term = t.Term, search = t.SearchText }).ToArray();
 
             var data = await RunOpAsync(new { op = "resolve-recipients", terms = payload }, cancellationToken, ListTimeout)
                 .ConfigureAwait(false);
 
-            var byLine = new Dictionary<int, (bool Exact, List<MemberCandidate> Candidates)>();
+            var byLine = new Dictionary<int, (bool Exact, bool Truncated, List<MemberCandidate> Candidates)>();
             if (data is { ValueKind: JsonValueKind.Array } arr)
                 foreach (var e in arr.EnumerateArray()) TakeResolved(e, byLine);
             else if (data is { ValueKind: JsonValueKind.Object } one) // one result serialises as an object
@@ -113,32 +110,38 @@ public sealed class ExchangeService : IExchangeService, IDisposable
 
             foreach (var term in chunk)
             {
-                if (!byLine.TryGetValue(term.LineNumber, out var found))
+                if (!byLine.TryGetValue(term.Index, out var found))
                 {
                     results.Add(PastedMemberParser.NotFound(term));
                     continue;
                 }
                 // The rung decides whether this can resolve itself: an exact hit can, a search hit never does.
-                var rung = found.Exact ? MemberLookupKind.Address : MemberLookupKind.Search;
-                results.Add(PastedMemberParser.FromRung(term, rung, found.Candidates)
-                            ?? PastedMemberParser.NotFound(term));
+                // A cut-off list must never resolve itself: the one exact hit that survived the cut is not
+                // evidence that it was the only one.
+                var rung = found.Exact && !found.Truncated ? MemberLookupKind.Address : MemberLookupKind.Search;
+                var one = PastedMemberParser.FromRung(term, rung, found.Candidates)
+                          ?? PastedMemberParser.NotFound(term);
+                results.Add(found.Truncated
+                    ? one with { Note = "More matches than can be shown — narrow the term." }
+                    : one);
             }
             progress?.Report(Math.Min(offset + ResolveChunk, terms.Count));
         }
         return results;
 
-        static void TakeResolved(JsonElement e, Dictionary<int, (bool, List<MemberCandidate>)> into)
+        static void TakeResolved(JsonElement e, Dictionary<int, (bool, bool, List<MemberCandidate>)> into)
         {
             var line = e.TryGetProperty("Line", out var l) && l.TryGetInt32(out var n) ? n : -1;
             if (line < 0) return;
             var exact = e.TryGetProperty("Exact", out var x) && x.ValueKind == JsonValueKind.True;
+            var truncated = e.TryGetProperty("Truncated", out var tr) && tr.ValueKind == JsonValueKind.True;
             var list = new List<MemberCandidate>();
             if (e.TryGetProperty("Candidates", out var c))
             {
                 if (c.ValueKind == JsonValueKind.Array) foreach (var one in c.EnumerateArray()) Add(one, list);
                 else if (c.ValueKind == JsonValueKind.Object) Add(c, list);
             }
-            into[line] = (exact, list);
+            into[line] = (exact, truncated, list);
         }
 
         static void Add(JsonElement e, List<MemberCandidate> into)
@@ -2005,14 +2008,17 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                         $rrExact = $false
                                         $rrAnr = $(if ($rrSearch) { $rrSearch } else { $rrTerm }) -replace '[\*\?]', ''
                                         if ($rrAnr) {
-                                            $rrHits = @(Get-Recipient -ResultSize 20 -Anr $rrAnr -ErrorAction SilentlyContinue)
+                                            # 21, not 20: a full page of 20 cannot be told from a list that was
+                                        # cut off, and the person meant may be the one that fell off it.
+                                        $rrHits = @(Get-Recipient -ResultSize 21 -Anr $rrAnr -ErrorAction SilentlyContinue)
                                         }
                                     }
 
                                     $rrOut += @{
                                         Line = [int]$rt.line
                                         Exact = $rrExact
-                                        Candidates = @($rrHits | ForEach-Object { @{
+                                        Truncated = ($rrHits.Count -gt 20)
+                                        Candidates = @($rrHits | Select-Object -First 20 | ForEach-Object { @{
                                             Identity = [string]$_.PrimarySmtpAddress
                                             DisplayName = [string]$_.DisplayName
                                             Secondary = [string]$_.Alias

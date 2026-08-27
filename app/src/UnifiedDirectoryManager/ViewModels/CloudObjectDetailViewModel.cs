@@ -455,7 +455,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         var resolved = _dialogs.PasteMembers(
             $"Add members to “{row.DisplayName}” from a list", MemberBackend.Entra, already, row.Id);
         if (resolved is null) return;
-        await AddMemberIdsAsync(row, resolved.Select(c => (c.Identity, c.DisplayName, c.Kind ?? "User")).ToList());
+        await AddMemberIdsAsync(row, resolved.Select(c => (c.Identity, c.Label, c.Kind ?? "User")).ToList());
     }
 
     /// <summary>The one add path, whichever dialog chose the people.</summary>

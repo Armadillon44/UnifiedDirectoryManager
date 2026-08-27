@@ -111,6 +111,17 @@ public partial class DistributionGroupMembersViewModel : ObservableObject
         }).ToList());
     }
 
+    /// <summary>
+    /// A group can be nested in a distribution list, and sometimes that is meant — but in a pasted list of
+    /// people it almost never is, and afterwards it is invisible. The confirmation names the kind so it is
+    /// not one unremarkable line among forty.
+    /// </summary>
+    private static bool IsPersonType(string? recipientType) =>
+        string.IsNullOrWhiteSpace(recipientType)
+        || recipientType!.Contains("Mailbox", StringComparison.OrdinalIgnoreCase)
+        || recipientType!.Contains("MailUser", StringComparison.OrdinalIgnoreCase)
+        || recipientType!.Contains("Contact", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>The one add path, whichever dialog chose the people.</summary>
     private async Task AddResolvedAsync(IReadOnlyList<MailboxRecipient> picked)
     {
@@ -123,7 +134,9 @@ public partial class DistributionGroupMembersViewModel : ObservableObject
         if (toAdd.Count == 0) { Status = "Those recipients are already members."; return; }
 
         if (!_dialogs.Confirm("Add members", $"Add {toAdd.Count} member(s) to “{GroupName}”?",
-                toAdd.Select(m => $"{m.DisplayName} — {m.PrimarySmtpAddress}")))
+                toAdd.Select(m => IsPersonType(m.RecipientType)
+                    ? $"{m.DisplayName} — {m.PrimarySmtpAddress}"
+                    : $"{m.DisplayName} — {m.PrimarySmtpAddress}  [{m.RecipientType}]")))
             return;
 
         await RunPerMemberAsync("Adding", toAdd,

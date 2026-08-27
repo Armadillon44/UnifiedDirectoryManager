@@ -36,7 +36,7 @@ function Check([string]$name, $expected, $actual) {
 function Cand([string]$id, [string]$name) {
     [UnifiedDirectoryManager.Models.MemberCandidate]::new($id, $name, $null, 'User')
 }
-function Term([string]$text) { $P::Classify(1, $text, $P::Clean($text)) }
+function Term([string]$text) { $P::Classify(0, 1, $text, $P::Clean($text)) }
 
 Write-Host "`n== Clean: a paste arrives decorated ==" -ForegroundColor Cyan
 # Every one of these is something a real paste carries and none of it is part of the name. Left in place,
@@ -112,6 +112,61 @@ Check 'and chooses nobody'                $null ($P::FromRung($t, $Kind::Search,
 Check 'an empty rung falls through'       $null ($P::FromRung($t, $Kind::Address, $none))
 Check 'a null rung falls through too'     $null ($P::FromRung($t, $Kind::Address, $null))
 Check 'nothing anywhere is Not found'     $Match::NotFound ($P::NotFound($t)).Match
+
+
+Write-Host "`n== SplitRecipients: an Outlook address line holds several people ==" -ForegroundColor Cyan
+# The worst failure this feature can have: copying a To:/Cc: field and keeping only ONE of the recipients.
+# The surviving row looks perfectly correct, so nothing about the screen says anyone was lost.
+$multi = 'Jane Doe <jane@contoso.com>; Bob Smith <bob@contoso.com>; Amy Lee <amy@contoso.com>'
+Check 'three recipients on one line become three' 3 (@($P::SplitRecipients($multi))).Count
+$r = $P::Parse($multi)
+Check 'and three terms come out of Parse'         3 $r.Terms.Count
+Check 'the first is not lost'                     'jane@contoso.com' $r.Terms[0].Term
+Check 'nor the middle one'                        'bob@contoso.com'  $r.Terms[1].Term
+Check 'nor the last'                              'amy@contoso.com'  $r.Terms[2].Term
+Check 'they all trace back to the one line'       1 $r.Terms[2].LineNumber
+# A comma separates only when every piece carries an address, or "Doe, Jane" would be torn in half.
+Check 'a comma between addresses separates' 2 (@($P::SplitRecipients('a@x.com, b@x.com'))).Count
+Check 'but Last, First is left whole'       1 (@($P::SplitRecipients('Doe, Jane'))).Count
+Check 'and so is a lone name'               1 (@($P::SplitRecipients('Jane Doe'))).Count
+$r = $P::Parse('Doe, Jane')
+Check 'so Last, First still parses as one term' 1 $r.Terms.Count
+Check 'and still flips for searching'           'Jane Doe' $r.Terms[0].SearchText
+
+Write-Host "`n== a term is identified by index, not by line ==" -ForegroundColor Cyan
+# One line can now yield several terms, so a backend's answers cannot be matched back by line number.
+$r = $P::Parse($multi)
+Check 'indexes are distinct' 3 (@($r.Terms | ForEach-Object { $_.Index } | Select-Object -Unique)).Count
+Check 'and start at zero'    0 $r.Terms[0].Index
+
+Write-Host "`n== nothing vanishes without being counted ==" -ForegroundColor Cyan
+# A line that held something but cleaned to nothing must be reported, or it looks like a line that found
+# nobody — and the operator goes looking for a person who was never searched for.
+# Decoration that leaves NOTHING behind: a stray separator, an empty bracket pair, an empty quoted cell.
+# Text like "---" is left as a term on purpose — it becomes a visible "Not found" row, which is honest.
+$r = $P::Parse("Jane Doe`n;`n<>`n`"`"")
+Check 'lines that clean to nothing are counted' 3 $r.Unreadable
+Check 'and do not become terms'                 1 $r.Terms.Count
+# "Jane Doe <>" means Jane Doe. Taking the empty brackets as the answer would erase the line.
+Check 'an empty bracket pair keeps the name' 'Jane Doe' $P::Clean('Jane Doe <>')
+Check 'and still resolves to a term'         1 ($P::Parse('Jane Doe <>')).Terms.Count
+
+Write-Host "`n== Label: the discriminator, not the identifier ==" -ForegroundColor Cyan
+# Telling two people called John Smith apart is the whole purpose of the Choose step, and an Entra object
+# id cannot do it. The sign-in name can.
+$guid = '296f01f3-04de-49a1-ae6c-279d147b2487'
+$c = [UnifiedDirectoryManager.Models.MemberCandidate]::new($guid, 'John Smith', 'jsmith@contoso.com', 'User')
+Check 'the label shows the sign-in name' $true ($c.Label -like '*jsmith@contoso.com*')
+Check 'and not the object id'            $false ($c.Label -like "*$guid*")
+$c = [UnifiedDirectoryManager.Models.MemberCandidate]::new('x', 'John Smith', $null, 'User')
+Check 'falling back to the identity when there is nothing else' $true ($c.Label -like '*x*')
+# A group in a list of people is nearly always a mistake, and nesting one is invisible afterwards.
+$g = [UnifiedDirectoryManager.Models.MemberCandidate]::new('sales@contoso.com', 'Sales Team', 'sales', 'MailUniversalDistributionGroup')
+Check 'a group is flagged as not a person' $false $g.IsPerson
+Check 'and its kind is shown'              $true ($g.Label -like '*MailUniversalDistributionGroup*')
+$u = [UnifiedDirectoryManager.Models.MemberCandidate]::new('a@x.com', 'A User', 'a@x.com', 'UserMailbox')
+Check 'a mailbox is a person'              $true $u.IsPerson
+Check 'and carries no kind suffix'         $false ($u.Label -like '*[[]*')
 
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

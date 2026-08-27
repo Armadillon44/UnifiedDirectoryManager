@@ -4,44 +4,79 @@ using UnifiedDirectoryManager.Models;
 namespace UnifiedDirectoryManager.Services;
 
 /// <summary>
-/// Turns a pasted block of people into lines worth looking up, and decides what a rung of the resolution
+/// Turns a pasted block of people into terms worth looking up, and decides what a rung of the resolution
 /// ladder found. Deliberately pure: no directory, no UI, no async. This is where a batch add goes wrong
 /// quietly — a mis-parsed line resolves to a real person who is not the one that was pasted — so it is the
 /// part that has to be testable on its own.
 /// </summary>
 public static class PastedMemberParser
 {
-    /// <summary>The most lines one paste will take. Beyond this the caller says so rather than truncating quietly.</summary>
+    /// <summary>The most entries one paste will take. Beyond this the caller says so rather than truncating quietly.</summary>
     public const int MaxLines = 100;
 
     // A spreadsheet column, a bulleted list and an Outlook address line all arrive with decoration. None of it
     // is part of the name, and all of it stops an exact match dead.
-    private static readonly Regex LeadingBullet = new(@"^\s*(?:[•\-\*–•]|\d+[\.\)])\s+", RegexOptions.Compiled);
+    private static readonly Regex LeadingBullet = new(@"^\s*(?:[•\-\*–]|\d+[\.\)])\s+", RegexOptions.Compiled);
     private static readonly Regex CollapseSpace = new(@"\s{2,}", RegexOptions.Compiled);
 
     /// <summary>
     /// Splits a paste into terms. Blank lines are skipped rather than reported: a trailing newline is not an
-    /// operator error. Lines naming someone an earlier line already named are counted and dropped, so the
+    /// operator error. Entries naming someone an earlier entry already named are counted and dropped, so the
     /// grid does not show the same person twice and the write does not add them twice.
     /// </summary>
     public static PasteParseResult Parse(string? pasted, int maxLines = MaxLines)
     {
         var terms = new List<PastedTerm>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        int duplicates = 0, dropped = 0, line = 0;
+        int duplicates = 0, dropped = 0, unreadable = 0, line = 0;
 
         foreach (var raw in (pasted ?? string.Empty).Split('\n'))
         {
             line++;
-            var cleaned = Clean(raw);
-            if (cleaned.Length == 0) continue;
+            var whole = raw.TrimEnd('\r', '\n');
+            if (whole.Trim().Length == 0) continue;
 
-            if (terms.Count >= maxLines) { dropped++; continue; }
-            if (!seen.Add(cleaned)) { duplicates++; continue; }
+            var parts = SplitRecipients(whole);
+            // A line of pure separators splits to nothing at all. It still held something, so it is counted
+            // rather than dropped between the two steps where neither one owns it.
+            if (parts.Count == 0) { unreadable++; continue; }
 
-            terms.Add(Classify(line, raw.TrimEnd('\r', '\n'), cleaned));
+            foreach (var part in parts)
+            {
+                var cleaned = Clean(part);
+                // Something was there and nothing usable came out of it. Counted, never skipped: a line
+                // discarded here looks exactly like a line that found nobody.
+                if (cleaned.Length == 0) { unreadable++; continue; }
+
+                if (terms.Count >= maxLines) { dropped++; continue; }
+                if (!seen.Add(cleaned)) { duplicates++; continue; }
+
+                terms.Add(Classify(terms.Count, line, part.Trim(), cleaned));
+            }
         }
-        return new PasteParseResult(terms, duplicates, dropped);
+        return new PasteParseResult(terms, duplicates, dropped, unreadable);
+    }
+
+    /// <summary>
+    /// Splits one pasted line into the people on it. Copying an Outlook To: or Cc: field puts several
+    /// recipients on ONE line, and keeping only one of them loses the rest without a trace — the worst
+    /// outcome available here, because the row that survives looks perfectly correct.
+    ///
+    /// A semicolon always separates. A comma separates only when every piece carries an address, because a
+    /// comma is far more often the one in "Doe, Jane".
+    /// </summary>
+    public static IReadOnlyList<string> SplitRecipients(string? rawLine)
+    {
+        var s = rawLine ?? string.Empty;
+        if (s.Contains(';'))
+            return s.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        if (s.Count(c => c == '@') > 1)
+        {
+            var parts = s.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (parts.Length > 1 && parts.All(p => p.Contains('@'))) return parts;
+        }
+        return [s];
     }
 
     /// <summary>Strips the decoration a paste arrives with, without touching the name inside it.</summary>
@@ -55,22 +90,28 @@ public static class PastedMemberParser
         s = s.Trim().Trim(';', ',').Trim();
         if (s.Length >= 2 && ((s[0] == '"' && s[^1] == '"') || (s[0] == '\'' && s[^1] == '\'')))
             s = s[1..^1].Trim();
-        // "<jane.doe@contoso.com>" and "Jane Doe <jane.doe@contoso.com>" both mean the address.
+
+        // "Jane Doe <jane@x.com>" means the address. "Jane Doe <>" means Jane Doe, so an empty pair is
+        // discarded rather than taken as the answer — otherwise the line cleans to nothing and vanishes.
         var open = s.LastIndexOf('<');
         var close = s.LastIndexOf('>');
-        if (open >= 0 && close > open) s = s[(open + 1)..close].Trim();
+        if (open >= 0 && close > open)
+        {
+            var inner = s[(open + 1)..close].Trim();
+            s = inner.Length > 0 ? inner : s[..open].Trim();
+        }
 
-        return CollapseSpace.Replace(s, " ");
+        return CollapseSpace.Replace(s, " ").Trim();
     }
 
     /// <summary>
     /// Picks the starting rung. Order matters: an address wins over everything because it is unambiguous, and
     /// a comma only means "Last, First" once an address has been ruled out.
     /// </summary>
-    public static PastedTerm Classify(int lineNumber, string raw, string cleaned)
+    public static PastedTerm Classify(int index, int lineNumber, string raw, string cleaned)
     {
         if (cleaned.Contains('@'))
-            return new PastedTerm(lineNumber, raw, cleaned, PastedTermShape.UpnOrSmtp);
+            return new PastedTerm(index, lineNumber, raw, cleaned, PastedTermShape.UpnOrSmtp);
 
         var comma = cleaned.IndexOf(',');
         if (comma > 0 && comma < cleaned.Length - 1)
@@ -78,12 +119,12 @@ public static class PastedMemberParser
             var last = cleaned[..comma].Trim();
             var first = cleaned[(comma + 1)..].Trim();
             if (last.Length > 0 && first.Length > 0)
-                return new PastedTerm(lineNumber, raw, cleaned, PastedTermShape.LastFirst, $"{first} {last}");
+                return new PastedTerm(index, lineNumber, raw, cleaned, PastedTermShape.LastFirst, $"{first} {last}");
         }
 
         return cleaned.Contains(' ')
-            ? new PastedTerm(lineNumber, raw, cleaned, PastedTermShape.DisplayName)
-            : new PastedTerm(lineNumber, raw, cleaned, PastedTermShape.AccountName);
+            ? new PastedTerm(index, lineNumber, raw, cleaned, PastedTermShape.DisplayName)
+            : new PastedTerm(index, lineNumber, raw, cleaned, PastedTermShape.AccountName);
     }
 
     /// <summary>

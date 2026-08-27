@@ -105,11 +105,14 @@ public sealed class EntraMemberResolver(IGraphService graph) : IMemberResolver
             cancellationToken.ThrowIfCancellationRequested();
             var page = await graph.ListUsersAsync(term.SearchText, null, cancellationToken);
             var all = page.Items.Select(ToCandidate).Where(c => c is not null).Select(c => c!).ToList();
+            // Graph pages. Deciding "exactly one exact match" over the first page only would resolve a row
+            // against a slice of the answer, so a further page means the row asks instead.
+            var truncated = !string.IsNullOrWhiteSpace(page.NextLink);
 
             // An exact hit inside a search result is still an exact hit: the term matched a whole identifier
             // or a whole name, so it can resolve the row. Everything else asks.
             var exact = all.Where(c => Matches(c, term)).ToList();
-            var resolution = exact.Count > 0
+            var resolution = exact.Count > 0 && !truncated
                 ? PastedMemberParser.FromRung(term, MemberLookupKind.Address, exact)
                 : PastedMemberParser.FromRung(term, MemberLookupKind.Search, all);
 

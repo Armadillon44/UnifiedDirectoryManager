@@ -697,7 +697,7 @@ public partial class EditPaneViewModel : ObservableObject
         if (resolved is null || resolved.Count == 0) return;
 
         if (!_dialogs.Confirm("Confirm", $"Add {resolved.Count} member(s) to “{Title}”?",
-                resolved.Select(c => c.DisplayName)))
+                resolved.Select(c => c.Label)))
             return;
 
         await RunWrite(() => _directory.AddMembersAsync(_dn!, resolved.Select(c => c.Identity).ToList()));
