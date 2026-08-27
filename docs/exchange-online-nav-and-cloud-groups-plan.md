@@ -1,6 +1,6 @@
 # Exchange Online navigation + cloud group creation
 
-Status: **in progress — commits 1-6b done (1-5 live-tested); commit 7 specced. All decisions locked, with the D5 corrections in G11.** Branch `release/2.3.0` (new
+Status: **feature work COMPLETE — commits 1-7 all done and live-tested against the tenant. Remaining: the Wiki, then ship 2.3.0.** All decisions locked, with the D5 corrections in G11. Branch `release/2.3.0` (new
 features → minor bump), branched from `master` at v2.2.0. See the sequencing section at the bottom for what
 has landed; update it as commits land rather than leaving this line to go stale.
 
@@ -423,7 +423,11 @@ Every rebuild has to name the tab it means. `app/build/test-tabselection.ps1` re
    on demand only when an editor opens, because a display name cannot be written back (see G13). Also added
    the "Members…" button under the group name, and fixed the blank properties pane (G14).
 10. Commit 7: mailbox actions in the Exchange section, by hosting the existing ExchangeTabViewModel (D7).
-11. README + Wiki: the raised RBAC bar, the new nav section, the group-type routing table.
+10b. ~~Commit 7: mailbox actions in the Exchange section, by hosting the existing ExchangeTabViewModel (D7).~~
+    **Done** (`cb453af`), live-tested. The markup was extracted into a shared ExchangeActionsView so both
+    panes show one control. It also uncovered G14 — fixed tabs had been rendering blank since c4bcfeb.
+11. ~~README: the raised RBAC bar, the new nav section, the group-type routing table.~~ **Done.**
+    Wiki still to do, then ship 2.3.0.
 
 D5-D7 are locked (see above), and the editable surface was chosen setting by setting against the real
 `Set-DistributionGroup` parameter list. What commits 5-7 still lack is the file-level detail commits 1-4

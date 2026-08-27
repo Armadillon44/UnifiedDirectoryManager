@@ -8,6 +8,28 @@ the things ADUC never had: reusable **new-user templates**, GUI **advanced searc
 Built with **WPF on .NET 10**. Ships as a **self-contained, single-file `.exe`** for **win-x64** and
 **win-arm64** — no .NET install required on the target machine (Windows 10 / 11).
 
+> **v2.3.0 — Exchange Online: a section of its own, and editable groups.**
+> - **New nav section** with **Mailboxes** and **Distribution groups** lists, searched server-side and capped
+>   (Exchange has no continuation token, so a capped list says so rather than passing itself off as the whole set).
+> - **Mailbox properties** — identity, type, addresses, forwarding, quotas, hold and retention, archive, and
+>   protocol access. **Size and usage** is a button rather than part of the load: it reads the mailbox store
+>   rather than the directory and is the documented way to exhaust the throttling budget.
+> - **Mailbox actions** — convert **Regular ↔ Shared**, set/clear **forwarding**, and manage **delegates**,
+>   now available beside the mailbox as well as on the AD **ExOL** tab. One shared control, so the two cannot drift.
+> - **Distribution group properties, and editing them.** Alias-adjacent scalars (description, MailTip, hidden
+>   from address lists, room list, join/depart restriction, external senders, BCC, delivery reports, auto-replies,
+>   moderation), the **secondary email addresses**, and the six **recipient lists** — owners, send on behalf,
+>   accept/reject senders, moderators, bypass — each edited through a picker seeded with what is already there.
+> - **Create cloud-only groups** — security and Microsoft 365 in Entra, distribution lists and mail-enabled
+>   security groups in Exchange Online (see the routing table below).
+> - **A "?" beside every property row** explaining what the setting is, and why it can't be changed when it can't.
+>
+> Some things are deliberately **not** editable, because the service will not honour them:
+> **message size limits** (Microsoft documents those parameters as on-premises only), **display name** (a naming
+> policy rewrites it on save, and admins are exempt so it behaves differently for others), the **primary address**
+> and **alias** (an address policy makes an alias change rewrite the primary address, which breaks the old one),
+> and **hidden membership** and **room list**, which Exchange can turn on but not off.
+>
 > **v2.2.0 — Group management ([issue #3](../../issues/3)).** Create, modify, and delete groups:
 > - **Create** from the tree right-click (*New Group here…*) or **File ▸ New Group** (which asks for the OU):
 >   scope (Global / Domain local / Universal), category (Security / Distribution), description, *Managed by*,
@@ -73,11 +95,32 @@ templates, and logs live under `%APPDATA%\UnifiedDirectoryManager\` and follow y
   recall** searches/queries, then set attributes / enable-disable / add-remove groups across all matches.
 - **Entra ID (cloud)** — manage a synced object's Entra groups and account state, and run an **Entra
   Connect delta sync** on demand.
-- **Exchange Online (ExOL)** — mailbox convert, forwarding, and delegation for pure-cloud tenants (see
-  the v2.0 note above).
+- **Exchange Online** — its own nav section for **mailboxes** and **distribution groups**: read every property
+  Graph cannot describe, run mailbox actions (convert, forwarding, delegates), and **edit** a distribution
+  group's settings, addresses and recipient lists. Also reachable from the AD **ExOL** tab, which is the path
+  for a hybrid user who has no row in the Exchange list.
 - **Scenarios** — compose ordered, repeatable multi-step actions (e.g. a Terminate-User flow: disable →
   remove groups → convert mailbox to shared → forward → delegate to manager → remove license), run them
   across many targets, and save a re-addable **operation log**.
+
+### Which group goes through which service
+
+Group management is split across three backends, and not by choice: Microsoft Graph refuses the Exchange-owned
+kinds. It answers a distribution list's membership with **403**, and a create with **400 — "Cannot Create a
+mail-enabled security groups and or distribution list"**. The app routes each kind to the service that owns it.
+
+| Group kind | Create | Membership | Properties |
+|---|---|---|---|
+| On-prem AD (any scope) | LDAP | LDAP | LDAP |
+| Entra security | Graph | Graph | Graph |
+| Microsoft 365 (unified) | Graph | Graph | Graph |
+| Distribution list | Exchange Online | Exchange Online | Exchange Online |
+| Mail-enabled security | Exchange Online | Exchange Online | Exchange Online |
+
+The Exchange-owned kinds are reached with `New-`/`Get-`/`Set-DistributionGroup` and
+`Add-`/`Remove-DistributionGroupMember`. A group **synced from on-premises AD** is read-only in the cloud
+whichever kind it is — Exchange rejects every write against a synced object — so those rows say so instead of
+failing at the service.
 
 ## Prerequisites
 
@@ -88,7 +131,12 @@ templates, and logs live under `%APPDATA%\UnifiedDirectoryManager\` and follow y
   2. The **`ExchangeOnlineManagement`** module (`Install-Module ExchangeOnlineManagement`).
   3. In Entra, the app registration granted the **delegated `Exchange.Manage`** permission (with admin
      consent) — **not** `Exchange.ManageV2`.
-  4. The signing-in admin holds an Exchange RBAC role — **Recipient Management** (or Exchange Administrator).
+  4. The signing-in admin holds an Exchange RBAC role:
+     - **Reading** mailboxes and distribution groups — **Recipient Management** (or Exchange Administrator).
+     - **Changing a distribution group** — its membership or its settings — additionally needs
+       **Organization Management**, or the **Security Group Creation and Membership** role. Those writes pass
+       `-BypassSecurityGroupManagerCheck`, because a group's owner is usually a role group that no individual
+       is a "manager of", and without it every edit fails for a reason unrelated to the edit.
 
   See the [Wiki](../../wiki) for the full ExOL setup and rationale.
 
