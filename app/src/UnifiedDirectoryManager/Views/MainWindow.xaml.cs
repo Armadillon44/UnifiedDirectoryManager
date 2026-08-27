@@ -90,6 +90,16 @@ public partial class MainWindow : Window
         if (_vm is not null && NodeFromMenu(sender) is { } node) _ = _vm.DeleteOuAsync(node);
     }
 
+    private void OnNodePinClick(object sender, RoutedEventArgs e)
+    {
+        if (_vm is not null && NodeFromMenu(sender) is { } node) _vm.PinNode(node);
+    }
+
+    private void OnNodeUnpinClick(object sender, RoutedEventArgs e)
+    {
+        if (_vm is not null && NodeFromMenu(sender) is { } node) _vm.UnpinNode(node);
+    }
+
     private void OnNodeCreateOuClick(object sender, RoutedEventArgs e)
     {
         if (_vm is not null && NodeFromMenu(sender) is { } node) _ = _vm.CreateOuUnderAsync(node);

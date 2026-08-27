@@ -28,6 +28,96 @@ public partial class MainViewModel : ObservableObject
     public AppSettings Settings { get; }
 
     public ObservableCollection<TreeNodeViewModel> RootNodes { get; } = new();
+
+    private TreeNodeViewModel? _favoritesRoot;
+
+    /// <summary>The domain favourites are filed under. Null before a connection, when a DN means nothing.</summary>
+    private string? FavoritesDomain => _directory.IsConnected ? _directory.Current?.DomainFqdn : null;
+
+    /// <summary>
+    /// Rebuilds the Favourites row from settings and puts it at the TOP of the tree, which is the whole
+    /// point of the feature: reaching a much-used OU should not mean drilling through the structure again.
+    ///
+    /// Rebuilt wholesale rather than patched, so the row can never drift from what is stored.
+    /// </summary>
+    private void RebuildFavorites()
+    {
+        var pins = Favorites.For(Settings, FavoritesDomain);
+        if (pins.Count == 0)
+        {
+            // Nothing pinned: no empty expander to open and find nothing in.
+            if (_favoritesRoot is not null) { RootNodes.Remove(_favoritesRoot); _favoritesRoot = null; }
+            return;
+        }
+
+        if (_favoritesRoot is null)
+        {
+            _favoritesRoot = new TreeNodeViewModel(null, "Favourites", _directory, SetError);
+            RootNodes.Insert(0, _favoritesRoot);
+            _favoritesRoot.IsExpanded = true;
+        }
+
+        _favoritesRoot.Children.Clear();
+        foreach (var pin in pins)
+        {
+            // The name comes from the entry every time it is shown, never from a copy taken when it was
+            // pinned, so a favourite cannot show a name the thing it points at no longer has.
+            var name = pin.Kind == FavoriteKind.Container
+                ? NameResolver.RdnFallback(pin.Value)
+                : pin.Value;
+            _favoritesRoot.Children.Add(new TreeNodeViewModel(pin, name, _directory, SetError));
+        }
+    }
+
+    /// <summary>
+    /// Opens a favourite, having first confirmed the thing it points at is still there. The list swallows
+    /// its own errors, so without the check a pin to a deleted OU would show an empty list — which reads as
+    /// "that OU is empty now", not as "that OU is gone".
+    /// </summary>
+    private async Task OpenFavoriteAsync(TreeNodeViewModel node)
+    {
+        if (node.Favorite is not { Kind: FavoriteKind.Container }) return;
+        try
+        {
+            await _directory.GetBasicInfoAsync(node.DistinguishedName);
+            node.IsUnavailable = false;
+        }
+        catch (Exception ex)
+        {
+            // Left in place, not removed. A domain controller being briefly unreachable is not evidence that
+            // an OU was deleted, and quietly dropping someone's pin is the worse of the two mistakes.
+            node.IsUnavailable = true;
+            SetError($"“{node.Name}” could not be opened: {DirectoryService.Friendly(ex)}. "
+                     + "It may have been renamed, moved or deleted — unpin it from its right-click menu.");
+            return;
+        }
+        await List.LoadContainerAsync(node.DistinguishedName);
+    }
+
+    /// <summary>Pins a container. Saves immediately: a pin lost to a crash is a pin the operator has to notice.</summary>
+    public void PinNode(TreeNodeViewModel? node)
+    {
+        if (node is null || !node.CanPin) return;
+        var entry = new FavoriteEntry { Kind = FavoriteKind.Container, Value = node.DistinguishedName };
+        if (!Favorites.Add(Settings, FavoritesDomain, entry))
+        {
+            StatusMessage = $"“{node.Name}” is already pinned.";
+            return;
+        }
+        _settingsStore.Save(Settings);
+        RebuildFavorites();
+        StatusMessage = $"Pinned “{node.Name}”.";
+    }
+
+    /// <summary>Unpins a favourite. Only the shortcut goes; the object it pointed at is untouched.</summary>
+    public void UnpinNode(TreeNodeViewModel? node)
+    {
+        if (node?.Favorite is null) return;
+        if (!Favorites.Remove(Settings, FavoritesDomain, node.Favorite)) return;
+        _settingsStore.Save(Settings);
+        RebuildFavorites();
+        StatusMessage = $"Unpinned “{node.Name}”.";
+    }
     public ObjectListViewModel List { get; }
     public EditPaneViewModel Edit { get; }
 
@@ -170,6 +260,7 @@ public partial class MainViewModel : ObservableObject
             root.IsExpanded = true;
             SelectedNode = root;
             EnsureCloudRoot();
+            RebuildFavorites();
 
             var c = _directory.Current!;
             ConnectedInfo = $"Connected to {c.Server}  •  {c.DomainFqdn}  •  {c.DefaultNamingContext}";
@@ -256,6 +347,12 @@ public partial class MainViewModel : ObservableObject
         }
 
         IsCloudView = false;
+
+        // The Favourites row holds pins; it is not somewhere to navigate to.
+        if (value is { IsFavoritesRoot: true }) return;
+
+        if (value is { IsFavorite: true }) { _ = OpenFavoriteAsync(value); return; }
+
         if (value is { IsPlaceholder: false })
             _ = List.LoadContainerAsync(value.DistinguishedName);
     }

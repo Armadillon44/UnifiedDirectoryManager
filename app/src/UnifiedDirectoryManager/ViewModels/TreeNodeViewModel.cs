@@ -26,13 +26,32 @@ public partial class TreeNodeViewModel : ObservableObject
     /// <summary>Non-null for the Entra ID section nodes; null for on-prem AD nodes.</summary>
     public CloudNodeKind? CloudKind { get; }
 
+    /// <summary>What this row is pinned to; null for every node that is not a favourite.</summary>
+    public FavoriteEntry? Favorite { get; }
+
+    /// <summary>True for the Favourites row itself, which holds the pins and navigates nowhere.</summary>
+    public bool IsFavoritesRoot { get; }
+
+    /// <summary>True for a pinned row.</summary>
+    public bool IsFavorite => Favorite is not null;
+
+    /// <summary>
+    /// True when the thing this favourite points at could not be found. The row stays and says so rather
+    /// than disappearing: a domain controller being briefly unreachable is not evidence that an OU was
+    /// deleted, and a list that silently got shorter is not something anyone notices in time to object.
+    /// </summary>
+    [ObservableProperty] private bool _isUnavailable;
+
+    /// <summary>True where this row can be pinned — a real container, and not already a favourite.</summary>
+    public bool CanPin => IsContainerNode && !IsFavorite && !IsFavoritesRoot;
+
     public string Name => Node.Name;
     public AdObjectType Type => Node.Type;
     public string DistinguishedName => Node.DistinguishedName;
 
     /// <summary>True for an on-prem OU / container / domain node (the tree's folder nodes) — the targets for the
     /// right-click Properties action. Cloud (Entra) section nodes and the "Loading…" placeholder are excluded.</summary>
-    public bool IsContainerNode => CloudKind is null && !IsPlaceholder
+    public bool IsContainerNode => CloudKind is null && !IsPlaceholder && !IsFavoritesRoot
         && Type is AdObjectType.OrganizationalUnit or AdObjectType.Container or AdObjectType.Domain;
 
     /// <summary>True only for an on-prem organizational unit — gates the (destructive) right-click Delete action,
@@ -59,9 +78,11 @@ public partial class TreeNodeViewModel : ObservableObject
 
     /// <summary>True when the node offers any right-click action at all — the context menu is suppressed
     /// entirely otherwise, so a new kind of actionable node must be added here as well as to the menu.</summary>
-    public bool HasContextMenu => IsContainerNode || CanCreateCloudGroup;
+    public bool HasContextMenu => IsContainerNode || CanCreateCloudGroup || IsFavorite;
 
     public ObservableCollection<TreeNodeViewModel> Children { get; } = new();
+
+    partial void OnIsUnavailableChanged(bool value) => OnPropertyChanged(nameof(Glyph));
 
     [ObservableProperty] private bool _isExpanded;
 
@@ -87,6 +108,21 @@ public partial class TreeNodeViewModel : ObservableObject
                 directory, onError, isPlaceholder: true));
     }
 
+    /// <summary>
+    /// Creates the Favourites row, or one pinned row under it. A pinned CONTAINER keeps the real
+    /// distinguished name, so selecting it takes exactly the same path selecting the OU in the tree does —
+    /// a favourite is a reference, and reusing the activation is what stops it behaving differently.
+    /// </summary>
+    public TreeNodeViewModel(FavoriteEntry? favorite, string name, IDirectoryService directory, Action<string> onError)
+    {
+        var dn = favorite is { Kind: FavoriteKind.Container } ? favorite.Value : $"fav:{favorite?.Value ?? "root"}";
+        Node = new AdNode { DistinguishedName = dn, Name = name, Type = AdObjectType.Unknown, HasChildren = false };
+        _directory = directory;
+        _onError = onError;
+        Favorite = favorite;
+        IsFavoritesRoot = favorite is null;
+    }
+
     /// <summary>Creates a cloud (Entra ID) node with a fixed set of children (no lazy AD load).</summary>
     public TreeNodeViewModel(CloudNodeKind kind, string name, IDirectoryService directory, Action<string> onError,
         IEnumerable<TreeNodeViewModel>? children = null)
@@ -99,8 +135,13 @@ public partial class TreeNodeViewModel : ObservableObject
             foreach (var child in children) Children.Add(child);
     }
 
-    /// <summary>Glyph for the tree row (cloud kind takes precedence over the AD object type).</summary>
-    public string Glyph => CloudKind switch
+    /// <summary>Glyph for the tree row (a favourite, then cloud kind, then the AD object type).</summary>
+    public string Glyph =>
+        IsFavoritesRoot ? "★"
+        : IsUnavailable ? "⚠"
+        : Favorite is { Kind: FavoriteKind.SavedSearch } ? "🔎"
+        : Favorite is not null ? "📌"
+        : CloudKind switch
     {
         CloudNodeKind.Tenant => "☁",
         CloudNodeKind.Users => "👤",

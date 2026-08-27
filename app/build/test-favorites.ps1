@@ -118,5 +118,46 @@ Check 'whatever casing is asked for'  $true $F::Contains($back, 'Contoso.Net', (
 Check 'the kind survives'             $Kind::SavedSearch (@($F::For($back, 'contoso.net')))[1].Kind
 Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
 
+
+Write-Host "`n== the tree rows a favourite produces ==" -ForegroundColor Cyan
+# These flags decide which right-click entries appear and whether a row navigates anywhere. The favourite
+# constructor takes the directory but never calls it, so the rows can be built without a connection.
+$Node = [UnifiedDirectoryManager.ViewModels.TreeNodeViewModel]
+$onErr = [Action[string]]{ param($m) }
+$root = $Node::new([UnifiedDirectoryManager.Models.FavoriteEntry]$null, 'Favourites', $null, $onErr)
+$pin  = $Node::new((Ou 'OU=Sales,DC=contoso,DC=net'), 'Sales', $null, $onErr)
+
+Check 'the Favourites row knows what it is' $true  $root.IsFavoritesRoot
+Check 'and is not itself a favourite'       $false $root.IsFavorite
+Check 'and cannot be pinned'                $false $root.CanPin
+# It holds pins; it is not somewhere to navigate to, and it must not look like a container.
+Check 'and is not a container'              $false $root.IsContainerNode
+
+Check 'a pinned row is a favourite'         $true  $pin.IsFavorite
+Check 'and cannot be pinned again'          $false $pin.CanPin
+# A container favourite keeps the REAL distinguished name, so selecting it takes the same path as
+# selecting the OU in the tree. That is what makes a favourite a reference rather than a copy.
+Check 'it keeps the real DN'                'OU=Sales,DC=contoso,DC=net' $pin.DistinguishedName
+# Unpin has to be reachable, or a pin can never be removed.
+Check 'and offers a right-click menu'       $true  $pin.HasContextMenu
+
+Write-Host "`n== a favourite that points at nothing says so ==" -ForegroundColor Cyan
+Check 'it starts available'          $false $pin.IsUnavailable
+Check 'and its glyph is a pin'       '📌'   $pin.Glyph
+# The glyph is computed, so WPF only redraws it if the change is announced. Reading the property back
+# would pass either way — the binding is what breaks — so watch for the notification instead.
+$raised = New-Object System.Collections.Generic.List[string]
+$handler = [System.ComponentModel.PropertyChangedEventHandler]{ param($s, $e) $raised.Add($e.PropertyName) }
+$pin.add_PropertyChanged($handler)
+$pin.IsUnavailable = $true
+$pin.remove_PropertyChanged($handler)
+Check 'marking it unavailable changes the glyph' '⚠' $pin.Glyph
+Check 'and the change is announced'              $true ($raised -contains 'Glyph')
+Check 'and the row is still there'               $true $pin.IsFavorite
+$search = $Node::new((Search 'Disabled users'), 'Disabled users', $null, $onErr)
+Check 'a pinned search has its own glyph' '🔎' $search.Glyph
+# A saved search has no DN, so it must not be mistaken for a container to load.
+Check 'and is not a container'            $false $search.IsContainerNode
+
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }
