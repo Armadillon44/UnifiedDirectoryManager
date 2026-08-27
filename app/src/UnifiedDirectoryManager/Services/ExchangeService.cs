@@ -78,6 +78,79 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         return data is { ValueKind: JsonValueKind.Object } d ? MapMailbox(d) : null; // null data = mailbox not found
     }
 
+    /// <summary>
+    /// How many pasted terms go to Exchange in one call. Each term costs one or two directory lookups inside
+    /// the op, so a whole paste in a single call would run at the 90-second timeout — and a timeout kills the
+    /// host process, taking every open Exchange session with it. Chunks keep each call well inside the list
+    /// timeout and let the caller show progress between them.
+    /// </summary>
+    private const int ResolveChunk = 20;
+
+    public async Task<IReadOnlyList<MemberResolution>> ResolveMembersAsync(
+        IReadOnlyList<PastedTerm> terms, IProgress<int>? progress, CancellationToken cancellationToken = default)
+    {
+        if (terms is null || terms.Count == 0) return [];
+
+        var results = new List<MemberResolution>(terms.Count);
+        // Two pasted lines naming the same person cost one lookup, not two. A paste from a spreadsheet
+        // routinely repeats a manager or an assistant.
+        var seen = new Dictionary<string, MemberResolution>(StringComparer.OrdinalIgnoreCase);
+
+        for (var offset = 0; offset < terms.Count; offset += ResolveChunk)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var chunk = terms.Skip(offset).Take(ResolveChunk).ToList();
+            var payload = chunk.Select(t => new { line = t.LineNumber, term = t.Term, search = t.SearchText }).ToArray();
+
+            var data = await RunOpAsync(new { op = "resolve-recipients", terms = payload }, cancellationToken, ListTimeout)
+                .ConfigureAwait(false);
+
+            var byLine = new Dictionary<int, (bool Exact, List<MemberCandidate> Candidates)>();
+            if (data is { ValueKind: JsonValueKind.Array } arr)
+                foreach (var e in arr.EnumerateArray()) TakeResolved(e, byLine);
+            else if (data is { ValueKind: JsonValueKind.Object } one) // one result serialises as an object
+                TakeResolved(one, byLine);
+
+            foreach (var term in chunk)
+            {
+                if (!byLine.TryGetValue(term.LineNumber, out var found))
+                {
+                    results.Add(PastedMemberParser.NotFound(term));
+                    continue;
+                }
+                // The rung decides whether this can resolve itself: an exact hit can, a search hit never does.
+                var rung = found.Exact ? MemberLookupKind.Address : MemberLookupKind.Search;
+                results.Add(PastedMemberParser.FromRung(term, rung, found.Candidates)
+                            ?? PastedMemberParser.NotFound(term));
+            }
+            progress?.Report(Math.Min(offset + ResolveChunk, terms.Count));
+        }
+        return results;
+
+        static void TakeResolved(JsonElement e, Dictionary<int, (bool, List<MemberCandidate>)> into)
+        {
+            var line = e.TryGetProperty("Line", out var l) && l.TryGetInt32(out var n) ? n : -1;
+            if (line < 0) return;
+            var exact = e.TryGetProperty("Exact", out var x) && x.ValueKind == JsonValueKind.True;
+            var list = new List<MemberCandidate>();
+            if (e.TryGetProperty("Candidates", out var c))
+            {
+                if (c.ValueKind == JsonValueKind.Array) foreach (var one in c.EnumerateArray()) Add(one, list);
+                else if (c.ValueKind == JsonValueKind.Object) Add(c, list);
+            }
+            into[line] = (exact, list);
+        }
+
+        static void Add(JsonElement e, List<MemberCandidate> into)
+        {
+            string S(string p) => e.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
+            var identity = S("Identity");
+            // A recipient with no address cannot be written back as a member, so it is not offered as one.
+            if (string.IsNullOrWhiteSpace(identity)) return;
+            into.Add(new MemberCandidate(identity, S("DisplayName"), S("Secondary"), S("Kind")));
+        }
+    }
+
     public async Task<IReadOnlyList<MailboxRecipient>> SearchRecipientsAsync(string text, CancellationToken cancellationToken = default)
     {
         var data = await RunOpAsync(new { op = "search-recipients", text = text ?? string.Empty }, cancellationToken).ConfigureAwait(false);
@@ -1896,6 +1969,58 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 $wsp['ErrorAction'] = 'Stop'
                                 Set-DistributionGroup @wsp
                                 __emit @{ ok = $true }
+                            }
+                            'resolve-recipients' {
+                                # Resolves a BATCH of pasted terms in one round trip. One op per term would be
+                                # a hundred trips on a channel that serialises every call; the caller sends
+                                # chunks instead, and each chunk is one op well inside the list timeout.
+                                #
+                                # Neither lookup uses -Identity, so the returns-everything trap does not apply
+                                # here: a -Filter or -Anr that matches nothing returns nothing.
+                                $rrOut = @()
+                                foreach ($rt in @($r.terms)) {
+                                    $rrTerm = ([string]$rt.term).Trim()
+                                    $rrSearch = ([string]$rt.search).Trim()
+                                    if ([string]::IsNullOrWhiteSpace($rrTerm)) { continue }
+
+                                    # Exact first. EmailAddresses covers the primary AND every proxy address,
+                                    # so an old address someone pasted still finds its owner. No wildcards:
+                                    # Exchange Online documents a leading wildcard as not allowed, and slow
+                                    # wherever it is tolerated.
+                                    $rrEsc = $rrTerm.Replace("'", "''")
+                                    $rrFilter = "EmailAddresses -eq '$rrEsc' -or Alias -eq '$rrEsc' -or DisplayName -eq '$rrEsc'"
+                                    $rrHits = @(Get-Recipient -ResultSize 20 -Filter $rrFilter -ErrorAction SilentlyContinue)
+                                    $rrExact = $true
+
+                                    # A name that was pasted "Last, First" is searched flipped, because that is
+                                    # how the directory stores it.
+                                    if ($rrHits.Count -eq 0 -and $rrSearch -and $rrSearch -ne $rrTerm) {
+                                        $rrEsc2 = $rrSearch.Replace("'", "''")
+                                        $rrHits = @(Get-Recipient -ResultSize 20 -Filter "DisplayName -eq '$rrEsc2'" -ErrorAction SilentlyContinue)
+                                    }
+
+                                    # Then ambiguous. -Anr is the purpose-built resolver for a partial name:
+                                    # it matches common name, display name, first, last and alias.
+                                    if ($rrHits.Count -eq 0) {
+                                        $rrExact = $false
+                                        $rrAnr = $(if ($rrSearch) { $rrSearch } else { $rrTerm }) -replace '[\*\?]', ''
+                                        if ($rrAnr) {
+                                            $rrHits = @(Get-Recipient -ResultSize 20 -Anr $rrAnr -ErrorAction SilentlyContinue)
+                                        }
+                                    }
+
+                                    $rrOut += @{
+                                        Line = [int]$rt.line
+                                        Exact = $rrExact
+                                        Candidates = @($rrHits | ForEach-Object { @{
+                                            Identity = [string]$_.PrimarySmtpAddress
+                                            DisplayName = [string]$_.DisplayName
+                                            Secondary = [string]$_.Alias
+                                            Kind = [string]$_.RecipientTypeDetails
+                                        } })
+                                    }
+                                }
+                                __emit @{ ok = $true; data = $rrOut }
                             }
                             'list-dl-recipients' {
                                 # Resolves ONE recipient-valued property to names and addresses, on demand.

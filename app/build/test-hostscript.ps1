@@ -735,5 +735,84 @@ foreach ($rk in $recipKeys) {
     Check "the host treats $($wm.Groups[1].Value) as a delta" $true ($hostRecip -contains $wm.Groups[1].Value)
 }
 
+
+# --- 7. resolving a pasted batch -----------------------------------------------------------------------
+Write-Host "`n== resolve-recipients: exact before ambiguous ==" -ForegroundColor Cyan
+# The rung matters more than the hit: an exact match may resolve a row on its own, a search hit never does.
+# If this op reported a search hit as exact, a half-typed name would put a real person into a group unasked.
+$rrStart = ($all | Select-String -Pattern "^\s*'resolve-recipients' \{\s*`$" | Select-Object -First 1).LineNumber
+if (-not $rrStart) { throw 'Could not locate the resolve-recipients op.' }
+$depth = 0; $rrEnd = $null
+for ($i = $rrStart - 1; $i -lt $all.Count; $i++) {
+    $depth += ([regex]::Matches($all[$i], '\{')).Count
+    $depth -= ([regex]::Matches($all[$i], '\}')).Count
+    if ($depth -le 0) { $rrEnd = $i; break }
+}
+if (-not $rrEnd) { throw 'Could not locate the end of the resolve-recipients op.' }
+$rrBody = ($all[$rrStart..($rrEnd - 1)]) -join "`n"
+if ($rrBody -notmatch 'Anr') { throw 'The extracted op does not fall back to an ambiguous search.' }
+
+# A stub that records how it was asked, so the ORDER of the rungs can be asserted.
+$script:calls = @()
+$script:byFilter = @{}
+$script:byAnr = @{}
+function Get-Recipient {
+    [CmdletBinding()]
+    param([string]$Identity, [string]$Filter, [string]$Anr, $ResultSize)
+    if ($Filter) {
+        $script:calls += "filter:$Filter"
+        foreach ($k in $script:byFilter.Keys) { if ($Filter -like "*'$k'*") { return $script:byFilter[$k] } }
+        return @()
+    }
+    if ($Anr) { $script:calls += "anr:$Anr"; if ($script:byAnr.ContainsKey($Anr)) { return $script:byAnr[$Anr] }; return @() }
+    return @()
+}
+function Rec([string]$smtp, [string]$name, [string]$alias) {
+    [pscustomobject]@{ PrimarySmtpAddress = $smtp; DisplayName = $name; Alias = $alias; RecipientTypeDetails = 'UserMailbox' }
+}
+function RunResolve($terms) {
+    $script:calls = @(); $script:emitted = @()
+    $r = [pscustomobject]@{ terms = $terms }
+    try { Invoke-Expression $rrBody; return $null } catch { return $_.Exception.Message }
+}
+function Term2($line, $term, $search) { [pscustomobject]@{ line = $line; term = $term; search = $search } }
+
+$script:byFilter = @{ 'jane@contoso.com' = @(Rec 'jane@contoso.com' 'Jane Doe' 'jdoe') }
+$err = RunResolve @((Term2 1 'jane@contoso.com' 'jane@contoso.com'))
+Check 'an exact address resolves'   $null $err
+Check 'and is reported as exact'    $true (@((Emitted).data)[0].Exact)
+Check 'carrying the recipient'      'jane@contoso.com' (@((Emitted).data)[0].Candidates[0].Identity)
+Check 'without an ambiguous search' 0 (@($script:calls | Where-Object { $_ -like 'anr:*' })).Count
+
+# Nothing exact: it must fall through to ANR and say the result was NOT exact.
+$script:byFilter = @{}
+$script:byAnr = @{ 'Jane' = @((Rec 'jane@contoso.com' 'Jane Doe' 'jdoe'), (Rec 'jane2@contoso.com' 'Jane Roe' 'jroe')) }
+$err = RunResolve @((Term2 1 'Jane' 'Jane'))
+Check 'a partial name falls through to a search' $true (@($script:calls | Where-Object { $_ -like 'anr:*' })).Count.Equals(1)
+Check 'and is NOT reported as exact'            $false (@((Emitted).data)[0].Exact)
+Check 'offering every candidate'                2 (@((Emitted).data)[0].Candidates).Count
+
+# "Doe, Jane" is stored the other way round, so the flipped form is what gets searched.
+$script:byFilter = @{ 'Jane Doe' = @(Rec 'jane@contoso.com' 'Jane Doe' 'jdoe') }
+$script:byAnr = @{}
+$err = RunResolve @((Term2 1 'Doe, Jane' 'Jane Doe'))
+Check 'last, first is looked up flipped' $true (@((Emitted).data)[0].Exact)
+Check 'and finds the person'             'Jane Doe' (@((Emitted).data)[0].Candidates[0].DisplayName)
+
+# A whole chunk in one op is the point: one round trip, not one per line.
+$script:byFilter = @{ 'a@x.com' = @(Rec 'a@x.com' 'A One' 'a'); 'b@x.com' = @(Rec 'b@x.com' 'B Two' 'b') }
+$script:byAnr = @{}
+$err = RunResolve @((Term2 1 'a@x.com' 'a@x.com'), (Term2 2 'b@x.com' 'b@x.com'), (Term2 3 'nobody@x.com' 'nobody@x.com'))
+Check 'every term comes back'        3 (@((Emitted).data)).Count
+Check 'lines are preserved'          3 (@((Emitted).data)[2].Line)
+Check 'a miss returns no candidates' 0 (@(@((Emitted).data)[2].Candidates)).Count
+
+# No -Identity anywhere: that is the parameter that makes a Get- cmdlet return the whole directory.
+# Comments mention it, so match the CALL: -Identity on a Get- cmdlet is what returns the whole directory.
+$rrCode = ($rrBody -split "`n" | Where-Object { $_ -notmatch '^\s*#' }) -join " "
+Check 'the op never addresses by -Identity' $false ($rrCode -match 'Get-\w+[^|]*-Identity')
+# A leading wildcard is documented as not allowed in Exchange Online, and slow wherever it is tolerated.
+Check 'and uses no leading wildcard'        $false ($rrBody -match "like '\*")
+
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

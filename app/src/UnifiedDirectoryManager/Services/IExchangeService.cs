@@ -48,6 +48,18 @@ public interface IExchangeService
     Task<IReadOnlyList<MailboxRecipient>> SearchRecipientsAsync(string text, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Resolves a batch of pasted terms to Exchange recipients, for adding many members at once. Sent in
+    /// chunks: each term costs a directory lookup inside the op, and a whole paste in one call would run at
+    /// the operation timeout — which kills the hosted pwsh process and every open session with it.
+    ///
+    /// Each term is tried EXACTLY first (address — including proxy addresses — alias, then whole display
+    /// name) and only then ambiguously, via ANR. The distinction is carried back, because only an exact match
+    /// may resolve a row on its own: a search hit is a guess about a half-specified name and always asks.
+    /// </summary>
+    /// <param name="progress">Reports how many terms have been resolved, for a paste that takes a while.</param>
+    Task<IReadOnlyList<MemberResolution>> ResolveMembersAsync(IReadOnlyList<PastedTerm> terms, IProgress<int>? progress, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Lists mailboxes as list rows, optionally narrowed by <paramref name="search"/> (matched server-side
     /// against display name, primary SMTP, and alias). At most <paramref name="max"/> rows are returned;
     /// see <see cref="ExchangePage.Capped"/> — Exchange has no continuation token, so a capped result is the
