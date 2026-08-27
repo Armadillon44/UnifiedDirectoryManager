@@ -217,8 +217,7 @@
                         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6"
                                     Visibility="{Binding CanManageLicenses, Converter={StaticResource BoolToVis}}">
                             <Button Content="Assign license…" Command="{Binding AssignLicenseCommand}" Margin="0,0,6,0" />
-                            <Button Content="Remove selected" Command="{Binding RemoveLicensesCommand}"
-                                    CommandParameter="{Binding SelectedItems, ElementName=CloudLicensesList}" />
+                            <Button Content="Remove selected" Click="OnRemoveSelectedLicenses" />
                         </StackPanel>
                         <ListView x:Name="CloudLicensesList" ItemsSource="{Binding Licenses}"
                                   SelectionMode="Extended" VirtualizingStackPanel.IsVirtualizing="False">
@@ -238,8 +237,7 @@
                     <DockPanel Margin="8">
                         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
                             <Button Content="Add to groups…" Command="{Binding AddToGroupsCommand}" Margin="0,0,6,0" />
-                            <Button Content="Remove selected" Command="{Binding RemoveFromGroupsCommand}"
-                                    CommandParameter="{Binding SelectedItems, ElementName=CloudMembershipsList}" />
+                            <Button Content="Remove selected" Click="OnRemoveSelectedMemberships" />
                         </StackPanel>
                         <ListView x:Name="CloudMembershipsList" ItemsSource="{Binding Memberships}"
                                   SelectionMode="Extended" VirtualizingStackPanel.IsVirtualizing="False">
@@ -263,8 +261,7 @@
                             <Button Content="Add members…" Command="{Binding AddMembersCommand}" Margin="0,0,6,0" />
                             <Button Content="Paste a list…" Command="{Binding PasteMembersCommand}" Margin="0,0,6,0"
                                     ToolTip="Paste many people at once — addresses, logon names or names — and review what each line resolved to before anything is added." />
-                            <Button Content="Remove selected" Command="{Binding RemoveMembersCommand}"
-                                    CommandParameter="{Binding SelectedItems, ElementName=CloudMembersList}" />
+                            <Button Content="Remove selected" Click="OnRemoveSelectedMembers" />
                         </StackPanel>
                         <ListView x:Name="CloudMembersList" ItemsSource="{Binding Members}"
                                   SelectionMode="Extended" VirtualizingStackPanel.IsVirtualizing="False"
