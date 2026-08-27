@@ -25,6 +25,14 @@ public sealed class AppSettings
     /// <summary>lDAPDisplayNames of the visible object-list columns (empty = use defaults).</summary>
     public List<string> VisibleColumns { get; set; } = new();
 
+    /// <summary>
+    /// Pinned favourites, keyed by the LOWER-CASED domain FQDN they belong to. Per domain because a
+    /// distinguished name only means something in the domain it came from — one global list would show
+    /// entries that fail the moment they are clicked. Use <see cref="Favorites"/> rather than this directly:
+    /// the key has to be normalised, because the JSON deserialiser rebuilds this with a default comparer.
+    /// </summary>
+    public Dictionary<string, List<Models.FavoriteEntry>> Favorites { get; set; } = new();
+
     /// <summary>Last Entra Connect server used for a remote delta sync.</summary>
     public string? EntraConnectServer { get; set; }
 
