@@ -1,10 +1,64 @@
 # Simple search, and a record of removed members ([#5](../../issues/5), [#4](../../issues/4))
 
-Status: **drafted, awaiting review.** Nothing is locked yet — the questions at the end change the shape of
-the work.
+Status: **reviewed and locked.** Decisions D1–D9 below are settled; the work follows the sequencing at the end.
 
 Two unrelated issues, planned together because they are both small, both touch surfaces that have **no test
 coverage at all today**, and both turn out to have a hidden dependency that the issue text does not mention.
+
+---
+
+## Locked decisions
+
+**D1 — the quick filter gets its own field set, decoupled from the visible columns.** `name`,
+`displayName`, `givenName`, `sn`, `sAMAccountName`, `userPrincipalName`, `mail`, `proxyAddresses`, loaded
+whether or not those columns are shown, held in a dedicated search field on the row rather than in
+`Values`. The predicate stops reading `Values` entirely, so the two can never drift back together.
+
+**D2 — `manager`, `description` and `groupType` stop being searched.** This follows the issue's explicit
+list, which names neither. It is a **behaviour change**: `description` and `groupType` are default columns
+today and are therefore searched today, so anyone relying on finding a group by its description will notice.
+Advanced Search covers those, which is what the issue asks for.
+
+**D3 — matching is graded: word-boundary prefix, then substring.** Prefix per query token first; substring
+only if that rung returns nothing, which preserves today's mid-word matching as a fallback. **No
+edit-distance rung** — measured, `jsmith` is distance 1 from `smith`, so typo tolerance pulls in names the
+operator did not mean, and that is a poor trade on a live directory. Revisit only if prefix-then-substring
+proves insufficient in use.
+
+**D4 — the cloud and Exchange panes are not touched.** Their Filter box already populates every value
+regardless of columns, so it does not have the defect this issue describes. Scope stays on the AD quick
+filter the issue names. The two boxes keep slightly different field sets; that is a known and accepted
+inconsistency, not an oversight.
+
+**D5 — the pickers move to ANR.** `SearchByNameAsync` swaps three medial wildcards for
+`(|(anr=v)(userPrincipalName=v*)(mail=v*))`. Independent of the rest of #5: it turns three unindexed
+subtree walks into indexed prefix lookups and adds the two attributes ANR misses. ANR is **never** put
+behind the quick-filter box, which fires per keystroke with no debounce.
+
+**D6 — records are written for the user-initiated removal surfaces only.** The AD *Members* tab, AD
+*Member Of*, the cloud *Members* tab, the cloud *Member Of* tabs, and the distribution-group members
+window. The four scenario steps already record name + identifier and are left alone, so a scenario run does
+not produce two records of one removal. **Bulk Edit is out of scope** — it is M targets × N groups and needs
+a different record shape; its confirmation naming neither side is arguably its own bug and belongs in its
+own issue.
+
+**D7 — a removal record cannot block the removal. Warn and proceed.** This deliberately **inverts** the
+group-delete rule of *no record, no delete*. That rule is right for a deletion, which is irreversible; a
+membership removal is not. Refusing a reversible operation because a log file could not be written would be
+a worse failure than the one it prevents. The failure is surfaced, not swallowed.
+
+**D8 — one record file per removal operation**, named and formatted in the `GroupDeletionRecord` style, in
+the same configurable operation-log folder. Not an appended ledger: a per-operation file is what makes a
+single removal findable afterwards, and it matches the precedent an operator has already seen.
+
+**D9 — the paste parser gains a distinguished-name rung**, so a recorded identifier can be pasted straight
+back into **Paste a list…**. Without it a record satisfies *"log who was deleted"* but not *"so they can be
+easily re-added"*. It also retroactively makes every 2.2.0 group-deletion CSV directly re-addable.
+
+Two smaller calls, taken by default and easily reversed if either is wrong: the record names **the operator
+who performed the removal**, matching the scenario operation log's `Run by` header; and **additions do not
+get records**, since an addition is self-evident from the group's own membership and the issue does not ask
+for it.
 
 ---
 
@@ -99,8 +153,9 @@ uses — and which is already proven in this codebase:
 
 1. **Word-boundary prefix** on each token of the query, against each field. `jo smi` finds *John Smith*.
 2. **Substring**, only if rung 1 returned nothing. Preserves today's mid-word matching as a fallback.
-3. **Typo tolerance** (Damerau-Levenshtein, distance 1, tokens of 4+ characters), only if rung 2 returned
-   nothing. *This rung is optional — see question 3.*
+A third rung — Damerau-Levenshtein at distance 1 — was measured and **rejected** under D3. It is affordable
+(1.88 ms over 5,000 rows) but `jsmith` sits at distance 1 from `smith`, so it surfaces names the operator
+did not ask for. On a directory, a confidently wrong match is worse than no match.
 
 `proxyAddresses` is multi-valued and would flatten to `SMTP:a; smtp:b; x500:…`. It must be matched
 **per address with the scheme prefix stripped**, or `smtp` matches every mail-enabled user and the
@@ -197,18 +252,16 @@ still means a human retyping each name.
 
 Closing it is small: a **DN rung in the paste parser**, so a recorded `.csv` column can be pasted straight
 back into **Paste a list…**. It also retroactively makes every 2.2.0 group-deletion CSV directly re-addable.
-This is question 2.
+Locked as D9.
 
 ## Proposed shape
 
 A record file per removal operation, in the group-delete style, plus a log line that names **both** sides
 instead of one side and a count.
 
-**Failure policy: warn and proceed.** The delete record's locked rule is *no record, no delete* — correct
-there, because a deletion is irreversible. A membership removal is **not** irreversible, and blocking a
-reversible operation because a log file could not be written would be a worse failure than the one it
-prevents. This deliberately **inverts** the earlier decision, which is why it is called out rather than
-assumed.
+Failure policy is D7: **warn and proceed**, deliberately inverting the delete record's *no record, no
+delete*. Scope is D6: the user-initiated surfaces, leaving the scenario steps alone because they already
+record this and leaving Bulk Edit to its own issue.
 
 ## Sharp edges
 
