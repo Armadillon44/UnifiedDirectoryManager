@@ -23,13 +23,60 @@ public static class ExchangeErrors
         // Map the few error shapes operators will actually hit to plain guidance.
         if (msg.Contains("ManagementObjectNotFound", StringComparison.OrdinalIgnoreCase) ||
             msg.Contains("couldn't be found", StringComparison.OrdinalIgnoreCase))
-            return "That mailbox or recipient could not be found in Exchange Online.";
+        {
+            // Keep the identity Exchange named. Creating a group with several members means several candidates
+            // for "not found", and a message that names none of them leaves the operator guessing which.
+            var who = QuotedIdentity(msg);
+            return who is null
+                ? "That mailbox or recipient could not be found in Exchange Online."
+                : $"This mailbox or recipient could not be found in Exchange Online: {who}";
+        }
+
+        // RBAC failures KEEP Exchange's own text and get a hint appended, rather than being replaced by one.
+        //
+        // Two reasons the previous fixed sentence was worse than nothing. It named Recipient Management, which
+        // does not carry group creation (that needs Distribution Groups, and the member ops' hardcoded
+        // -BypassSecurityGroupManagerCheck needs Organization Management or Security Group Creation and
+        // Membership) — so it confidently sent the operator to the wrong role. And it discarded the original
+        // message, which is exactly what a tenant policy rejection needs: group-creation and naming-policy
+        // errors are the app's problem to surface verbatim, not to reinterpret.
+        //
+        // A bare "insufficient" is deliberately NOT matched for the same reason: policy rejections contain it,
+        // and rewriting one as a permissions problem is the failure mode this branch used to cause.
+        // In a hybrid org this is the DEFAULT outcome of any write against a synced object, not an edge case.
+        // The raw text is two sentences of Exchange prose; the app blocks these writes up front, so reaching
+        // here means the block was bypassed or the sync state changed underneath.
+        if (msg.Contains("being synchronized from your on-premises", StringComparison.OrdinalIgnoreCase) ||
+            msg.Contains("is synchronized from your on-premises", StringComparison.OrdinalIgnoreCase))
+            return "This object is synchronized from on-premises Active Directory and is read-only in Exchange Online. Make the change on-premises, then wait for directory synchronisation.";
 
         if (msg.Contains("AccessDenied", StringComparison.OrdinalIgnoreCase) ||
             msg.Contains("not authorized", StringComparison.OrdinalIgnoreCase) ||
-            msg.Contains("insufficient", StringComparison.OrdinalIgnoreCase))
-            return "Access denied. The signed-in admin needs an Exchange role (e.g. Recipient Management) for this action.";
+            msg.Contains("insufficient access rights", StringComparison.OrdinalIgnoreCase) ||
+            msg.Contains("insufficient permission", StringComparison.OrdinalIgnoreCase))
+            return msg.Trim() +
+                   " — the signed-in admin is probably missing the Exchange management role this particular " +
+                   "action needs (they differ per operation; see the README).";
 
         return msg.Trim();
+    }
+
+    /// <summary>
+    /// Pulls the object identity out of an Exchange "couldn't be found" message, which quotes it — usually with
+    /// typographic quotes ("…"), sometimes straight ones. Returns null when nothing quoted is present, so the
+    /// caller can fall back to the generic wording rather than printing an empty pair of quotes.
+    /// </summary>
+    private static string? QuotedIdentity(string message)
+    {
+        foreach (var (open, close) in new[] { ('“', '”'), ('\'', '\''), ('"', '"') })
+        {
+            var start = message.IndexOf(open);
+            if (start < 0) continue;
+            var end = message.IndexOf(close, start + 1);
+            if (end <= start + 1) continue;
+            var inner = message[(start + 1)..end].Trim();
+            if (inner.Length > 0) return "“" + inner + "”";
+        }
+        return null;
     }
 }

@@ -2,8 +2,9 @@ using UnifiedDirectoryManager.Models;
 
 namespace UnifiedDirectoryManager.Services;
 
-/// <summary>Which cloud list is being shown (drives the column set and the loader).</summary>
-public enum CloudListMode { Users, Groups, Devices, GroupMembers }
+/// <summary>Which cloud list is being shown (drives the column set and the loader). The first four are
+/// Entra ID (Microsoft Graph); the last two are Exchange Online (the hosted PowerShell channel).</summary>
+public enum CloudListMode { Users, Groups, Devices, GroupMembers, Mailboxes, DistributionGroups }
 
 /// <summary>
 /// Defines the selectable columns for each cloud list mode (key → friendly header + default visibility).
@@ -57,12 +58,42 @@ public static class CloudColumnCatalog
         ("id", "Object ID", true),
     };
 
+    private static readonly (string Key, string Header, bool Visible)[] MailboxCols =
+    {
+        ("primarySmtpAddress", "Primary SMTP", true),
+        ("mailboxType", "Mailbox type", true),
+        ("userPrincipalName", "User principal name", true),
+        ("alias", "Alias", false),
+        ("dirSynced", "Directory sync", true),
+        ("hiddenFromAddressLists", "Hidden from address lists", false),
+        ("created", "Mailbox created", false),
+        ("id", "Object ID", false),
+    };
+
+    // No member count: Get-DistributionGroup doesn't return one, and computing it would cost a
+    // Get-DistributionGroupMember call per row on a channel that serialises every operation.
+    private static readonly (string Key, string Header, bool Visible)[] DistributionGroupCols =
+    {
+        ("primarySmtpAddress", "Primary SMTP", true),
+        ("groupType", "Type", true),
+        ("dirSynced", "Directory sync", true),
+        ("managedBy", "Managed by", true),
+        ("externalSenders", "External senders", true),
+        ("joinRestriction", "Join restriction", false),
+        ("alias", "Alias", false),
+        ("hiddenFromAddressLists", "Hidden from address lists", false),
+        ("created", "Created", false),
+        ("id", "Object ID", false),
+    };
+
     private static (string Key, string Header, bool Visible)[] Defs(CloudListMode mode) => mode switch
     {
         CloudListMode.Users => UserCols,
         CloudListMode.Groups => GroupCols,
         CloudListMode.Devices => DeviceCols,
         CloudListMode.GroupMembers => MemberCols,
+        CloudListMode.Mailboxes => MailboxCols,
+        CloudListMode.DistributionGroups => DistributionGroupCols,
         _ => UserCols,
     };
 

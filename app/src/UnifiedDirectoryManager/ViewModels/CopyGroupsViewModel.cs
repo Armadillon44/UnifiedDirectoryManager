@@ -14,18 +14,29 @@ public sealed partial class CopyGroupRow : ObservableObject
     public string Detail { get; init; } = string.Empty; // "On-prem" / "Cloud" (shown beside the name)
     public string Id { get; init; } = string.Empty;      // on-prem DN, or Entra group id
     public bool IsCloud { get; init; }
+
+    /// <summary>True for a distribution list or mail-enabled security group. Microsoft Graph is read-only
+    /// for those — it answers a membership write with "Cannot update a mail-enabled security groups
+    /// and or distribution list" — so they must go to Exchange, which addresses both sides by SMTP.</summary>
+    public bool IsExchangeManaged { get; init; }
+
+    /// <summary>The group's email address, which is how Exchange addresses it. Empty for non-mail groups.</summary>
+    public string Mail { get; init; } = string.Empty;
 }
 
 /// <summary>
 /// Copies a source user's group memberships onto another (existing) user. The operator unticks any they
-/// don't want, picks the target user, and applies: on-prem groups via a single membership write, cloud-only
-/// groups via Graph. Groups synced from on-prem AD are not listed separately — they carry across with their
+/// don't want, picks the target user, and applies: on-prem groups via a single membership write, and cloud
+/// groups through whichever backend owns them — Graph for security and Microsoft 365 groups, Exchange for
+/// distribution lists and mail-enabled security groups, which Graph refuses to modify. Groups synced from
+/// on-prem AD are not listed separately — they carry across with their
 /// on-prem group. The target's existing memberships are left untouched (this only adds).
 /// </summary>
 public partial class CopyGroupsViewModel : ObservableObject
 {
     private readonly IDirectoryService _directory;
     private readonly IGraphService _graph;
+    private readonly IExchangeService _exchange;
     private readonly IDialogService _dialogs;
     private readonly string _sourceDn;
 
@@ -43,10 +54,12 @@ public partial class CopyGroupsViewModel : ObservableObject
     /// <summary>True once at least one membership has been written, so the host can refresh.</summary>
     public bool Applied { get; private set; }
 
-    public CopyGroupsViewModel(IDirectoryService directory, IGraphService graph, IDialogService dialogs, string sourceDn)
+    public CopyGroupsViewModel(IDirectoryService directory, IGraphService graph, IExchangeService exchange,
+        IDialogService dialogs, string sourceDn)
     {
         _directory = directory;
         _graph = graph;
+        _exchange = exchange;
         _dialogs = dialogs;
         _sourceDn = sourceDn;
         _sourceDisplay = NameResolver.RdnFallback(sourceDn);
@@ -81,7 +94,17 @@ public partial class CopyGroupsViewModel : ObservableObject
                 {
                     var cloud = await _graph.GetUserGroupsByUpnAsync(srcUpn.RawValues[0]);
                     foreach (var g in cloud.Where(g => !g.IsSynced))
-                        Groups.Add(new CopyGroupRow { Name = g.DisplayName, Id = g.Id, IsCloud = true, Detail = "Cloud" });
+                        Groups.Add(new CopyGroupRow
+                        {
+                            Name = g.DisplayName,
+                            Id = g.Id,
+                            IsCloud = true,
+                            IsExchangeManaged = g.IsExchangeManaged,
+                            Mail = g.Mail ?? string.Empty,
+                            // Labelled the way the rest of the app labels them, so it is visible before
+                            // applying which memberships are Exchange's rather than Entra's.
+                            Detail = g.IsExchangeManaged ? "Exchange" : "Cloud",
+                        });
                 }
                 catch (Exception ex) { AppLog.Instance.Warn("Could not load source cloud groups for copy-groups: " + ex.Message); }
             }
@@ -156,6 +179,13 @@ public partial class CopyGroupsViewModel : ObservableObject
                     var targetUpn = targetAttrs.FirstOrDefault(a => a.LdapName.Equals("userPrincipalName", StringComparison.OrdinalIgnoreCase))
                                                ?.RawValues.FirstOrDefault();
                     var cloudId = string.IsNullOrWhiteSpace(targetUpn) ? null : (await _graph.GetUserByUpnAsync(targetUpn))?.Id;
+                    // Exchange addresses a member by SMTP, not by directory object id, so the mail address
+                    // is resolved too. UPN is the fallback: Exchange accepts any value that uniquely
+                    // identifies the recipient, and a mailbox-less target has nothing better to offer.
+                    var targetMail = targetAttrs
+                        .FirstOrDefault(a => a.LdapName.Equals("mail", StringComparison.OrdinalIgnoreCase))
+                        ?.RawValues.FirstOrDefault();
+                    var targetAddress = string.IsNullOrWhiteSpace(targetMail) ? targetUpn : targetMail;
                     if (cloudId is null)
                     {
                         Step("⚠ Couldn't find the target user in Entra ID (it may not be synced yet) — cloud groups were skipped.");
@@ -166,8 +196,35 @@ public partial class CopyGroupsViewModel : ObservableObject
                         var errors = new List<string>();
                         foreach (var g in cloud)
                         {
-                            try { await _graph.AddMemberToGroupAsync(g.Id, cloudId); ok++; Applied = true; }
-                            catch (Exception ex) { errors.Add($"{g.Name}: {GraphErrors.Friendly(ex)}"); }
+                            // Distribution lists and mail-enabled security groups are read-only in Graph:
+                            // it answers a membership write with "Cannot update a mail-enabled security
+                            // groups and or distribution list". Those go to Exchange instead.
+                            try
+                            {
+                                if (g.IsExchangeManaged)
+                                {
+                                    if (string.IsNullOrWhiteSpace(g.Mail))
+                                    {
+                                        errors.Add($"{g.Name}: managed through Exchange Online but has no email address, so Exchange can't address it.");
+                                        continue;
+                                    }
+                                    if (string.IsNullOrWhiteSpace(targetAddress))
+                                    {
+                                        errors.Add($"{g.Name}: the target user has no email address, and Exchange addresses members by address.");
+                                        continue;
+                                    }
+                                    await _exchange.AddDistributionGroupMemberAsync(g.Mail, targetAddress!);
+                                }
+                                else
+                                {
+                                    await _graph.AddMemberToGroupAsync(g.Id, cloudId);
+                                }
+                                ok++;
+                                Applied = true;
+                            }
+                            // ExchangeService humanizes before throwing; running it through again would
+                            // duplicate the guidance sentence.
+                            catch (Exception ex) { errors.Add($"{g.Name}: {(g.IsExchangeManaged ? ex.Message : GraphErrors.Friendly(ex))}"); }
                         }
                         Step($"✓ Added to {ok} cloud group(s)" + (errors.Count > 0 ? $", {errors.Count} failed:" : "."));
                         foreach (var e in errors) Step("   ✗ " + e);

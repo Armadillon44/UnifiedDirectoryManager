@@ -683,6 +683,74 @@ public partial class EditPaneViewModel : ObservableObject
         await RunWrite(() => _directory.AddMembersAsync(_dn!, picked.Select(p => p.DistinguishedName).ToList()));
     }
 
+    /// <summary>
+    /// Opens a member of this group in its OWN window. Not in this pane: the pane is showing the group being
+    /// worked on, and replacing it to look at one member loses that.
+    ///
+    /// The type has to be known first — the edit pane uses it to pick the field layout, and the members list
+    /// holds only a name and a DN. That is deliberate: the list derives names from each DN's RDN because
+    /// resolving every member meant a bind each, thousands of them on a large group. One lookup for the ONE
+    /// member being opened is a different proposition entirely.
+    /// </summary>
+    [RelayCommand]
+    private async Task OpenMemberAsync(GroupMemberRow? member)
+    {
+        if (member is null || string.IsNullOrWhiteSpace(member.Dn)) return;
+
+        AdObjectType type;
+        try
+        {
+            var attrs = await _directory.LoadObjectAsync(member.Dn);
+            type = ClassifyFrom(attrs);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Instance.Warn($"Could not open '{member.Dn}': {DirectoryService.Friendly(ex)}");
+            _dialogs.Alert("Open member", "Could not open that member: " + DirectoryService.Friendly(ex));
+            return;
+        }
+        _dialogs.ShowAdObjectProperties(member.Dn, type);
+    }
+
+    /// <summary>
+    /// Reads the object type off objectClass. COMPUTER IS CHECKED FIRST on purpose: a computer's objectClass
+    /// contains "user" as well, because computer derives from user in the schema — testing for user first
+    /// would open every server as if it were a person.
+    /// </summary>
+    private static AdObjectType ClassifyFrom(IReadOnlyList<AdAttribute> attrs)
+    {
+        var classes = attrs
+            .Where(a => string.Equals(a.LdapName, "objectClass", StringComparison.OrdinalIgnoreCase))
+            .SelectMany(a => a.RawValues)
+            .ToList();
+        var all = string.Join(";", classes);
+
+        if (all.Contains("computer", StringComparison.OrdinalIgnoreCase)) return AdObjectType.Computer;
+        if (all.Contains("group", StringComparison.OrdinalIgnoreCase)) return AdObjectType.Group;
+        if (all.Contains("user", StringComparison.OrdinalIgnoreCase)) return AdObjectType.User;
+        return AdObjectType.Unknown;
+    }
+
+    /// <summary>
+    /// Adds many members at once from a pasted list. Resolved against Active Directory, because that is what
+    /// owns this group's membership — a cloud-only user has no distinguished name to add.
+    /// </summary>
+    [RelayCommand]
+    private async Task PasteMembersAsync()
+    {
+        if (_dn is null || !IsGroup) return;
+
+        var resolved = _dialogs.PasteMembers(
+            $"Add members to “{Title}” from a list", MemberBackend.ActiveDirectory, Members.Select(m => m.Dn), _dn);
+        if (resolved is null || resolved.Count == 0) return;
+
+        if (!_dialogs.Confirm("Confirm", $"Add {resolved.Count} member(s) to “{Title}”?",
+                resolved.Select(c => c.Label)))
+            return;
+
+        await RunWrite(() => _directory.AddMembersAsync(_dn!, resolved.Select(c => c.Identity).ToList()));
+    }
+
     [RelayCommand]
     private async Task RemoveMemberAsync(object? selected)
     {

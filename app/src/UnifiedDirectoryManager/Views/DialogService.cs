@@ -90,7 +90,34 @@ public sealed class DialogService : IDialogService
     {
         var vm = new MailboxRecipientPickerViewModel(_exchange);
         var window = new MailboxRecipientPickerWindow { DataContext = vm, Title = title, Owner = Owner };
+        return window.ShowDialog() == true && vm.Commit() ? vm.Picked[0] : null;
+    }
+
+    public IReadOnlyList<MailboxRecipient>? PickMailboxRecipients(string title, IReadOnlyList<MailboxRecipient>? initial = null)
+    {
+        var vm = new MailboxRecipientPickerViewModel(_exchange, multiSelect: true, initial);
+        var window = new MailboxRecipientPickerWindow { DataContext = vm, Title = title, Owner = Owner };
         return window.ShowDialog() == true && vm.Commit() ? vm.Picked : null;
+    }
+
+    public IReadOnlyList<MemberCandidate>? PasteMembers(string title, MemberBackend backend, IEnumerable<string> alreadyMembers, string? selfIdentity)
+    {
+        // The resolver is chosen by whoever owns the group's membership, never by what the operator pasted.
+        IMemberResolver resolver = backend switch
+        {
+            MemberBackend.ActiveDirectory => new AdMemberResolver(_directory),
+            MemberBackend.Entra => new EntraMemberResolver(_graph),
+            _ => new ExchangeMemberResolver(_exchange),
+        };
+        var vm = new PasteMembersViewModel(resolver, alreadyMembers, selfIdentity);
+        var window = new PasteMembersWindow { DataContext = vm, Title = title, Owner = Owner };
+        return window.ShowDialog() == true ? vm.Accepted : null;
+    }
+
+    public void ShowDistributionGroupMembers(string identity, string groupName, bool isSynced)
+    {
+        var vm = new DistributionGroupMembersViewModel(_exchange, this, identity, groupName, isSynced);
+        new DistributionGroupMembersWindow { DataContext = vm, Owner = Owner }.ShowDialog(); // modal; loads on open
     }
 
     public (DelegateAccess Access, bool AutoMapping)? EditDelegateAccess(string delegateName, DelegateAccess current)
@@ -240,7 +267,7 @@ public sealed class DialogService : IDialogService
 
     public bool ShowCopyGroupsToUser(string sourceUserDistinguishedName)
     {
-        var vm = new CopyGroupsViewModel(_directory, _graph, this, sourceUserDistinguishedName);
+        var vm = new CopyGroupsViewModel(_directory, _graph, _exchange, this, sourceUserDistinguishedName);
         new CopyGroupsWindow { DataContext = vm, Owner = Owner }.ShowDialog(); // modal; loads on Loaded
         return vm.Applied;
     }
@@ -274,6 +301,14 @@ public sealed class DialogService : IDialogService
         new CloudObjectPropertiesWindow { DataContext = vm, Owner = Owner }.Show(); // non-modal
     }
 
+    public void ShowAdObjectProperties(string distinguishedName, AdObjectType type)
+    {
+        // Its own view model, so the window and the main pane cannot fight over one object's edit state.
+        var vm = new EditPaneViewModel(_directory, this, msg => Alert("Error", msg), _graph, _exchange);
+        _ = vm.LoadAsync(distinguishedName, type);
+        new AdObjectPropertiesWindow { DataContext = vm, Owner = Owner }.Show(); // non-modal
+    }
+
     public void ShowOuProperties(string distinguishedName, string name)
     {
         var vm = new OuPropertiesViewModel(_directory, distinguishedName, name);
@@ -296,9 +331,23 @@ public sealed class DialogService : IDialogService
         return win.ShowDialog() == true ? vm.CreatedDistinguishedName : null;
     }
 
-    public SearchQuery? ShowAdvancedSearch(string defaultBaseDn)
+    public (string Id, string Name, bool FromExchange)? ShowNewCloudGroup(CloudGroupType? initialType)
     {
-        var vm = new AdvancedSearchViewModel(this, _savedSearches);
+        var vm = new NewCloudGroupViewModel(_graph, _exchange, this, initialType);
+        var win = new NewCloudGroupWindow { DataContext = vm, Owner = Owner };
+        vm.Created += () => { win.DialogResult = true; win.Close(); }; // close the modal once the group is created
+        // Defaulting the owner to the signed-in admin needs a Graph lookup. Start it and open the dialog straight
+        // away rather than stalling on it: ShowDialog pumps messages, so the continuation lands back on the UI
+        // thread and the row appears a moment later. It fails soft internally, so there is nothing to await here.
+        _ = vm.InitializeAsync();
+        return win.ShowDialog() == true && vm.CreatedId is { Length: > 0 } id
+            ? (id, vm.CreatedName ?? string.Empty, vm.CreatedInExchange)
+            : null;
+    }
+
+    public SearchQuery? ShowAdvancedSearch(string defaultBaseDn, SavedSearchPinning? pinning = null)
+    {
+        var vm = new AdvancedSearchViewModel(this, _savedSearches, pinning);
         if (!string.IsNullOrWhiteSpace(defaultBaseDn))
             vm.AddBase(defaultBaseDn);
         new AdvancedSearchWindow { DataContext = vm, Owner = Owner }.ShowDialog();

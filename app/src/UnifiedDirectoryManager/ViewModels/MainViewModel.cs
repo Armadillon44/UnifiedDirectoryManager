@@ -20,12 +20,175 @@ public partial class MainViewModel : ObservableObject
     private readonly IGraphService _graph;
     private readonly IExchangeService _exchange;
     private readonly ICredentialStore _credentials;
+    private readonly ISavedSearchStore _savedSearches;
     private TreeNodeViewModel? _cloudRoot;
+    private TreeNodeViewModel? _exchangeRoot;
     private bool _scenarioRunning; // guards against a second (fire-and-forget) scenario run overlapping
+    private bool _suppressNodeLoad; // set while the tree selection is moved programmatically before an explicit load
 
     public AppSettings Settings { get; }
 
     public ObservableCollection<TreeNodeViewModel> RootNodes { get; } = new();
+
+    private TreeNodeViewModel? _favoritesRoot;
+
+    /// <summary>The domain favourites are filed under. Null before a connection, when a DN means nothing.</summary>
+    private string? FavoritesDomain => _directory.IsConnected ? _directory.Current?.DomainFqdn : null;
+
+    /// <summary>
+    /// Rebuilds the Favourites row from settings and puts it at the TOP of the tree, which is the whole
+    /// point of the feature: reaching a much-used OU should not mean drilling through the structure again.
+    ///
+    /// Rebuilt wholesale rather than patched, so the row can never drift from what is stored.
+    /// </summary>
+    private void RebuildFavorites()
+    {
+        var pins = Favorites.For(Settings, FavoritesDomain);
+        if (pins.Count == 0)
+        {
+            // Nothing pinned: no empty expander to open and find nothing in.
+            if (_favoritesRoot is not null) { RootNodes.Remove(_favoritesRoot); _favoritesRoot = null; }
+            return;
+        }
+
+        if (_favoritesRoot is null)
+        {
+            _favoritesRoot = new TreeNodeViewModel(null, "Favourites", _directory, SetError);
+            RootNodes.Insert(0, _favoritesRoot);
+            _favoritesRoot.IsExpanded = true;
+        }
+
+        _favoritesRoot.Children.Clear();
+        foreach (var pin in pins)
+        {
+            // The name comes from the entry every time it is shown, never from a copy taken when it was
+            // pinned, so a favourite cannot show a name the thing it points at no longer has.
+            var name = pin.Kind == FavoriteKind.Container
+                ? NameResolver.RdnFallback(pin.Value)
+                : pin.Value;
+            _favoritesRoot.Children.Add(new TreeNodeViewModel(pin, name, _directory, SetError));
+        }
+    }
+
+    /// <summary>
+    /// Opens a favourite, having first confirmed the thing it points at is still there. The list swallows
+    /// its own errors, so without the check a pin to a deleted OU would show an empty list — which reads as
+    /// "that OU is empty now", not as "that OU is gone".
+    /// </summary>
+    private async Task OpenFavoriteAsync(TreeNodeViewModel node)
+    {
+        if (node.Favorite is { Kind: FavoriteKind.SavedSearch }) { RunFavoriteSearch(node); return; }
+        if (node.Favorite is not { Kind: FavoriteKind.Container }) return;
+        try
+        {
+            await _directory.GetBasicInfoAsync(node.DistinguishedName);
+            node.IsUnavailable = false;
+        }
+        catch (Exception ex)
+        {
+            // Left in place, not removed. A domain controller being briefly unreachable is not evidence that
+            // an OU was deleted, and quietly dropping someone's pin is the worse of the two mistakes.
+            node.IsUnavailable = true;
+            SetError($"“{node.Name}” could not be opened: {DirectoryService.Friendly(ex)}. "
+                     + "It may have been renamed, moved or deleted — unpin it from its right-click menu.");
+            return;
+        }
+        await List.LoadContainerAsync(node.DistinguishedName);
+    }
+
+    /// <summary>
+    /// Runs a pinned saved search. The query is read from the store at the moment it is clicked, never
+    /// copied into the pin, so editing a saved search changes what its favourite does — which is what an
+    /// operator who edited it expects.
+    /// </summary>
+    private void RunFavoriteSearch(TreeNodeViewModel node)
+    {
+        var name = node.Favorite!.Value;
+        var search = _savedSearches.LoadAll()
+            .FirstOrDefault(s => string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (search?.Query is null)
+        {
+            // Same reasoning as a missing OU: mark it, leave it, and say what to do about it. The list
+            // swallows its own errors, so without this a deleted search would just show an empty list.
+            node.IsUnavailable = true;
+            SetError($"The saved search “{name}” could not be found — it may have been renamed or deleted. "
+                     + "Unpin it from its right-click menu.");
+            return;
+        }
+        node.IsUnavailable = false;
+        StatusMessage = $"Showing “{name}”.";
+        _ = List.LoadQueryAsync(search.Query);
+    }
+
+    /// <summary>
+    /// Hands the Advanced Search dialog just enough to pin a saved search, without handing it the settings.
+    /// Nothing is offered before a connection: favourites are filed per domain, so there would be nowhere
+    /// to file it.
+    /// </summary>
+    private SavedSearchPinning? SearchPinning() =>
+        FavoritesDomain is null ? null : new SavedSearchPinning(
+            name => Favorites.Contains(Settings, FavoritesDomain,
+                        new FavoriteEntry { Kind = FavoriteKind.SavedSearch, Value = name }),
+            name =>
+            {
+                var entry = new FavoriteEntry { Kind = FavoriteKind.SavedSearch, Value = name };
+                var pinned = Favorites.Contains(Settings, FavoritesDomain, entry);
+                if (pinned) Favorites.Remove(Settings, FavoritesDomain, entry);
+                else Favorites.Add(Settings, FavoritesDomain, entry);
+                _settingsStore.Save(Settings);
+                RebuildFavorites();
+                StatusMessage = pinned ? $"Unpinned “{name}”." : $"Pinned “{name}”.";
+            });
+
+    /// <summary>Pins a container. Saves immediately: a pin lost to a crash is a pin the operator has to notice.</summary>
+    public void PinNode(TreeNodeViewModel? node)
+    {
+        if (node is null || !node.CanPin) return;
+        var entry = new FavoriteEntry { Kind = FavoriteKind.Container, Value = node.DistinguishedName };
+        if (!Favorites.Add(Settings, FavoritesDomain, entry))
+        {
+            StatusMessage = $"“{node.Name}” is already pinned.";
+            return;
+        }
+        _settingsStore.Save(Settings);
+        RebuildFavorites();
+        StatusMessage = $"Pinned “{node.Name}”.";
+    }
+
+    /// <summary>
+    /// Moves a favourite up or down. The list is rebuilt from settings afterwards, so what is on screen is
+    /// always what was stored rather than a separately-maintained copy of it.
+    /// </summary>
+    public void MoveFavorite(TreeNodeViewModel? node, int delta)
+    {
+        if (node?.Favorite is null) return;
+        if (!Favorites.Move(Settings, FavoritesDomain, node.Favorite, delta)) return;
+        _settingsStore.Save(Settings);
+        RebuildFavorites();
+
+        // Keep the row the operator was acting on selected, so a second Move up moves the same favourite
+        // again instead of whatever has taken its place. Suppressed, because re-selecting it is not a
+        // request to open it again.
+        var moved = _favoritesRoot?.Children.FirstOrDefault(c => c.Favorite?.SameAs(node.Favorite) == true);
+        if (moved is null) return;
+        _suppressNodeLoad = true;
+        try
+        {
+            SelectedNode = moved;
+            moved.IsSelected = true;
+        }
+        finally { _suppressNodeLoad = false; }
+    }
+
+    /// <summary>Unpins a favourite. Only the shortcut goes; the object it pointed at is untouched.</summary>
+    public void UnpinNode(TreeNodeViewModel? node)
+    {
+        if (node?.Favorite is null) return;
+        if (!Favorites.Remove(Settings, FavoritesDomain, node.Favorite)) return;
+        _settingsStore.Save(Settings);
+        RebuildFavorites();
+        StatusMessage = $"Unpinned “{node.Name}”.";
+    }
     public ObjectListViewModel List { get; }
     public EditPaneViewModel Edit { get; }
 
@@ -62,7 +225,7 @@ public partial class MainViewModel : ObservableObject
 
     public MainViewModel(IDirectoryService directory, IDialogService dialogs, IScenarioStore scenarios,
         ISettingsStore settingsStore, AppSettings settings, IGraphService graph, IExchangeService exchange,
-        ICredentialStore credentials)
+        ICredentialStore credentials, ISavedSearchStore savedSearches)
     {
         _directory = directory;
         _dialogs = dialogs;
@@ -71,6 +234,7 @@ public partial class MainViewModel : ObservableObject
         _graph = graph;
         _exchange = exchange;
         _credentials = credentials;
+        _savedSearches = savedSearches;
         Settings = settings;
         _editDock = Enum.TryParse<EditPaneDock>(settings.EditDock, out var dock) ? dock : EditPaneDock.Right;
 
@@ -93,6 +257,22 @@ public partial class MainViewModel : ObservableObject
 
         // Double-click a cloud row → open its read-only properties window.
         Cloud.OpenRequested += (_, row) => _dialogs.ShowCloudObjectProperties(row);
+
+        // …except a distribution group, whose membership is what the app can actually manage today. Exchange
+        // addresses it by primary SMTP, and the row's Id may be the Entra object id, so pass the address.
+        Cloud.MembersRequested += (_, row) =>
+        {
+            var smtp = row.Get("primarySmtpAddress");
+            if (string.IsNullOrWhiteSpace(smtp))
+            {
+                SetError($"“{row.DisplayName}” has no primary SMTP address, so Exchange can't address it.");
+                return;
+            }
+            _dialogs.ShowDistributionGroupMembers(smtp, row.DisplayName,
+                string.Equals(row.Get("dirSynced"), "Synced", StringComparison.OrdinalIgnoreCase));
+            // No reload afterwards: the list carries no membership column, so nothing on screen changed, and a
+            // reload is a full capped sweep on a channel that serialises every call.
+        };
 
         // When the edit pane commits a change (disable, attribute edit, group/member change),
         // refresh the list so it reflects the change (e.g. the greyed-out disabled state).
@@ -152,6 +332,7 @@ public partial class MainViewModel : ObservableObject
             root.IsExpanded = true;
             SelectedNode = root;
             EnsureCloudRoot();
+            RebuildFavorites();
 
             var c = _directory.Current!;
             ConnectedInfo = $"Connected to {c.Server}  •  {c.DomainFqdn}  •  {c.DefaultNamingContext}";
@@ -172,10 +353,18 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    /// <summary>Adds (or removes) the "Entra ID (cloud)" tree root based on the current sign-in state.</summary>
+    /// <summary>
+    /// Adds (or removes) the two cloud tree roots — "Entra ID (cloud)" and "Exchange Online" — based on the
+    /// current sign-in state. Both hang off the same Entra sign-in: Exchange borrows its token from it.
+    ///
+    /// The Exchange section is shown whenever the admin is signed in, even if Exchange itself isn't configured
+    /// or PowerShell 7 / the module is missing, because those are only discoverable on first use. A missing
+    /// section is indistinguishable from a bug; the list pane explains what to fix instead.
+    /// </summary>
     public void EnsureCloudRoot()
     {
         if (_cloudRoot is not null) { RootNodes.Remove(_cloudRoot); _cloudRoot = null; }
+        if (_exchangeRoot is not null) { RootNodes.Remove(_exchangeRoot); _exchangeRoot = null; }
         if (!_graph.IsSignedIn) return;
 
         var children = new[]
@@ -189,6 +378,17 @@ public partial class MainViewModel : ObservableObject
             IsExpanded = true,
         };
         RootNodes.Add(_cloudRoot);
+
+        var exchangeChildren = new[]
+        {
+            new TreeNodeViewModel(CloudNodeKind.Mailboxes, "Mailboxes", _directory, SetError),
+            new TreeNodeViewModel(CloudNodeKind.DistributionGroups, "Distribution groups", _directory, SetError),
+        };
+        _exchangeRoot = new TreeNodeViewModel(CloudNodeKind.Exchange, "Exchange Online", _directory, SetError, exchangeChildren)
+        {
+            IsExpanded = true,
+        };
+        RootNodes.Add(_exchangeRoot);
     }
 
     partial void OnIsCloudViewChanged(bool value) => OnPropertyChanged(nameof(IsAdView));
@@ -200,16 +400,34 @@ public partial class MainViewModel : ObservableObject
         if (value.CloudKind is { } kind)
         {
             IsCloudView = true;
+            // The caller is about to load this list itself, with a search seeded; don't race it with an
+            // unseeded load of the same mode on a channel where a redundant fetch is expensive.
+            if (_suppressNodeLoad) return;
+            // Every cloud node kind is listed explicitly: the fall-through would quietly show the Entra Users
+            // list, so a section added without a case here would look like it works rather than failing.
             switch (kind)
             {
+                case CloudNodeKind.Tenant:
+                case CloudNodeKind.Users: _ = Cloud.LoadAsync(CloudListMode.Users); break;
                 case CloudNodeKind.Groups: _ = Cloud.LoadAsync(CloudListMode.Groups); break;
                 case CloudNodeKind.Devices: _ = Cloud.LoadAsync(CloudListMode.Devices); break;
-                default: _ = Cloud.LoadAsync(CloudListMode.Users); break; // Users + Tenant root
+                case CloudNodeKind.Exchange:
+                case CloudNodeKind.Mailboxes: _ = Cloud.LoadAsync(CloudListMode.Mailboxes); break;
+                case CloudNodeKind.DistributionGroups: _ = Cloud.LoadAsync(CloudListMode.DistributionGroups); break;
             }
             return;
         }
 
         IsCloudView = false;
+
+        // The Favourites row holds pins; it is not somewhere to navigate to.
+        if (value is { IsFavoritesRoot: true }) return;
+
+        // Reordering re-selects the row it moved, which lands here. Activating a favourite means loading a
+        // container or running a saved search, and neither is worth doing again just because the pin moved
+        // one place up the list.
+        if (value is { IsFavorite: true }) { if (!_suppressNodeLoad) _ = OpenFavoriteAsync(value); return; }
+
         if (value is { IsPlaceholder: false })
             _ = List.LoadContainerAsync(value.DistinguishedName);
     }
@@ -253,11 +471,93 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void ManageTemplates() => _dialogs.ShowTemplateEditor();
 
+    /// <summary>File ▸ New Cloud Group. The type defaults from whichever cloud list is showing.</summary>
+    [RelayCommand]
+    private void NewCloudGroup() => CreateCloudGroup(SelectedNode?.DefaultCloudGroupType);
+
+    /// <summary>
+    /// Opens the New Cloud Group dialog and, on success, reloads the list the group actually landed in.
+    ///
+    /// Only that one list: a group created through Exchange is readable from Exchange immediately but takes a
+    /// while to reach the Entra ID list, and a Microsoft 365 group created through Graph takes far longer still
+    /// to provision its mailbox. Reloading the other side would show the operator an absence and read as failure.
+    /// </summary>
+    public void CreateCloudGroup(CloudGroupType? initialType)
+    {
+        if (_dialogs.ShowNewCloudGroup(initialType) is not { } created) return;
+
+        var target = created.FromExchange ? CloudListMode.DistributionGroups : CloudListMode.Groups;
+        IsCloudView = true;
+        SelectTreeNode(created.FromExchange ? CloudNodeKind.DistributionGroups : CloudNodeKind.Groups);
+        _ = ShowCreatedCloudGroupAsync(target, created.Id, created.Name, created.FromExchange);
+    }
+
+    /// <summary>
+    /// Loads the list the new group landed in, searching for it by name so it is actually on screen, and says
+    /// plainly when it isn't yet. Only that one list is loaded: a group created in Exchange takes a while to
+    /// reach the Entra ID list, and reloading the other side would show an absence that reads as failure.
+    /// </summary>
+    private async Task ShowCreatedCloudGroupAsync(CloudListMode target, string id, string name, bool fromExchange)
+    {
+        var where = fromExchange ? "Exchange Online" : "Entra ID";
+        try
+        {
+            await Cloud.LoadAsync(target, name);
+            StatusMessage = Cloud.SelectRowById(id)
+                ? $"Created “{name}” in {where}."
+                // Both backends need a moment before a new object is returned by a query, and the Exchange
+                // lists are capped, so absence here is expected rather than a sign the create failed.
+                : $"Created “{name}” in {where}, but it isn't listed yet — refresh in a moment.";
+        }
+        catch (Exception ex)
+        {
+            SetError($"“{name}” was created in {where}, but the list couldn't be refreshed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Moves the tree selection onto a cloud section. Assigns <see cref="SelectedNode"/> FIRST and then the
+    /// node's own flag, matching the other tree-selection call sites: the flag alone round-trips through the
+    /// TreeViewItem back into SelectedNode and would start a second, unseeded load of the same list.
+    /// </summary>
+    private void SelectTreeNode(CloudNodeKind kind)
+    {
+        var node = RootNodes.SelectMany(r => r.Children).FirstOrDefault(c => c.CloudKind == kind);
+        if (node is null) return;
+        _suppressNodeLoad = true;
+        try
+        {
+            SelectedNode = node;
+            node.IsSelected = true;
+        }
+        finally { _suppressNodeLoad = false; }
+    }
+
     [RelayCommand]
     private void OpenSettings()
     {
         _dialogs.ShowSettings(RefreshAfterReconnect);
-        EnsureCloudRoot(); // a sign-in/out in Settings may have added/removed the cloud section
+        EnsureCloudRoot();      // a sign-in/out in Settings may have added/removed the cloud sections
+        ReconfigureExchange();  // …and may have pointed the app at a different tenant
+    }
+
+    /// <summary>
+    /// Points the Exchange Online layer at the tenant currently in settings. Without this, Exchange keeps the
+    /// tenant it was given at startup and signing in to a different one needs an app restart.
+    ///
+    /// Runs off the UI thread: <see cref="IExchangeService.Configure"/> tears down any existing session when the
+    /// tenant actually changes, and that teardown blocks on the channel's gate with no timeout — on the UI
+    /// thread, with an operation in flight, it would freeze the window.
+    /// </summary>
+    private void ReconfigureExchange()
+    {
+        var tenant = Settings.EntraTenantId;
+        if (string.IsNullOrWhiteSpace(tenant)) return;
+        _ = Task.Run(() =>
+        {
+            try { _exchange.Configure(tenant!); }
+            catch (Exception ex) { AppLog.Instance.Warn("Re-configuring Exchange Online after Settings failed: " + ex.Message); }
+        });
     }
 
     /// <summary>Rebinds the UI to the (possibly new) connection after a reconnect from the Settings dialog.</summary>
@@ -275,7 +575,7 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void AdvancedSearch()
     {
-        var query = _dialogs.ShowAdvancedSearch(SelectedNode?.DistinguishedName ?? string.Empty);
+        var query = _dialogs.ShowAdvancedSearch(SelectedNode?.DistinguishedName ?? string.Empty, SearchPinning());
         if (query is not null)
         {
             StatusMessage = "Showing advanced search results.";

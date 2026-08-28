@@ -333,6 +333,161 @@ public sealed class GraphService : IGraphService
 
     // --- Writes (callers confirm first) ---
 
+    public async Task<CloudGroupCreateResult> CreateGroupAsync(CloudGroupCreateRequest request, CancellationToken cancellationToken = default)
+    {
+        if (_graph is null) throw new InvalidOperationException("Sign in to Entra ID first.");
+        if (CloudGroupValidator.IsExchangeType(request.Type))
+            throw new ArgumentException("Distribution and mail-enabled security groups are read-only in Microsoft Graph; create them through Exchange Online.", nameof(request));
+
+        var unified = request.Type == CloudGroupType.Microsoft365;
+        var body = new Group
+        {
+            DisplayName = request.DisplayName.Trim(),
+            Description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description!.Trim(),
+            MailNickname = request.MailNickname.Trim(),
+            MailEnabled = unified,
+            SecurityEnabled = !unified,
+            GroupTypes = unified ? new List<string> { "Unified" } : new List<string>(),
+        };
+        // HiddenMembership is a Microsoft 365 concept and can never be changed afterwards. A security group's
+        // visibility isn't meaningful, so it is left unset there rather than sent as a no-op.
+        if (unified) body.Visibility = request.HiddenMembership ? "HiddenMembership" : request.Visibility;
+
+        // resourceBehaviorOptions is POST-only and Microsoft 365-only. WelcomeEmailDisabled is the ONLY way to
+        // stop the service mailing every initial member, and there is no second chance: omit it and the
+        // notification has already reached real people by the time this method returns.
+        if (unified)
+        {
+            var behaviors = new List<string>();
+            if (!request.SendWelcomeEmail) behaviors.Add("WelcomeEmailDisabled");
+            if (request.HideInOutlook) behaviors.Add("HideGroupInOutlook");
+            if (behaviors.Count > 0)
+                body.AdditionalData = new Dictionary<string, object> { ["resourceBehaviorOptions"] = behaviors };
+        }
+
+        var owners = Distinct(request.Owners);
+        var members = Distinct(request.Members);
+
+        // NOTHING is bound in the create body — not owners, not members. Any principal reference the service
+        // can't resolve is a property of the request body, so it fails the WHOLE create: one stale id means no
+        // group at all, reported by an error that names no principal. Two documented traps make that concrete.
+        // A non-admin naming themselves in owners@odata.bind gets 400 "Request contains a property with
+        // duplicate values" (a known issue with no workaround), and members@odata.bind is all-or-nothing. Both
+        // are specific to Create/Update/Upsert; POST /$ref afterwards is one request per principal, so a bad
+        // one degrades to a warning naming that principal, on a group that exists. Binding owners afterwards
+        // also keeps an admin's explicitly-chosen owner, which a blanket "strip self" would have dropped —
+        // leaving the ownerless security group this is meant to avoid.
+        var created = await _graph.Groups.PostAsync(body, cancellationToken: cancellationToken);
+        var id = created?.Id;
+        if (string.IsNullOrEmpty(id))
+            throw new InvalidOperationException("Entra ID accepted the group but returned no object id.");
+
+        AppLog.Instance.Info($"Created cloud group '{body.DisplayName}' ({request.Type}) as {id}.");
+
+        // The group already exists, so a failure past this point is a warning, not a failed create.
+        var ownersError = await BindPrincipalsAsync("owners", id!, owners, cancellationToken).ConfigureAwait(false);
+        var membersError = await BindPrincipalsAsync("members", id!, members, cancellationToken).ConfigureAwait(false);
+        return new CloudGroupCreateResult(id!, body.DisplayName ?? request.DisplayName, ownersError, membersError);
+    }
+
+    /// <summary>
+    /// Binds owners or members to a group that already exists, one reference at a time so a single bad principal
+    /// doesn't discard the rest (both the create body and a <c>members@odata.bind</c> PATCH are all-or-nothing).
+    /// Returns null on success, or a message naming who didn't get added.
+    /// </summary>
+    private async Task<string?> BindPrincipalsAsync(
+        string relationship, string groupId, IReadOnlyList<CloudGroupPrincipal> principals, CancellationToken ct)
+    {
+        if (principals.Count == 0) return null;
+        var failed = new List<string>();
+        foreach (var p in principals)
+        {
+            // The directory needs a moment after a create before it will accept references to the new group;
+            // Graph documents a transient 400 for exactly this window, so the first attempts are retried.
+            var attempt = 0;
+            while (true)
+            {
+                try
+                {
+                    // Owners bind through /users/ and members through /directoryObjects/. That asymmetry is only
+                    // safe because the picker refuses a device on the owners path (NewCloudGroupViewModel.Pick):
+                    // a device id sent through the /users/ segment does not resolve, and the operator would see
+                    // an unexplained "these owners were not set" on an otherwise successful create.
+                    var reference = new ReferenceCreate
+                    {
+                        OdataId = DirectoryUrl(relationship == "owners" ? "users" : "directoryObjects", p.Id),
+                    };
+                    if (relationship == "owners")
+                        await _graph!.Groups[groupId].Owners.Ref.PostAsync(reference, cancellationToken: ct).ConfigureAwait(false);
+                    else
+                        await _graph!.Groups[groupId].Members.Ref.PostAsync(reference, cancellationToken: ct).ConfigureAwait(false);
+                    break;
+                }
+                catch (Exception ex) when (IsAlreadyPresent(ex))
+                {
+                    // The principal is already attached, which is the desired end state — not a failure, and
+                    // certainly not something to retry. Graph auto-assigns the caller as owner of every
+                    // Microsoft 365 group (and of a security group for a non-admin caller), so this is the
+                    // NORMAL path for the owner the dialog seeds by default, not an edge case.
+                    break;
+                }
+                catch (Exception ex) when (attempt < 3 && IsReplicationDelay(ex))
+                {
+                    attempt++;
+                    await Task.Delay(TimeSpan.FromSeconds(attempt * 2), ct).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Instance.Warn($"Adding {relationship} {p.Id} to cloud group {groupId} failed: {GraphErrors.Friendly(ex)}");
+                    failed.Add(p.DisplayName);
+                    break;
+                }
+            }
+        }
+        return failed.Count == 0 ? null : string.Join(", ", failed);
+    }
+
+    /// <summary>
+    /// True when the reference already exists, which Graph answers with 400 rather than a success code. Matched
+    /// on the message because there is no distinct error code for it — <c>Request_BadRequest</c> covers this and
+    /// most other rejections alike, so the code alone cannot tell them apart.
+    /// </summary>
+    private static bool IsAlreadyPresent(Exception ex) =>
+        string.Equals(GraphErrors.Code(ex), "Request_BadRequest", StringComparison.OrdinalIgnoreCase)
+        && GraphErrors.Friendly(ex).Contains("already exist", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The documented transient failure while a freshly-created object replicates across directory replicas.
+    /// Graph reports it as <c>Request_BadRequest</c> with a message about the source resource not existing.
+    ///
+    /// The code is NOT sufficient on its own. <c>Request_BadRequest</c> is Graph's catch-all for rejected
+    /// requests — a duplicate reference, an invalid property, a policy violation — none of which get better by
+    /// waiting. Retrying on the code alone spends 12 seconds per principal turning an instant, permanent
+    /// failure into a slow one. So the code is required <i>together with</i> the wording, and
+    /// <c>Request_ResourceNotFound</c> is accepted on its own because it is specific enough to be safe.
+    /// </summary>
+    private static bool IsReplicationDelay(Exception ex)
+    {
+        if (string.Equals(GraphErrors.Code(ex), "Request_ResourceNotFound", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (!string.Equals(GraphErrors.Code(ex), "Request_BadRequest", StringComparison.OrdinalIgnoreCase)
+            && GraphErrors.Code(ex) is not null)
+            return false;
+
+        var msg = GraphErrors.Friendly(ex);
+        return msg.Contains("don't exist", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("does not exist", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("do not exist", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string DirectoryUrl(string segment, string id) => $"https://graph.microsoft.com/v1.0/{segment}/{id}";
+
+    private static List<CloudGroupPrincipal> Distinct(IReadOnlyList<CloudGroupPrincipal> source) =>
+        source.Where(p => !string.IsNullOrWhiteSpace(p.Id))
+              .GroupBy(p => p.Id, StringComparer.OrdinalIgnoreCase)
+              .Select(g => g.First())
+              .ToList();
+
     public async Task AddMemberToGroupAsync(string groupId, string memberObjectId, CancellationToken cancellationToken = default)
     {
         if (_graph is null) throw new InvalidOperationException("Sign in to Entra ID first.");

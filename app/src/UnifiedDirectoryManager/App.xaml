@@ -10,6 +10,16 @@
             <conv:ObjectTypeToGlyphConverter x:Key="TypeGlyph" />
             <conv:ScenarioActionToLabelConverter x:Key="ScenarioActionLabel" />
             <conv:NonEmptyToVisibilityConverter x:Key="NonEmptyToVis" />
+
+            <!-- One line of a progress log. A read-only TextBox rather than a TextBlock: these logs are where
+                 failures get reported, and the first thing anyone wants to do with an error is copy it. Styled
+                 to look like static text, so it reads the same until selected, and right-click gives Copy.
+                 IsTabStop=False: a long log would otherwise be a long walk for anyone using the keyboard. -->
+            <DataTemplate x:Key="ProgressLine">
+                <TextBox Text="{Binding Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" Margin="0,1"
+                         FontSize="12" BorderThickness="0" Background="Transparent" Padding="0"
+                         IsTabStop="False" />
+            </DataTemplate>
             <BooleanToVisibilityConverter x:Key="BoolToVis" />
 
             <!-- Accent palette -->

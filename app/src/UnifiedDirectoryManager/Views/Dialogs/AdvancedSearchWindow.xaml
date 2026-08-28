@@ -25,7 +25,10 @@
                               SelectedItem="{Binding SelectedSavedSearch}" Margin="0,0,6,4"
                               ToolTip="{Binding SelectedSavedSearch.Description}" />
                     <Button Content="Load" Command="{Binding LoadSearchCommand}" Margin="0,0,4,4" MinWidth="56" />
-                    <Button Content="Delete" Command="{Binding DeleteSearchCommand}" Margin="0,0,12,4" MinWidth="56" />
+                    <Button Content="Delete" Command="{Binding DeleteSearchCommand}" Margin="0,0,4,4" MinWidth="56" />
+                    <Button Content="{Binding PinButtonText}" Command="{Binding TogglePinCommand}" Margin="0,0,12,4" MinWidth="56"
+                            Visibility="{Binding CanPinSearches, Converter={StaticResource BoolToVis}}"
+                            ToolTip="Pins this saved search to the Favourites at the top of the tree, so it is one click away." />
                     <Button Content="Export…" Command="{Binding ExportSearchCommand}" Margin="0,0,4,4" />
                     <Button Content="Import…" Command="{Binding ImportSearchCommand}" Margin="0,0,0,4" />
                 </WrapPanel>

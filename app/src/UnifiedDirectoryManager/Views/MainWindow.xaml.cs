@@ -71,11 +71,12 @@ public partial class MainWindow : Window
 
     // --- Right-click ▸ Properties on an OU/container tree node ---
 
-    /// <summary>Suppresses the tree context menu on non-container nodes (cloud sections, "Loading…"),
-    /// so only OU/container/domain nodes offer Properties.</summary>
+    /// <summary>Suppresses the tree context menu on nodes with no actions at all ("Loading…", the tenant roots).
+    /// Nodes that do offer something — on-prem containers, and the two cloud group lists — show the menu, and
+    /// each item gates its own visibility from there.</summary>
     private void OnNodeContextMenuOpening(object sender, ContextMenuEventArgs e)
     {
-        if ((sender as FrameworkElement)?.DataContext is TreeNodeViewModel { IsContainerNode: true }) return;
+        if ((sender as FrameworkElement)?.DataContext is TreeNodeViewModel { HasContextMenu: true }) return;
         e.Handled = true;
     }
 
@@ -89,6 +90,26 @@ public partial class MainWindow : Window
         if (_vm is not null && NodeFromMenu(sender) is { } node) _ = _vm.DeleteOuAsync(node);
     }
 
+    private void OnNodePinClick(object sender, RoutedEventArgs e)
+    {
+        if (_vm is not null && NodeFromMenu(sender) is { } node) _vm.PinNode(node);
+    }
+
+    private void OnNodeMoveFavoriteUpClick(object sender, RoutedEventArgs e)
+    {
+        if (_vm is not null && NodeFromMenu(sender) is { } node) _vm.MoveFavorite(node, -1);
+    }
+
+    private void OnNodeMoveFavoriteDownClick(object sender, RoutedEventArgs e)
+    {
+        if (_vm is not null && NodeFromMenu(sender) is { } node) _vm.MoveFavorite(node, +1);
+    }
+
+    private void OnNodeUnpinClick(object sender, RoutedEventArgs e)
+    {
+        if (_vm is not null && NodeFromMenu(sender) is { } node) _vm.UnpinNode(node);
+    }
+
     private void OnNodeCreateOuClick(object sender, RoutedEventArgs e)
     {
         if (_vm is not null && NodeFromMenu(sender) is { } node) _ = _vm.CreateOuUnderAsync(node);
@@ -97,6 +118,11 @@ public partial class MainWindow : Window
     private void OnNodeNewGroupClick(object sender, RoutedEventArgs e)
     {
         if (_vm is not null && NodeFromMenu(sender) is { } node) _ = _vm.CreateGroupUnderAsync(node);
+    }
+
+    private void OnNodeNewCloudGroupClick(object sender, RoutedEventArgs e)
+    {
+        if (_vm is not null && NodeFromMenu(sender) is { } node) _vm.CreateCloudGroup(node.DefaultCloudGroupType);
     }
 
     /// <summary>Resolves the tree node a context-menu item acts on. The menu item inherits the node as its
@@ -114,10 +140,12 @@ public partial class MainWindow : Window
 
     // --- Drop target: dropping list rows onto an OU node moves them there ---
 
+    // IsContainerNode (not just !IsPlaceholder) is the right test: it also excludes the cloud section nodes,
+    // whose DistinguishedName is a synthetic "cloud:<kind>" string that an LDAP move would choke on.
     private void OnTreeDragOver(object sender, DragEventArgs e)
     {
         var overOu = e.Data.GetDataPresent(ObjectListView.MoveDataFormat)
-                     && NodeFrom(e.OriginalSource as DependencyObject) is { IsPlaceholder: false };
+                     && NodeFrom(e.OriginalSource as DependencyObject) is { IsContainerNode: true };
         e.Effects = overOu ? DragDropEffects.Move : DragDropEffects.None;
         e.Handled = true;
     }
@@ -126,7 +154,7 @@ public partial class MainWindow : Window
     {
         if (_vm is null) return;
         if (e.Data.GetData(ObjectListView.MoveDataFormat) is not List<Models.AdObjectRow> rows || rows.Count == 0) return;
-        if (NodeFrom(e.OriginalSource as DependencyObject) is not { IsPlaceholder: false } node) return;
+        if (NodeFrom(e.OriginalSource as DependencyObject) is not { IsContainerNode: true } node) return;
         await _vm.MoveRowsToOuAsync(rows, node.DistinguishedName);
     }
 

@@ -1,0 +1,80 @@
+<Window x:Class="UnifiedDirectoryManager.Views.Dialogs.PasteMembersWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Add members from a list" Height="620" Width="860"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="130" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" TextWrapping="Wrap" Foreground="#555" Margin="0,0,0,6"
+                   Text="Paste one person per line. Addresses, logon names, &quot;Doe, Jane&quot; and plain names all work, and can be mixed. Nothing is added until you review the list below." />
+
+        <TextBox Grid.Row="1" Text="{Binding PastedText, UpdateSourceTrigger=PropertyChanged}"
+                 AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="Consolas" FontSize="12"
+                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                 IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" />
+
+        <Grid Grid.Row="2" Margin="0,8,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Button Grid.Column="0" Content="Resolve" MinWidth="90" Command="{Binding ResolveCommand}" />
+            <TextBlock Grid.Column="1" Text="{Binding Status}" Foreground="#666" VerticalAlignment="Center"
+                       Margin="12,0,0,0" TextWrapping="Wrap" />
+        </Grid>
+
+        <!-- One row per pasted line, showing what was pasted next to what it resolved to: the operator's
+             question is always "is that the person I meant?", and both halves are needed to answer it. -->
+        <ListView Grid.Row="3" ItemsSource="{Binding Rows}"
+                  Visibility="{Binding HasResolved, Converter={StaticResource BoolToVis}}">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="#" Width="36" DisplayMemberBinding="{Binding Line}" />
+                    <GridViewColumn Header="Pasted" Width="200" DisplayMemberBinding="{Binding Pasted}" />
+                    <GridViewColumn Header="Status" Width="150" DisplayMemberBinding="{Binding State}" />
+                    <GridViewColumn Header="Resolved to" Width="420">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <Grid>
+                                    <!-- Ambiguous rows get a drop-down and nothing is chosen for them; a
+                                         settled row shows what it settled on. Exactly one is ever visible. -->
+                                    <ComboBox ItemsSource="{Binding Candidates}"
+                                              SelectedItem="{Binding Chosen, Mode=TwoWay}"
+                                              Visibility="{Binding NeedsChoice, Converter={StaticResource BoolToVis}}">
+                                        <ComboBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding Label, Mode=OneWay}" />
+                                            </DataTemplate>
+                                        </ComboBox.ItemTemplate>
+                                    </ComboBox>
+                                    <TextBlock VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                                               Text="{Binding Chosen.Label, Mode=OneWay}"
+                                               ToolTip="{Binding Chosen.Identity, Mode=OneWay}"
+                                               Visibility="{Binding ShowChosen, Converter={StaticResource BoolToVis}}" />
+                                </Grid>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                </GridView>
+            </ListView.View>
+        </ListView>
+
+        <TextBlock Grid.Row="4" Margin="0,8,0,0" Foreground="#666" TextWrapping="Wrap"
+                   Visibility="{Binding HasResolved, Converter={StaticResource BoolToVis}}"
+                   Text="Rows marked Not found, Already a member, or still awaiting a choice are skipped." />
+
+        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Add these members" MinWidth="140" Margin="0,0,8,0" IsDefault="True" Click="OnOk"
+                    IsEnabled="{Binding CanCommit}" />
+            <Button Content="Cancel" MinWidth="90" IsCancel="True" />
+        </StackPanel>
+    </Grid>
+</Window>

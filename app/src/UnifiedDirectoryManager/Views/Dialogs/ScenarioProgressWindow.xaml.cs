@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Windows;
+using UnifiedDirectoryManager.Services;
 using UnifiedDirectoryManager.ViewModels;
 
 namespace UnifiedDirectoryManager.Views.Dialogs;
@@ -39,4 +40,13 @@ public partial class ScenarioProgressWindow : Window
     }
 
     private void OnClose(object sender, RoutedEventArgs e) => Close();
+
+    /// <summary>Copies the whole log. Selecting across wrapped lines by hand is awkward, and what an operator
+    /// usually wants to hand on is all of it, not one line.</summary>
+    private void OnCopyLog(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not ScenarioProgressViewModel vm) return;
+        try { Clipboard.SetText(string.Join(Environment.NewLine, vm.Lines)); }
+        catch (Exception ex) { AppLog.Instance.Warn("Could not copy the scenario log: " + ex.Message); }
+    }
 }

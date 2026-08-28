@@ -3,6 +3,7 @@ using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using UnifiedDirectoryManager.ViewModels;
 
 namespace UnifiedDirectoryManager.Views.Controls;
@@ -14,6 +15,22 @@ public partial class EditPaneView : UserControl
     // Click-to-sort for the Member Of and Members lists (per-list direction tracked by GridViewSorter).
     private void OnMemberOfHeaderClick(object sender, RoutedEventArgs e) => GridViewSorter.HandleHeaderClick(sender, e);
     private void OnMembersHeaderClick(object sender, RoutedEventArgs e) => GridViewSorter.HandleHeaderClick(sender, e);
+
+    /// <summary>
+    /// Double-clicking a member opens it in this pane. Only a ROW counts: a double-click on a column header
+    /// or on the blank space under the last row is not a request to open whatever is still selected.
+    /// </summary>
+    private void OnMemberDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (DataContext is not EditPaneViewModel vm) return;
+        if (e.OriginalSource is not DependencyObject source) return;
+        for (var node = source; node is not null; node = VisualTreeHelper.GetParent(node))
+        {
+            if (node is not ListViewItem item) continue;
+            if (item.DataContext is GroupMemberRow member) vm.OpenMemberCommand.Execute(member);
+            return;
+        }
+    }
 
     // --- Copy the Member Of groups to the clipboard (Ctrl+C, the Copy button, or right-click ▸ Copy) as
     //     tab-separated text with a header row, so it pastes cleanly into a text file or an Excel sheet. ---

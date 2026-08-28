@@ -61,16 +61,26 @@ public partial class ExchangeTabViewModel : ObservableObject
         RefreshStatus();
     }
 
-    /// <summary>Points the tab at the selected user's mailbox identity (called from the edit pane on load).</summary>
-    public void SetTarget(AdObjectType type, string? identity)
+    /// <summary>
+    /// Points the tab at an AD object's mailbox identity, from the edit pane. Only a user has one — a group or
+    /// a computer resolves to no target at all, which leaves the tab reporting that there is nothing to act on.
+    /// </summary>
+    public void SetTarget(AdObjectType type, string? identity) =>
+        SetTarget(type == AdObjectType.User ? identity : null);
+
+    /// <summary>
+    /// Points the tab at a mailbox identity directly. The cloud pane already knows it is looking at a mailbox,
+    /// so it has no AD object type to offer and none to be gated on.
+    /// </summary>
+    public void SetTarget(string? identity)
     {
-        _identity = type == AdObjectType.User && !string.IsNullOrWhiteSpace(identity) ? identity!.Trim() : null;
+        _identity = string.IsNullOrWhiteSpace(identity) ? null : identity!.Trim();
         HasResult = false;
         ClearDetail();
         RefreshStatus();
     }
 
-    public void Reset() => SetTarget(AdObjectType.Unknown, null);
+    public void Reset() => SetTarget(null);
 
     private string TargetLabel => HasResult && !string.IsNullOrWhiteSpace(DisplayName) ? DisplayName : _identity ?? "(unknown)";
 
@@ -332,5 +342,12 @@ public partial class ExchangeTabViewModel : ObservableObject
             StatusMessage = successStatus + " — couldn't refresh the view; click Look up mailbox.";
         }
         finally { IsBusy = false; }
+
+        // The mailbox itself changed, not just this tab. A host showing its own view of the same mailbox is
+        // now asserting the state before the write, and only it knows how to put that right.
+        MailboxChanged?.Invoke(this, EventArgs.Empty);
     }
+
+    /// <summary>Raised after a write commits, so a host pane can re-read what it shows of the same mailbox.</summary>
+    public event EventHandler? MailboxChanged;
 }

@@ -92,6 +92,16 @@ public interface IGraphService
 
     // --- Writes (callers confirm first) ---
 
+    /// <summary>
+    /// Creates a cloud-only <b>security</b> or <b>Microsoft 365</b> group. Throws for the mail-enabled kinds:
+    /// Graph answers those with 400 and they must go through Exchange Online
+    /// (<see cref="IExchangeService.CreateDistributionGroupAsync"/>).
+    ///
+    /// The group is created by the first request, so failures of the follow-up owner/member writes are reported
+    /// through <see cref="CloudGroupCreateResult"/> rather than thrown — see that type's remarks.
+    /// </summary>
+    Task<CloudGroupCreateResult> CreateGroupAsync(CloudGroupCreateRequest request, CancellationToken cancellationToken = default);
+
     /// <summary>Adds a directory object (by its Entra object id) as a member of a cloud group.</summary>
     Task AddMemberToGroupAsync(string groupId, string memberObjectId, CancellationToken cancellationToken = default);
 

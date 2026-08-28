@@ -15,4 +15,11 @@ public static class GraphErrors
         }
         return ex.Message;
     }
+
+    /// <summary>
+    /// Graph's machine-readable error code (<c>Request_BadRequest</c>, <c>Request_ResourceNotFound</c>, …), or
+    /// null for anything that isn't an <see cref="ODataError"/>. Callers that branch on a failure should prefer
+    /// this over <see cref="Friendly"/>: the message is prose Microsoft can reword, the code is contract.
+    /// </summary>
+    public static string? Code(Exception ex) => ex is ODataError oe ? oe.Error?.Code : null;
 }

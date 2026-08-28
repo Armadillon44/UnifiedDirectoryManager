@@ -6,6 +6,15 @@ namespace UnifiedDirectoryManager.Services;
 /// <summary>
 /// Opens the app's dialogs/windows on behalf of view models, keeping window creation out of the VMs.
 /// </summary>
+/// <summary>
+/// Lets the Advanced Search dialog pin and unpin a saved search without owning the favourites. The settings
+/// live with the view model that has the connected domain; passing two small hooks keeps that ownership
+/// where it is rather than handing a dialog the whole settings object.
+/// </summary>
+/// <param name="IsPinned">Whether a saved search, by name, is currently pinned.</param>
+/// <param name="TogglePin">Pins it if it is not, unpins it if it is.</param>
+public sealed record SavedSearchPinning(Func<string, bool> IsPinned, Action<string> TogglePin);
+
 public interface IDialogService
 {
     /// <summary>Searchable picker. Returns selected rows, or null if cancelled.</summary>
@@ -25,6 +34,29 @@ public interface IDialogService
 
     /// <summary>Picks a single internal Exchange recipient (user/shared mailbox/distribution group) to forward a mailbox to. Null if cancelled.</summary>
     MailboxRecipient? PickMailboxRecipient(string title);
+
+    /// <summary>Picks several internal Exchange recipients (the same picker, with a basket). Null if cancelled.</summary>
+    /// <param name="initial">Seeds the basket with the list being edited, so the dialog starts from what
+    /// Exchange holds rather than from nothing.</param>
+    IReadOnlyList<MailboxRecipient>? PickMailboxRecipients(string title, IReadOnlyList<MailboxRecipient>? initial = null);
+
+    /// <summary>
+    /// Opens the (modal) membership editor for a distribution list or mail-enabled security group.
+    /// <paramref name="identity"/> is the primary SMTP address Exchange addresses it by. Pass
+    /// <paramref name="isSynced"/> so the dialog can disable its write controls up front — Exchange rejects
+    /// every write against an on-prem-synced object, and in a hybrid org that is the ordinary case.
+    /// </summary>
+    void ShowDistributionGroupMembers(string identity, string groupName, bool isSynced);
+
+    /// <summary>
+    /// Pastes a list of people, resolves each line, and returns the ones the operator settled on — or null if
+    /// cancelled. Resolution only; the caller does the adding, so there is one write path and one report.
+    /// </summary>
+    /// <param name="alreadyMembers">Identities already in the group, so those rows are marked and skipped
+    /// instead of costing a round trip to be told they are already there.</param>
+    /// <param name="selfIdentity">The group itself, which cannot be its own member.</param>
+    /// <param name="backend">Which directory to resolve against — the one that owns this group's membership.</param>
+    IReadOnlyList<MemberCandidate>? PasteMembers(string title, MemberBackend backend, IEnumerable<string> alreadyMembers, string? selfIdentity);
 
     /// <summary>Edits a delegate's mailbox access (which permissions + auto-map), pre-checked to <paramref name="current"/>.
     /// Returns the chosen permission set and auto-map preference, or null if cancelled.</summary>
@@ -96,6 +128,13 @@ public interface IDialogService
     /// description, and the editable accidental-deletion protection flag.</summary>
     void ShowOuProperties(string distinguishedName, string name);
 
+    /// <summary>
+    /// Opens one Active Directory object's properties in its own window. Non-modal, so several can be open
+    /// and the pane behind stays on whatever was being worked on — opening a member in place loses the group
+    /// you opened it from.
+    /// </summary>
+    void ShowAdObjectProperties(string distinguishedName, AdObjectType type);
+
     /// <summary>Opens the (modal) "new OU" dialog to create an organizational unit under <paramref name="parentDn"/>.
     /// Returns the new OU's distinguished name if one was created, or null if cancelled.</summary>
     string? ShowNewOu(string parentDn);
@@ -105,8 +144,17 @@ public interface IDialogService
     /// if one was created, or null if cancelled.</summary>
     string? ShowNewGroup(string? parentDn);
 
+    /// <summary>
+    /// Opens the (modal) "new cloud group" dialog, optionally preselecting a type (e.g. from the tree node the
+    /// operator right-clicked). Returns the new group's id and whether it was created through Exchange Online
+    /// rather than Microsoft Graph — the caller needs that to reload the right list, since a new Exchange group
+    /// is visible to Exchange immediately but takes a while to reach the Entra ID list. Null if cancelled.
+    /// </summary>
+    (string Id, string Name, bool FromExchange)? ShowNewCloudGroup(CloudGroupType? initialType);
+
     /// <summary>Advanced search builder. Returns the query to run, or null if cancelled.</summary>
-    SearchQuery? ShowAdvancedSearch(string defaultBaseDn);
+    /// <param name="pinning">Supplied by whoever owns the favourites; null hides the Pin button entirely.</param>
+    SearchQuery? ShowAdvancedSearch(string defaultBaseDn, SavedSearchPinning? pinning = null);
 
     /// <summary>Bulk-edit dialog over the given targets. Returns true if changes were applied.</summary>
     bool ShowBulkEdit(IReadOnlyList<AdObjectRow> rows);
