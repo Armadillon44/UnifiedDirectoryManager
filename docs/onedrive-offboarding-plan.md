@@ -276,9 +276,15 @@ held".
 
 ## Sequencing
 
-0. **Phase 0 spike** — U1, U2, U3, U12 against a scratch tenant. Half a day, and it decides whether the rest
-   is real. Procedure in [`onedrive-phase0-spike.md`](onedrive-phase0-spike.md). **Nothing below starts until
-   U1 is settled.**
+0. **Phase 0 spike** — U1, U2, U3, U12 **against the live tenant**, using a purpose-made test user and a
+   throwaway app registration. Half a day, and it decides whether the rest is real. Procedure in
+   [`onedrive-phase0-spike.md`](onedrive-phase0-spike.md). **Nothing below starts until U1 is settled.**
+
+   There is no scratch tenant, so the spike is scoped for production: one contained, reversible write, no
+   tenant-wide setting touched, and the destructive tests that would confirm the `Set-SPOSite -Owner` trap
+   are **removed rather than adapted** — the documentation is unambiguous and the trap is taken on faith.
+   Three questions become permanently unverifiable as a result (U8, U11, and the decay curve itself), so the
+   app must present those milestones as Microsoft's published behaviour rather than as anything it has observed.
 1. **The repo prerequisites (D5)** — the seeded scenario's `SaveOperationLog` step, the three `default:` arms,
    the cloud-only-leaver detection. Independent of the spike, so it can run in parallel with it.
 2. **The PnP channel (D7)** — a second hosted-module channel beside Exchange, following `ExchangeService`,
