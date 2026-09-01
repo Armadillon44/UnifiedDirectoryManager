@@ -1,6 +1,7 @@
 # OneDrive at offboarding
 
-Status: **drafted, awaiting review.** Nothing is locked. The questions at the end change the shape of the work.
+Status: **reviewed. D1–D8 locked; the design is gated on the Phase 0 spike.** See
+[`onedrive-phase0-spike.md`](onedrive-phase0-spike.md) for the procedure that unblocks it.
 
 The ask: when a Scenario terminates a user, deal with their OneDrive — ideally transferring it to someone else,
 such as their manager — reproducing Google Workspace's Drive ownership transfer as closely as possible. Open
@@ -225,11 +226,65 @@ U1 is the cheapest and the most load-bearing. It should be run first, alone, bef
 
 ---
 
+## Locked decisions
+
+**D1 — the app grants access; it does not perform the routine file move.** A site-collection-admin grant on
+the leaver's OneDrive, recorded, with nothing relocated. This is the default and the only thing a terminate
+scenario does to file content. Rationale: it is bounded, reversible with one cmdlet, destroys nothing, and is
+the mandatory first half of every other option anyway.
+
+**D2 — a copy IS in scope, but only to an organisation-owned SharePoint site, and never as the default.**
+Offered as an explicit, separate action behind an acknowledgement that **sharing permissions are destroyed**
+(Graph: *"Permissions are not retained when a driveItem is copied."*). The manager's personal OneDrive is
+**not** a supported destination: parking a leaver's files in another individual's personal storage solves this
+offboarding and schedules the identical problem for the manager's own departure. This deliberately declines
+the closest visual match to Google, and the reason is recorded so it is not revisited by accident.
+
+**D3 — a copy must state its blast radius before it runs.** Item count, total size, the SharePoint ceilings it
+could hit (100 GB, 30,000 items, 400-character paths), and the fact that files the leaver owned **in other
+people's areas** get duplicated with permissions stripped. Teams chat files are named explicitly, because a
+copy leaves every chat reference pointing at the source drive.
+
+**D4 — Phase 0 comes before the design is locked.** U1, U2, U3 and U12 against a scratch tenant. U1 runs
+first and alone: if delegated Graph returns 200 against another user's drive with no grant, Fact 2 is wrong
+and the whole comparison reorganises. Same precedent as the Exchange spike, which changed that design.
+
+**D5 — the three repo defects are fixed in this branch, as prerequisites rather than follow-ups.** The seeded
+Terminate User scenario gains a `SaveOperationLog` step (without it the recorded URL goes nowhere, and the
+record *is* the discoverability answer); the three permissive `default:` arms are closed (today an enum member
+with no runner case runs, does nothing, and logs a ✓); and the on-prem-only target resolution is at minimum
+detected and reported, so a cloud-only leaver fails loudly instead of silently skipping.
+
+**D6 — the first shippable slice is read-only.** A user's OneDrive URL, storage used, item count, hold state,
+and the computed read-only and archive dates. It is useful on its own, it proves the PnP channel before
+anything writes, and it is safe to run against production while the write path is still unproven.
+
+**D7 — the PnP channel is a separate host process from Exchange.** The pwsh channel kills its host on
+operation timeout, taking every open session with it. Sharing one process would let a slow PnP call destroy an
+Exchange session mid-scenario. Shared base class, separate processes.
+
+**D8 — the app reports retention and access-delegation state; it never authors them.** Both are tenant-wide
+with no per-user override. The deletion milestone is described **in prose, never computed as a date**, because
+it runs on cumulative unpaid days with a policy start of 1 July 2026 rather than a simple 365-day counter.
+
+Two smaller calls taken by default: the grantee **defaults to the Entra manager but requires explicit
+confirmation** (an unset manager is the most common silent failure), and the app **refuses to act when an
+active hold is detected**, treating "could not determine hold state" as a third outcome distinct from "not
+held".
+
+---
+
 ## Sequencing
 
-1. **Phase 0 spike** — U1, U2, U3, U12 against a scratch tenant. Half a day, and it decides whether the rest is real.
-2. **The PnP channel** — a second hosted-module channel beside Exchange, following `ExchangeService`. Must be a **separate host process**, so a slow PnP call cannot kill the Exchange session mid-scenario.
-3. **Read-only surface first** — show a user's OneDrive URL, size, item count, hold state, and the computed clock dates. Useful alone, and proves the channel before anything writes.
-4. **The grant**, as a scenario step and a pane action, with the record and the refusal-on-hold.
-5. **The guardrails** — the licence warning in both homes, the closed `default:` arms, the seeded scenario's missing `SaveOperationLog` step.
-6. **Copy to SharePoint**, only if wanted after reading the pick-two triangle, and only behind an explicit acknowledgement that permissions are destroyed.
+0. **Phase 0 spike** — U1, U2, U3, U12 against a scratch tenant. Half a day, and it decides whether the rest
+   is real. Procedure in [`onedrive-phase0-spike.md`](onedrive-phase0-spike.md). **Nothing below starts until
+   U1 is settled.**
+1. **The repo prerequisites (D5)** — the seeded scenario's `SaveOperationLog` step, the three `default:` arms,
+   the cloud-only-leaver detection. Independent of the spike, so it can run in parallel with it.
+2. **The PnP channel (D7)** — a second hosted-module channel beside Exchange, following `ExchangeService`,
+   in its own host process.
+3. **The read-only surface (D6)** — URL, size, item count, hold state, computed clock dates.
+4. **The grant (D1)** — as a pane action and a scenario step, with the record and the refusal-on-hold.
+5. **The guardrails** — the licence warning in both homes, since `ScenarioActionType` has no licence action
+   and most licence removals happen outside this app entirely.
+6. **Copy to SharePoint (D2, D3)** — last, explicit, and never default.
