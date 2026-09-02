@@ -149,5 +149,53 @@ foreach ($k in 'title', 'department', 'physicalDeliveryOfficeName', 'co') {
     Check "  but $k is not"        $false $excluded.Contains($k)
 }
 
+Write-Host "`n== Bulk Create round-trips it, and keeps overrides it has no field for ==" -ForegroundColor Cyan
+# Bulk Create's "Add user..." reuses the New User form in capture mode, so it shows the Employee ID
+# box. Without wiring, a typed value was accepted and thrown away -- the row had nowhere to put it. And
+# reopening a CSV-imported row rebuilt it from the form alone, dropping every override the form has no
+# field for (Job title, Department).
+$DS = [UnifiedDirectoryManager.Views.DialogService]
+$map = $DS.GetMethod('MapRowFromNewUser', [System.Reflection.BindingFlags]'NonPublic,Static')
+$seed = $DS.GetMethod('SeedNewUserFromRow', [System.Reflection.BindingFlags]'NonPublic,Static')
+$store2 = New-Object UnifiedDirectoryManager.Services.TemplateStore ([System.IO.Path]::GetTempPath())
+function NewUserVm {
+    [UnifiedDirectoryManager.ViewModels.NewUserViewModel]::new(
+        [UnifiedDirectoryManager.Services.IDirectoryService]$null, $store2,
+        [UnifiedDirectoryManager.Services.IDialogService]$null,
+        [UnifiedDirectoryManager.Services.IGraphService]$null, $null,
+        (New-Object UnifiedDirectoryManager.Services.AppSettings))
+}
+
+$vm = NewUserVm
+$vm.FirstName = 'Alan'; $vm.LastName = 'Turing'; $vm.EmployeeId = '  31415  '
+$row = $map.Invoke($null, @($vm, $null))
+Check 'a captured row carries it'  '31415' $row.AttributeOverrides['employeeID']
+
+$vm2 = NewUserVm
+$vm2.FirstName = 'Alan'; $vm2.LastName = 'Turing'
+$row2 = $map.Invoke($null, @($vm2, $null))
+Check 'and a blank box carries none' $false $row2.AttributeOverrides.ContainsKey('employeeID')
+
+# Round trip: seed the form from a row, then map it back.
+$imported = [UnifiedDirectoryManager.ViewModels.BulkCreateRowViewModel](New-Object UnifiedDirectoryManager.ViewModels.BulkCreateRowViewModel)
+$imported.FirstName = 'Alan'; $imported.LastName = 'Turing'
+$imported.AttributeOverrides['employeeID'] = '27182'
+$imported.AttributeOverrides['title'] = 'Cryptanalyst'
+$imported.AttributeOverrides['department'] = 'Hut 8'
+$vm3 = NewUserVm
+[void]$seed.Invoke($null, @($vm3, $imported))
+Check 'editing a row shows its employee ID' '27182' $vm3.EmployeeId
+$back = $map.Invoke($null, @($vm3, $imported))
+Check 'and it survives the round trip'      '27182' $back.AttributeOverrides['employeeID']
+# The pre-existing half: the form has no Job title or Department box, so those only survive by being
+# carried forward from the row being edited.
+Check 'as does Job title'                   'Cryptanalyst' $back.AttributeOverrides['title']
+Check 'and Department'                      'Hut 8'        $back.AttributeOverrides['department']
+
+# Clearing the box must actually clear it, not fall back to the carried-forward value.
+$vm3.EmployeeId = ''
+$cleared = $map.Invoke($null, @($vm3, $imported))
+Check 'clearing the box removes it'         $false $cleared.AttributeOverrides.ContainsKey('employeeID')
+Check 'without disturbing the others'       'Hut 8' $cleared.AttributeOverrides['department']
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

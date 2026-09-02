@@ -446,7 +446,8 @@ The template's groups come from the unified picker, so one template can carry on
 **Cloud (Entra ID) groups** and **Exchange distribution groups** together; the New User wizard shows
 them in those three labelled buckets, each row individually tickable.
 
-The **New User** wizard takes first/middle/last/initials, can **generate a passphrase** (three
+The **New User** wizard takes first/middle/last/initials and an optional **Employee ID**
+(`employeeID`), can **generate a passphrase** (three
 Title-cased words joined by a random `-` or `_`, then one more separator and five random unambiguous
 characters — e.g. `Brave-Tiger_Maple-7kR2m`; readable, yet the casing, the symbol and the suffix cover
 AD's complexity rule between them. The same generator serves New User, Copy User, Bulk Create and
@@ -474,6 +475,14 @@ one. Naming autofills from the chosen naming-convention template; address, offic
 manager and group memberships are copied from the source, with the groups editable on the right. It
 offers the same delta sync and Temporary Access Pass steps as the New User wizard.
 
+**Employee ID is deliberately not copied.** It identifies a person, so carrying it over would give two
+people the same one. The field is on the copy form, blank, ready for the new user's own value.
+
+**Save as template…** leaves it out for the same reason — it is not offered as a capturable row at
+all. A template applies to everyone created from it, and its attribute rows are ticked by default, so
+an employee ID captured from the source user would have been handed silently to every future hire
+made from that template.
+
 ## Bulk create users
 
 **File ▸ Bulk Create Users…** (or the **Bulk Create…** toolbar button) provisions many users in one
@@ -481,10 +490,12 @@ pass. Pick a batch **template** (it supplies the defaults — target OU, UPN suf
 defaults, on-prem and cloud groups), then build the batch list two ways:
 
 - **Add user…** opens the **standard New User form** (in capture mode) so you configure each user
-  with the exact same fields you'd use to create one — per-user OU, manager, proxies, on-prem + cloud
+  with the same fields you'd use to create one — per-user OU, manager, proxies, on-prem + cloud
   groups, and a per-user Temporary Access Pass. Clicking **Add to batch** validates and adds them to
   the list rather than creating the account immediately (the password and Entra-sync sections are
-  hidden — the batch handles both).
+  hidden — the batch handles both). An **Employee ID** typed here is carried into the row, and
+  reopening a row to edit it preserves that plus any other attribute its CSV import set (for example
+  Job title and Department), even though this form has no box for those.
 - **Import CSV…** adds rows in bulk (columns below). **Download CSV template** writes a starter file
   with the right headers.
 
@@ -509,7 +520,8 @@ TAPs are **never written to the log**. If the post-create sync fails, the on-pre
 exist and a **Retry cloud** button re-runs the sync/groups/TAP without recreating anyone.
 
 **CSV columns** (header names, case-insensitive; unrecognized headers map to attributes by friendly
-name, e.g. `Title`, `Department`, `Office`): `First name`, `Middle name`, `Last name`, `Initials`,
+name or by raw `lDAPDisplayName`, e.g. `Employee ID`, `Department`, `Office`, `Title`):
+`First name`, `Middle name`, `Last name`, `Initials`,
 `Logon name (sAMAccountName)`, `User logon name (UPN)`, `Email`, `Manager` (sAMAccountName / UPN / DN,
 resolved best-effort), `Cloud groups` (`;`-separated names, resolved best-effort), `Issue TAP`
 (yes/true). Anything that can't be mapped or resolved is reported as an import warning rather than

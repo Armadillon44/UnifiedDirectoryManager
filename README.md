@@ -8,6 +8,21 @@ the things ADUC never had: reusable **new-user templates**, GUI **advanced searc
 Built with **WPF on .NET 10**. Ships as a **self-contained, single-file `.exe`** for **win-x64** and
 **win-arm64** — no .NET install required on the target machine (Windows 10 / 11).
 
+> **v2.3.1 — an Employee ID at creation, and a favourites fix.**
+> - **Employee ID** (`employeeID`) can now be set while creating a user, on both the **New User** wizard and
+>   **Copy user…**. It was already editable afterwards, searchable, a list column, and importable per row from
+>   Bulk Create's CSV (an `Employee ID` column) — the create dialogs were the only place it could not be typed.
+>   Bulk Create's **Add user…** form takes it too, and a row keeps it when reopened for editing.
+> - **Copy user… never inherits it.** An employee ID identifies a person, so the field starts blank and asks
+>   for the new user's own. **Save as template…** no longer captures one either: a template applies to
+>   everyone created from it, and its attribute rows are ticked by default, so a captured employee ID would
+>   have been handed silently to every future hire made from that template.
+> - **Fixed: the Favourites row asked a domain controller to enumerate a synthetic name** ([issue #8](../../issues/8)).
+>   It answered `0000208F … BAD_NAME` on `fav:root`, and because the row was emptied before the failed call,
+>   collapsing and re-expanding Favourites made the pins disappear until something rebuilt them.
+> - **A failed folder load no longer empties the folder.** Children are now swapped in only on success, so a
+>   domain controller hiccup leaves the tree as it was instead of reading as "this OU is empty now".
+>
 > **v2.3.0 — an Exchange Online section, batch member adds by pasting a list, and pinned favourites.**
 >
 > **Exchange Online: a section of its own, and editable groups.**
