@@ -100,5 +100,54 @@ $a = Attrs @{ EmployeeId = '   '; Defaults = @{ 'department' = '' } }
 $blank = @($a.GetEnumerator() | Where-Object { [string]::IsNullOrWhiteSpace($_.Value) })
 Check 'no attribute is written blank' 0 $blank.Count
 
+Write-Host "`n== Copy User offers the field but never inherits it ==" -ForegroundColor Cyan
+# An employee ID identifies a person. Copying one to a new user hands two people the same identifier, and
+# the copy dialog is exactly where that would happen by accident. The field is offered so the real value can
+# be typed at creation, and left blank so nothing is inherited.
+$Copy = [UnifiedDirectoryManager.ViewModels.CopyUserViewModel]
+$store = New-Object UnifiedDirectoryManager.Services.TemplateStore ([System.IO.Path]::GetTempPath())
+$settings = New-Object UnifiedDirectoryManager.Services.AppSettings
+# Only BuildAttributes is exercised; nothing here reaches the directory or Graph.
+$cu = $Copy::new([UnifiedDirectoryManager.Services.IDirectoryService]$null, $store,
+                 [UnifiedDirectoryManager.Services.IDialogService]$null,
+                 [UnifiedDirectoryManager.Services.IGraphService]$null, $null, $settings,
+                 'CN=Source,OU=Staff,DC=contoso,DC=net')
+
+Check 'the field starts empty' '' $cu.EmployeeId
+
+$build = $Copy.GetMethod('BuildAttributes', [System.Reflection.BindingFlags]'NonPublic,Instance')
+function CopyAttrs { $build.Invoke($cu, @()) }
+
+$cu.FirstName = 'Grace'; $cu.LastName = 'Hopper'
+$a = CopyAttrs
+Check 'nothing is written while it is blank' $false ($a.ContainsKey('employeeID'))
+
+$cu.EmployeeId = '  67890  '
+$a = CopyAttrs
+Check 'a typed value is written'  '67890' $a['employeeID']
+# Same rule as everywhere else: the copy path has its own attribute builder, so trimming has to hold here too.
+Check 'and trimmed'               $true   (-not $a['employeeID'].StartsWith(' '))
+
+$cu.EmployeeId = '   '
+$a = CopyAttrs
+Check 'whitespace writes nothing' $false ($a.ContainsKey('employeeID'))
+
+Write-Host "`n== copying a user to a TEMPLATE must not bake one in ==" -ForegroundColor Cyan
+# Worse than the copy case and quieter: a template applies to everyone created from it, and its attribute
+# rows are ticked by default, so a captured employee ID would be handed to every future user without anyone
+# choosing it. Guarded by an exclusion list that is easy to add a catalog attribute alongside and forget.
+$excluded = [UnifiedDirectoryManager.ViewModels.CopyToTemplateViewModel].GetField(
+    'Excluded', [System.Reflection.BindingFlags]'NonPublic,Static').GetValue($null)
+Check 'employeeID is excluded'    $true $excluded.Contains('employeeID')
+Check 'whatever the casing'       $true $excluded.Contains('EMPLOYEEid')
+# The identity attributes that were already excluded must stay excluded.
+foreach ($k in 'sAMAccountName', 'userPrincipalName', 'mail', 'givenName', 'sn', 'displayName') {
+    Check "  and $k still is"      $true $excluded.Contains($k)
+}
+# The negative control: things a template SHOULD carry must not have been swept up.
+foreach ($k in 'title', 'department', 'physicalDeliveryOfficeName', 'co') {
+    Check "  but $k is not"        $false $excluded.Contains($k)
+}
+
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

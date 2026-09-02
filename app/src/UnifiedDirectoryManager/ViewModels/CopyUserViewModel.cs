@@ -28,6 +28,13 @@ public partial class CopyUserViewModel : ObservableObject
     [ObservableProperty] private string _lastName = string.Empty;
     [ObservableProperty] private string _middleName = string.Empty;
     [ObservableProperty] private string _initials = string.Empty;
+
+    /// <summary>
+    /// Employee ID for the NEW user. Deliberately left blank rather than copied: it identifies a person,
+    /// so carrying the source user's across would quietly give two people the same one. The field is here
+    /// so the real value can be typed while the account is being made, instead of afterwards.
+    /// </summary>
+    [ObservableProperty] private string _employeeId = string.Empty;
     [ObservableProperty] private string _displayName = string.Empty;
     [ObservableProperty] private string _samAccountName = string.Empty;
     [ObservableProperty] private string _upn = string.Empty;
@@ -209,6 +216,8 @@ public partial class CopyUserViewModel : ObservableObject
         if (!string.IsNullOrWhiteSpace(LastName)) result["sn"] = LastName.Trim();
         if (!string.IsNullOrWhiteSpace(MiddleName)) result["middleName"] = MiddleName.Trim();
         if (!string.IsNullOrWhiteSpace(Initials)) result["initials"] = Initials.Trim();
+        // Blank unless typed — LoadAsync never seeds it from the source user. See the property.
+        if (!string.IsNullOrWhiteSpace(EmployeeId)) result["employeeID"] = EmployeeId.Trim();
         var display = string.IsNullOrWhiteSpace(DisplayName) ? $"{FirstName} {LastName}".Trim() : DisplayName.Trim();
         if (!string.IsNullOrWhiteSpace(display)) result["displayName"] = display;
         if (!string.IsNullOrWhiteSpace(SamAccountName)) result["sAMAccountName"] = SamAccountName.Trim();
