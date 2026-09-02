@@ -39,6 +39,7 @@ public partial class NewUserViewModel : ObservableObject
     [ObservableProperty] private string _lastName = string.Empty;
     [ObservableProperty] private string _middleName = string.Empty;
     [ObservableProperty] private string _initials = string.Empty;
+    [ObservableProperty] private string _employeeId = string.Empty;
     [ObservableProperty] private string _samOverride = string.Empty;
     [ObservableProperty] private string _password = string.Empty;
     [ObservableProperty] private string _generatedPassword = string.Empty;
@@ -250,6 +251,9 @@ public partial class NewUserViewModel : ObservableObject
     partial void OnLastNameChanged(string value) { ApplySuggestions(force: false); RefreshPreview(); }
     partial void OnMiddleNameChanged(string value) { ApplySuggestions(force: false); RefreshPreview(); }
     partial void OnInitialsChanged(string value) { ApplySuggestions(force: false); RefreshPreview(); }
+
+    // Nothing is derived from the employee ID, so unlike the name fields this only refreshes the preview.
+    partial void OnEmployeeIdChanged(string value) => RefreshPreview();
     partial void OnSamOverrideChanged(string value) { ApplySuggestions(force: false); RefreshPreview(); }
     partial void OnUpnSuffixChanged(string value) { ApplySuggestions(force: false); RefreshPreview(); }
     partial void OnEmailChanged(string value) => RefreshPreview();
@@ -263,6 +267,7 @@ public partial class NewUserViewModel : ObservableObject
         FirstName = FirstName, MiddleName = MiddleName, LastName = LastName, Initials = Initials,
         SamOverride = SamOverride, UpnSuffix = UpnSuffix,
         Email = Email, Upn = Upn, ManagerDn = _managerDn, ProxyAddressesText = ProxyAddressesText,
+        EmployeeId = EmployeeId,
     };
 
     /// <summary>

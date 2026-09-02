@@ -28,6 +28,13 @@ public static class UserAttributeBuilder
         public string Upn { get; init; } = string.Empty;
         public string? ManagerDn { get; init; }
         public string ProxyAddressesText { get; init; } = string.Empty;
+
+        /// <summary>
+        /// Employee ID, entered per user. A template cannot usefully supply this the way it supplies
+        /// department or company: it is unique to the person and normally comes from HR, so there is no
+        /// default or token pattern that fits. Blank means "do not write it".
+        /// </summary>
+        public string EmployeeId { get; init; } = string.Empty;
     }
 
     /// <summary>Template-derived suggestions for the editable mail/UPN/proxy fields.</summary>
@@ -84,9 +91,10 @@ public static class UserAttributeBuilder
         if (!result.ContainsKey("cn")) result["cn"] = result.TryGetValue("displayName", out var dn) && !string.IsNullOrWhiteSpace(dn) ? dn : sam;
         if (!result.ContainsKey("userPrincipalName") && !string.IsNullOrWhiteSpace(i.UpnSuffix)) result["userPrincipalName"] = $"{sam}@{i.UpnSuffix.Trim()}";
 
-        // Explicit Email / UPN fields override whatever the template produced.
+        // Explicit Email / UPN / Employee ID fields override whatever the template produced.
         if (!string.IsNullOrWhiteSpace(i.Email)) result["mail"] = i.Email.Trim();
         if (!string.IsNullOrWhiteSpace(i.Upn)) result["userPrincipalName"] = i.Upn.Trim();
+        if (!string.IsNullOrWhiteSpace(i.EmployeeId)) result["employeeID"] = i.EmployeeId.Trim();
 
         // Manager (DN): the explicit value is authoritative — overrides any template default, or clears it.
         if (!string.IsNullOrWhiteSpace(i.ManagerDn)) result["manager"] = i.ManagerDn;
