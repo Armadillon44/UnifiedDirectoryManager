@@ -31,6 +31,9 @@
                 <TextBox Text="{Binding LastName, UpdateSourceTrigger=PropertyChanged}" />
                 <TextBlock Text="Initials" Style="{StaticResource FieldLabel}" />
                 <TextBox Text="{Binding Initials, UpdateSourceTrigger=PropertyChanged}" />
+                <TextBlock Text="Employee ID" Style="{StaticResource FieldLabel}" />
+                <TextBox Text="{Binding EmployeeId, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="Optional. Unique to the person, so a template can't supply it — leave blank to write nothing." />
                 <TextBlock Text="Logon name override (sAMAccountName)" Style="{StaticResource FieldLabel}" />
                 <TextBox Text="{Binding SamOverride, UpdateSourceTrigger=PropertyChanged}"
                          ToolTip="Leave blank to use the template pattern" />

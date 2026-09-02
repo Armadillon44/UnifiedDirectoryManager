@@ -201,7 +201,7 @@ public sealed class DialogService : IDialogService
             Owner = Owner,
             Title = existing is null ? "Add User to Batch" : "Edit Batch User",
         };
-        win.BatchCaptured += () => onCaptured(MapRowFromNewUser(vm));
+        win.BatchCaptured += () => onCaptured(MapRowFromNewUser(vm, existing));
         win.Show(); // non-modal
     }
 
@@ -214,6 +214,7 @@ public sealed class DialogService : IDialogService
         vm.TargetOu = r.TargetOu;
         vm.Enabled = r.Enabled;
         vm.Email = r.Email; vm.Upn = r.Upn; vm.ProxyAddressesText = r.ProxyAddressesText;
+        vm.EmployeeId = r.AttributeOverrides.TryGetValue("employeeID", out var empId) ? empId : string.Empty;
         vm.SetManager(r.ManagerDn, r.ManagerDisplay);
         vm.IssueTap = r.IssueTap; vm.TapLifetimeMinutes = r.TapLifetimeMinutes; vm.TapOneTimeUse = r.TapOneTimeUse;
         vm.OnPremGroups.Clear();
@@ -224,8 +225,14 @@ public sealed class DialogService : IDialogService
         foreach (var g in r.DistributionGroups) vm.DistributionGroups.Add(new TemplateCopyGroupRow { Name = g.Name, Id = g.Id, Channel = GroupChannel.ExchangeOnline, Smtp = g.Smtp });
     }
 
-    /// <summary>Reads the configured values back out of the capture window into a batch row.</summary>
-    private static BulkCreateRowViewModel MapRowFromNewUser(NewUserViewModel vm)
+    /// <summary>
+    /// Reads the configured values back out of the capture window into a batch row.
+    ///
+    /// <paramref name="existing"/> is the row being edited, when one is. Its attribute overrides are carried
+    /// forward because the capture form does not own most of them: a CSV import can set any catalog
+    /// attribute, and reopening a row to change a name must not throw away its Job title and Department.
+    /// </summary>
+    private static BulkCreateRowViewModel MapRowFromNewUser(NewUserViewModel vm, BulkCreateRowViewModel? existing = null)
     {
         var row = new BulkCreateRowViewModel
         {
@@ -237,6 +244,15 @@ public sealed class DialogService : IDialogService
             ManagerDn = vm.ManagerDn, ManagerDisplay = vm.ManagerDisplay,
             IssueTap = vm.IssueTap, TapLifetimeMinutes = vm.TapLifetimeMinutes, TapOneTimeUse = vm.TapOneTimeUse,
         };
+        // Anything the form has no field for survives the round trip.
+        if (existing is not null)
+            foreach (var (ldap, value) in existing.AttributeOverrides) row.AttributeOverrides[ldap] = value;
+
+        // Employee ID is the one override the form DOES own, so what the box says is authoritative --
+        // including when it has been cleared.
+        if (!string.IsNullOrWhiteSpace(vm.EmployeeId)) row.AttributeOverrides["employeeID"] = vm.EmployeeId.Trim();
+        else row.AttributeOverrides.Remove("employeeID");
+
         foreach (var g in vm.OnPremGroups.Where(g => g.Include))
             row.OnPremGroups.Add(new TemplateCopyGroupRow { Name = g.Name, Id = g.Id, Channel = GroupChannel.OnPremAd });
         foreach (var g in vm.CloudGroups.Where(g => g.Include))

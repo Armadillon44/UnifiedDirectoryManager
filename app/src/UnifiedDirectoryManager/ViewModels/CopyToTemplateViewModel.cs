@@ -65,10 +65,16 @@ public partial class CopyToTemplateViewModel : ObservableObject
     public bool Saved { get; private set; }
 
     // Per-user identity attributes never copied literally — templates token-derive these (seeded on save).
+    //
+    // employeeID is here for a different reason from the rest: there is no token that derives it, so it
+    // cannot be seeded back. It is excluded because a template applies to everyone created from it, and a
+    // copied employee ID would hand the source user's identifier to every one of them. Rows are ticked by
+    // default, so leaving it in the list would have made that the silent outcome.
     private static readonly HashSet<string> Excluded = new(StringComparer.OrdinalIgnoreCase)
     {
         "cn", "name", "sAMAccountName", "userPrincipalName", "mail", "mailNickname",
         "givenName", "sn", "displayName", "initials", "middleName", "proxyAddresses",
+        "employeeID",
     };
 
     public CopyToTemplateViewModel(IDirectoryService directory, IGraphService graph, ITemplateStore store,
