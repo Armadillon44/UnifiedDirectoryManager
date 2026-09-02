@@ -279,5 +279,104 @@ $noPin.TogglePinCommand.Execute($null)
 Check 'and toggling is harmless'         $false $noPin.IsSelectedPinned
 Remove-Item -Recurse -Force $searchDir -ErrorAction SilentlyContinue
 
+Write-Host "`n== a favourite row never asks the directory for children (issue #8) ==" -ForegroundColor Cyan
+# The Favourites row's distinguished name is the synthetic 'fav:root'; a pinned saved search's is
+# 'fav:<name>'. Neither means anything to a domain controller, and 2.3.0 sent them anyway -- the DC replied
+# 0000208F NameErr BAD_NAME, and the Children.Clear() that ran first left the pins gone.
+#
+# These nodes are built with a NULL IDirectoryService on purpose. That makes "did it call the directory"
+# directly observable: if the guard holds, nothing is dereferenced and no error is raised; if it does not,
+# the null reference throws, the catch swallows it, and the error handler fires. No fake is needed.
+$errors = New-Object System.Collections.Generic.List[string]
+$rec = [Action[string]] { param($m) $errors.Add($m) }
+function Quiet { $script:errors.Clear() }
+
+# "Did this node try to reach the directory?" is what these tests turn on, and with a null IDirectoryService
+# an attempt cannot succeed. It surfaces one of two ways depending on the host:
+#
+#   - the null dereference is caught and reported through the error handler, or
+#   - DirectoryService.Friendly() -- which the catch calls -- cannot load its LDAP assembly and the failure
+#     escapes instead. PowerShell 7 ships System.DirectoryServices.Protocols 10.0.0.5, the app is built
+#     against 10.0.0.9, and the loader binds its own copy whatever we do.
+#
+# Either outcome means the same thing, so Attempted treats them as one and the tests do not depend on which
+# host they run on.
+function Attempted($node) {
+    $before = $script:errors.Count
+    try { [void]$node.EnsureChildrenAsync().GetAwaiter().GetResult() }
+    catch { return $true }
+    return $script:errors.Count -gt $before
+}
+function Await($task) { [void]$task.GetAwaiter().GetResult() }
+
+Quiet
+$favRoot = $Node::new([UnifiedDirectoryManager.Models.FavoriteEntry]$null, 'Favourites', $null, $rec)
+$favRoot.IsExpanded = $true
+Check 'expanding the Favourites row calls nothing' 0 $errors.Count
+
+Quiet
+$pinnedOu = $Node::new((Ou 'OU=Sales,DC=contoso,DC=net'), 'Sales', $null, $rec)
+$pinnedOu.IsExpanded = $true
+Check 'nor does expanding a pinned OU'             0 $errors.Count
+
+Quiet
+$pinnedSearch = $Node::new((Search 'Disabled users'), 'Disabled users', $null, $rec)
+$pinnedSearch.IsExpanded = $true
+Check 'nor a pinned saved search'                  0 $errors.Count
+
+# Refresh takes a different route: it calls Invalidate() -- which deliberately resets the once-only guard --
+# and then EnsureChildrenAsync() directly. That path bypassed the expand handler entirely.
+Quiet
+$favRoot.Invalidate()
+Check 'nor Refresh on the Favourites row'          $false (Attempted $favRoot)
+
+Quiet
+$pinnedSearch.Invalidate()
+Check 'nor Refresh on a pinned saved search'       $false (Attempted $pinnedSearch)
+
+Quiet
+$pinnedOu.Invalidate()
+Check 'nor Refresh on a pinned OU'                 $false (Attempted $pinnedOu)
+
+Write-Host "`n== and the pins survive being collapsed and re-expanded ==" -ForegroundColor Cyan
+# The visible half of the bug. EnsureChildrenAsync cleared Children BEFORE the call that failed, so the
+# second expand emptied the row and nothing put the pins back until something rebuilt the favourites.
+$favRoot.Children.Add($Node::new((Ou 'OU=A,DC=x'), 'A', $null, $rec))
+$favRoot.Children.Add($Node::new((Ou 'OU=B,DC=x'), 'B', $null, $rec))
+Check 'two pins to start with'          2 $favRoot.Children.Count
+$favRoot.IsExpanded = $false
+$favRoot.IsExpanded = $true
+Check 'and both are still there'        2 $favRoot.Children.Count
+$favRoot.Invalidate()
+[void](Attempted $favRoot)
+Check 'a Refresh does not empty it either' 2 $favRoot.Children.Count
+
+Write-Host "`n== the guard is not over-broad ==" -ForegroundColor Cyan
+# The negative control, and the one that matters most: a guard that blocked EVERY node would pass every
+# check above and break the tree. A real container must still try to load, and with a null directory that
+# attempt is exactly what raises an error.
+Quiet
+$ou = New-Object UnifiedDirectoryManager.Models.AdNode
+$ou.DistinguishedName = 'OU=Real,DC=contoso,DC=net'
+$ou.Name = 'Real'
+$ou.Type = [UnifiedDirectoryManager.Models.AdObjectType]::OrganizationalUnit
+$realOu = $Node::new($ou, [UnifiedDirectoryManager.Services.IDirectoryService]$null, $rec, $null, $false)
+Check 'a real OU still tries to load'   $true (Attempted $realOu)
+
+# And a failed load must leave what was already shown alone. Clearing before the call meant a domain
+# controller hiccup read as "this OU is empty now" -- on every container, not only a favourite.
+# A container starts with a single 'Loading...' placeholder child, so count from there. Note the
+# consequence of not clearing up front: a first load that FAILS now leaves that placeholder in place
+# rather than emptying the row. That is the better of the two lies -- 'not loaded' is true and re-expanding
+# retries, where an empty row reads as 'this OU has nothing in it'.
+Quiet
+Check 'a fresh container shows a placeholder' $true $realOu.Children[0].IsPlaceholder
+$realOu.Children.Add($Node::new((Ou 'OU=Child,DC=x'), 'Child', $null, $rec))
+$realOu.Invalidate()
+Check 'and it tried again'                   $true (Attempted $realOu)
+# The real assertion: whatever was already on screen is still on screen after the failure.
+Check 'a failed load keeps what was shown'   2 $realOu.Children.Count
+Check 'including the real child'             'Child' $realOu.Children[1].Name
+
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

@@ -36,6 +36,17 @@ public partial class TreeNodeViewModel : ObservableObject
     public bool IsFavorite => Favorite is not null;
 
     /// <summary>
+    /// True where this node's children come from a directory search on its own distinguished name. False for
+    /// the cloud sections (fixed children) and for every favourite row.
+    ///
+    /// Favourites are the reason this exists. Their distinguished name is either borrowed from the thing they
+    /// point at or a synthetic "fav:..." placeholder, and neither is a container to enumerate — the Favourites
+    /// row holds pins, and a pinned row is a shortcut rather than a subtree. Sending either to a domain
+    /// controller earns a BAD_NAME, which is what issue #8 was.
+    /// </summary>
+    private bool LoadsChildrenFromDirectory => CloudKind is null && !IsPlaceholder && Favorite is null && !IsFavoritesRoot;
+
+    /// <summary>
     /// True when the thing this favourite points at could not be found. The row stays and says so rather
     /// than disappearing: a domain controller being briefly unreachable is not evidence that an OU was
     /// deleted, and a list that silently got shorter is not something anyone notices in time to object.
@@ -165,22 +176,31 @@ public partial class TreeNodeViewModel : ObservableObject
 
     partial void OnIsExpandedChanged(bool value)
     {
-        if (value && CloudKind is null) _ = EnsureChildrenAsync();
+        if (value) _ = EnsureChildrenAsync();
     }
 
     partial void OnIsCheckedChanged(bool value) => _onCheckChanged?.Invoke();
 
-    /// <summary>Loads child containers once (on-prem only). Safe to call repeatedly.</summary>
+    /// <summary>
+    /// Loads child containers once, for the nodes whose children actually come from the directory. Safe to
+    /// call repeatedly, and a no-op on cloud sections and favourites.
+    ///
+    /// The guard lives here rather than at the call sites deliberately: there are four callers, and putting
+    /// it in each one means the fifth reintroduces the bug.
+    /// </summary>
     public async Task EnsureChildrenAsync()
     {
-        if (_loaded || CloudKind is not null) return;
+        if (_loaded || !LoadsChildrenFromDirectory) return;
         _loaded = true;
-        Children.Clear();
         try
         {
+            // Built first, swapped in only on success. Clearing before the await would empty the tree for the
+            // duration of the call and leave it empty for good if the call failed — a domain controller
+            // hiccup would read as "this OU is empty now".
             var children = await _directory.GetChildrenAsync(DistinguishedName);
-            foreach (var child in children)
-                Children.Add(new TreeNodeViewModel(child, _directory, _onError, _onCheckChanged));
+            var loaded = children.Select(c => new TreeNodeViewModel(c, _directory, _onError, _onCheckChanged)).ToList();
+            Children.Clear();
+            foreach (var child in loaded) Children.Add(child);
         }
         catch (Exception ex)
         {
