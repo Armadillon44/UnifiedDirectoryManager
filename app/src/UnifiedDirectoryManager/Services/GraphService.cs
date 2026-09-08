@@ -183,16 +183,41 @@ public sealed class GraphService : IGraphService
             .ToList();
     }
 
+    /// <summary>
+    /// Page size for the membership reads below. Graph's maximum for directory objects is 999; asking for it
+    /// keeps a large group to a handful of round trips instead of dozens.
+    /// </summary>
+    private const int MembershipPageSize = 999;
+
+    /// <summary>
+    /// Runaway guard on the paging loops — far above any real group. Hitting it THROWS rather than returning
+    /// what was read so far: silently handing back a partial membership is the defect these loops exist to
+    /// fix, and a loud failure is the lesser harm.
+    /// </summary>
+    private const int MaxMembershipPages = 200;
+
     public async Task<IReadOnlyList<CloudMember>> GetGroupMembersAsync(string groupId, CancellationToken cancellationToken = default)
     {
         if (_graph is null) throw new InvalidOperationException("Sign in to Entra ID first.");
         if (string.IsNullOrWhiteSpace(groupId)) return Array.Empty<CloudMember>();
 
-        var resp = await _graph.Groups[groupId].Members.GetAsync(rc => rc.QueryParameters.Top = 200, cancellationToken);
-        return (resp?.Value ?? new List<DirectoryObject>())
-            .Select(ToMember)
-            .OrderBy(m => m.DisplayName, StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
+        // Every page, not just the first. A single Top=200 read silently presented the first 200 members as
+        // the whole group — the same trap the AD range walk and Exchange's -ResultSize Unlimited avoid.
+        var all = new List<CloudMember>();
+        var page = await _graph.Groups[groupId].Members
+            .GetAsync(rc => rc.QueryParameters.Top = MembershipPageSize, cancellationToken);
+        for (var pages = 1; page is not null; pages++)
+        {
+            foreach (var o in page.Value ?? new List<DirectoryObject>()) all.Add(ToMember(o));
+            if (string.IsNullOrEmpty(page.OdataNextLink)) break;
+            if (pages >= MaxMembershipPages)
+                throw new InvalidOperationException(
+                    "refusing to return a partial list: group " + groupId + " has more than "
+                    + $"{MaxMembershipPages * MembershipPageSize:N0} members. Read it in the Entra admin centre instead.");
+            page = await _graph.Groups[groupId].Members
+                .WithUrl(page.OdataNextLink).GetAsync(cancellationToken: cancellationToken);
+        }
+        return all.OrderBy(m => m.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList();
     }
 
     // --- Paged browsing (tree-driven cloud lists) ---
@@ -768,26 +793,41 @@ public sealed class GraphService : IGraphService
     {
         if (_graph is null) throw new InvalidOperationException("Sign in to Entra ID first.");
         if (string.IsNullOrWhiteSpace(objectId)) return Array.Empty<CloudGroup>();
-        try
+        // Deliberately NOT wrapped in a catch that returns an empty list. This read feeds the destructive
+        // "remove all cloud groups" scenario step, which iterated the empty result and recorded Success —
+        // a terminated user kept every group while the operation log said otherwise. A failure here has to
+        // reach the caller so that step can fail, matching its on-prem twin.
+        //
+        // Cast memberOf to groups so the group-only $select (Teams/Dynamic/Synced flags) applies — the
+        // untyped directoryObject collection omits resourceProvisioningOptions/membershipRule.
+        var page = kind switch
         {
-            // Cast memberOf to groups so the group-only $select (Teams/Dynamic/Synced flags) applies — the
-            // untyped directoryObject collection omits resourceProvisioningOptions/membershipRule.
-            var resp = kind switch
-            {
-                CloudObjectKind.Device => await _graph.Devices[objectId].MemberOf.GraphGroup.GetAsync(rc => { rc.QueryParameters.Select = GroupSelect; rc.QueryParameters.Top = 200; }, cancellationToken),
-                CloudObjectKind.Group => await _graph.Groups[objectId].MemberOf.GraphGroup.GetAsync(rc => { rc.QueryParameters.Select = GroupSelect; rc.QueryParameters.Top = 200; }, cancellationToken),
-                _ => await _graph.Users[objectId].MemberOf.GraphGroup.GetAsync(rc => { rc.QueryParameters.Select = GroupSelect; rc.QueryParameters.Top = 200; }, cancellationToken),
-            };
-            return (resp?.Value ?? new List<Group>())
-                .Select(ToCloudGroup)
-                .OrderBy(g => g.DisplayName, StringComparer.CurrentCultureIgnoreCase)
-                .ToList();
-        }
-        catch (Exception ex)
+            CloudObjectKind.Device => await _graph.Devices[objectId].MemberOf.GraphGroup.GetAsync(rc => { rc.QueryParameters.Select = GroupSelect; rc.QueryParameters.Top = MembershipPageSize; }, cancellationToken),
+            CloudObjectKind.Group => await _graph.Groups[objectId].MemberOf.GraphGroup.GetAsync(rc => { rc.QueryParameters.Select = GroupSelect; rc.QueryParameters.Top = MembershipPageSize; }, cancellationToken),
+            _ => await _graph.Users[objectId].MemberOf.GraphGroup.GetAsync(rc => { rc.QueryParameters.Select = GroupSelect; rc.QueryParameters.Top = MembershipPageSize; }, cancellationToken),
+        };
+        return await DrainGroupPagesAsync(page, $"memberships of {objectId}", cancellationToken);
+    }
+
+    /// <summary>
+    /// Walks a group-collection response to its last page. Shared by the memberOf reads so the paging — and
+    /// the refusal to return a partial list — is written once.
+    /// </summary>
+    private async Task<IReadOnlyList<CloudGroup>> DrainGroupPagesAsync(
+        GroupCollectionResponse? page, string what, CancellationToken cancellationToken)
+    {
+        var all = new List<CloudGroup>();
+        for (var pages = 1; page is not null; pages++)
         {
-            AppLog.Instance.Warn("Could not read object group memberships: " + ex.Message);
-            return Array.Empty<CloudGroup>();
+            foreach (var g in page.Value ?? new List<Group>()) all.Add(ToCloudGroup(g));
+            if (string.IsNullOrEmpty(page.OdataNextLink)) break;
+            if (pages >= MaxMembershipPages)
+                throw new InvalidOperationException(
+                    "refusing to return a partial list: the " + what + " run past "
+                    + $"{MaxMembershipPages * MembershipPageSize:N0} groups.");
+            page = await _graph!.Groups.WithUrl(page.OdataNextLink).GetAsync(cancellationToken: cancellationToken);
         }
+        return all.OrderBy(g => g.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList();
     }
 
     public async Task<bool> GroupExistsAsync(string groupId, CancellationToken cancellationToken = default)
@@ -808,26 +848,19 @@ public sealed class GraphService : IGraphService
     /// <summary>Reads the user's cloud group memberships (direct memberOf, groups only).</summary>
     private async Task<IReadOnlyList<CloudGroup>> GetUserGroupsAsync(string idOrUpn, CancellationToken cancellationToken)
     {
-        try
+        // Also deliberately un-swallowed: Copy User, Copy Groups to User and Save-as-template all build on
+        // this, and an empty list from a transient failure means the operator copies an incomplete set of
+        // memberships and is told nothing.
+        //
+        // Cast memberOf to groups so we can $select group-only properties — resourceProvisioningOptions
+        // (Teams), membershipRule (Dynamic), onPremisesSyncEnabled (Synced) aren't returned on the
+        // untyped directoryObject collection, which would leave Teams groups unidentified.
+        var page = await _graph!.Users[idOrUpn].MemberOf.GraphGroup.GetAsync(rc =>
         {
-            // Cast memberOf to groups so we can $select group-only properties — resourceProvisioningOptions
-            // (Teams), membershipRule (Dynamic), onPremisesSyncEnabled (Synced) aren't returned on the
-            // untyped directoryObject collection, which would leave Teams groups unidentified.
-            var resp = await _graph!.Users[idOrUpn].MemberOf.GraphGroup.GetAsync(rc =>
-            {
-                rc.QueryParameters.Select = GroupSelect;
-                rc.QueryParameters.Top = 200;
-            }, cancellationToken);
-            return (resp?.Value ?? new List<Group>())
-                .Select(ToCloudGroup)
-                .OrderBy(g => g.DisplayName, StringComparer.CurrentCultureIgnoreCase)
-                .ToList();
-        }
-        catch (Exception ex)
-        {
-            AppLog.Instance.Warn("Could not read cloud group memberships: " + ex.Message);
-            return Array.Empty<CloudGroup>();
-        }
+            rc.QueryParameters.Select = GroupSelect;
+            rc.QueryParameters.Top = MembershipPageSize;
+        }, cancellationToken);
+        return await DrainGroupPagesAsync(page, $"cloud group memberships of {idOrUpn}", cancellationToken);
     }
 
     /// <summary>Builds the user's license list with friendly + native names and the assignment source.</summary>
