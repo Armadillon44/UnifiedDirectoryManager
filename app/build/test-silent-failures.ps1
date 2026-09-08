@@ -37,7 +37,11 @@ Write-Host "`n== F9: a cancelled scenario must not be recorded as Success ==" -F
 $Runner = [UnifiedDirectoryManager.Services.ScenarioRunner]
 $note = $Runner.GetMethod('CancelNote', [System.Reflection.BindingFlags]'NonPublic,Static')
 if ($null -eq $note) { $note = $Runner.GetMethod('CancelNote', [System.Reflection.BindingFlags]'Public,Static') }
+Check 'CancelNote exists' $true ($null -ne $note)
 function Note([bool]$cancelled, [int]$interrupted, [int]$run, [int]$total) {
+    # Missing method: report a distinct value rather than throwing, so the rest of the file still runs and a
+    # partial revert can still be triaged from one run.
+    if ($null -eq $note) { return '(CancelNote missing)' }
     $note.Invoke($null, [object[]]@($cancelled, $interrupted, $run, $total))
 }
 
@@ -48,6 +52,8 @@ Check 'a complete run has no note'        $null (Note $false 0 5 5)
 # step, so disagreeing counts are unreachable -- but the note must key off the cancel, not off the counts,
 # or a future skip-a-step path would start reporting healthy runs as cancelled.
 Check 'no cancel means no note, whatever the counts' $null (Note $false 0 2 5)
+# ...and on the interrupted branch too, which had no cancelled check at all.
+Check 'nor when a step index is set without a cancel'  $null (Note $false 3 3 5)
 
 # The boundary that matters most: cancelling AFTER the last step left nothing undone, so it stays a success.
 Check 'cancelling after the last step is still success' $null (Note $true 0 5 5)
@@ -77,18 +83,34 @@ Write-Host "`n== F2: the edit pane guards stale loads with a token, not a DN =="
 # A DN comparison cannot tell a superseded load from the current one, because the pane reloads the SAME
 # object after a save. Without a token, an overlapping load repopulates every field from the object it read
 # while _dn names a different one — and the next Save writes those values to the wrong object.
-$Pane = [UnifiedDirectoryManager.ViewModels.EditPaneViewModel]
-$tokenField = $Pane.GetField('_loadToken', [System.Reflection.BindingFlags]'NonPublic,Instance')
-Check 'the pane carries a load token'   $true ($null -ne $tokenField)
-Check 'and it is an int counter'        'System.Int32' $(if ($tokenField) { $tokenField.FieldType.FullName })
+# These assert BEHAVIOUR-BEARING source, not shape. The previous version checked that a field existed and
+# two methods took an int — all of which stay true if every guard in the class is deleted, so it passed
+# against the unfixed code. Reflection cannot see method bodies; the source can.
+$paneSrc = Get-Content -Raw (Join-Path (Split-Path -Parent $root) 'app\src\UnifiedDirectoryManager\ViewModels\EditPaneViewModel.cs')
 
-# The two fire-and-forget helpers must take the token too — they had the same DN blind spot.
-foreach ($m in 'LoadCloudMembershipsAsync', 'LoadOnPremGroupKindsAsync') {
-    $mi = $Pane.GetMethod($m, [System.Reflection.BindingFlags]'NonPublic,Instance')
-    $takesToken = $false
-    if ($mi) { $takesToken = @($mi.GetParameters() | Where-Object { $_.ParameterType.FullName -eq 'System.Int32' }).Count -ge 1 }
-    Check "$m takes the token" $true $takesToken
-}
+# The token has to be BUMPED, or every comparison against it is trivially true and the guard is inert.
+Check 'the load token is incremented per load' $true ($paneSrc -match '\+\+_loadToken')
+# Clearing the pane must invalidate an in-flight load, or it repopulates the pane it just cleared.
+Check 'and clearing the pane invalidates one'  $true ($paneSrc -match '_loadToken\+\+')
+
+# One guard per await in LoadAsync, plus the two helpers, plus catch and finally.
+$guards = ([regex]::Matches($paneSrc, 'token != _loadToken')).Count
+Check 'every await is followed by a staleness check' $true ($guards -ge 6)
+
+# The defect itself: _dn is what every write targets, so it must NOT be published before the object loads.
+$publishedEarly = $paneSrc -match '(?m)var token = \+\+_loadToken;\s*\r?\n\s*_dn = distinguishedName;'
+Check '_dn is not assigned before the first await' $false $publishedEarly
+$blanked = $paneSrc -match '(?m)_dn = null;\s*\r?\n\s*HasObject = false;'
+Check 'and is cleared while a load is in flight'    $true $blanked
+
+# A write must target the object it was STARTED for, not whatever is selected when it finishes.
+Check 'group writes capture their target'      $true ($paneSrc -match 'CaptureTarget\(\) is not')
+Check 'and address the captured DN'            $true ($paneSrc -match 'ApplyChangesAsync\(who\.Dn')
+Check 'and the captured mailbox identity'      $true ($paneSrc -match 'who\.CloudUpn!')
+Check 'no group write reads the live _cloudUpn' $false ($paneSrc -match 'DistributionGroupMemberAsync\(groupId, _cloudUpn!')
+
+# "Not synced" and "the lookup failed" must not share a message.
+Check 'a failed Entra lookup is not called unsynced' $true ($paneSrc -match "Couldn't check Entra ID")
 
 Write-Host "`n== F3/F4: Graph membership reads page, and do not swallow failures ==" -ForegroundColor Cyan
 # Source-level assertions. Driving these for real needs a Graph fake the app does not have yet (see the note

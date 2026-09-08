@@ -118,9 +118,10 @@ public sealed class ScenarioRunner
     /// <param name="stepsRun">How many steps completed.</param>
     internal static string? CancelNote(bool cancelled, int interruptedStep, int stepsRun, int totalSteps)
     {
+        if (!cancelled) return null; // nothing was cut short, whatever the counts say
         if (interruptedStep > 0)
             return $"cancelled during step {interruptedStep} of {totalSteps} — that step may have partly applied";
-        if (cancelled && stepsRun < totalSteps)
+        if (stepsRun < totalSteps)
             return $"cancelled after step {stepsRun} of {totalSteps} — {totalSteps - stepsRun} step(s) did not run";
         return null;
     }
