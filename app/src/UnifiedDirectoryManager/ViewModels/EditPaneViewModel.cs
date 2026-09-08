@@ -79,6 +79,16 @@ public partial class EditPaneViewModel : ObservableObject
 
     private string? _dn;
 
+    /// <summary>
+    /// Bumped by every load. A load whose token is stale has been superseded and must not touch the pane —
+    /// it would repopulate every field from the object it read while <see cref="_dn"/> names a different
+    /// one, and the next Save would write those values to the wrong object.
+    ///
+    /// A token rather than a DN comparison because the pane reloads the SAME object after a save, so
+    /// "is this still the same DN" cannot tell a superseded load from the current one.
+    /// </summary>
+    private int _loadToken;
+
     /// <summary>Raised after a successful write so the host can refresh the list view.</summary>
     public event Action? ObjectChanged;
 
@@ -195,6 +205,7 @@ public partial class EditPaneViewModel : ObservableObject
 
     public async Task LoadAsync(string distinguishedName, AdObjectType type)
     {
+        var token = ++_loadToken;
         _dn = distinguishedName;
         Location = DirectoryService.ParentDn(distinguishedName);
         IsUser = type == AdObjectType.User;
@@ -204,6 +215,7 @@ public partial class EditPaneViewModel : ObservableObject
         try
         {
             var attrs = await _directory.LoadObjectAsync(distinguishedName);
+            if (token != _loadToken) return; // superseded — the pane now belongs to another object
             var map = attrs.GroupBy(a => a.LdapName, StringComparer.OrdinalIgnoreCase)
                            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
@@ -283,6 +295,7 @@ public partial class EditPaneViewModel : ObservableObject
                 try
                 {
                     var membership = await _directory.GetGroupMembersAsync(distinguishedName);
+                    if (token != _loadToken) return; // superseded
                     foreach (var m in membership.Members)
                         Members.Add(new GroupMemberRow(m.Name, m.DistinguishedName));
                     if (membership.Truncated)
@@ -296,6 +309,7 @@ public partial class EditPaneViewModel : ObservableObject
             // Accidental-deletion protection (read via the object's DACL).
             try { _originalProtected = await _directory.GetDeletionProtectionAsync(distinguishedName); }
             catch { _originalProtected = false; } // unreadable DACL: show as unprotected rather than failing the load
+            if (token != _loadToken) return; // superseded
             IsProtectedFromDeletion = _originalProtected;
 
             Title = map.TryGetValue("displayName", out var dn0) && dn0.DisplayValues.Count > 0
@@ -319,20 +333,21 @@ public partial class EditPaneViewModel : ObservableObject
 
             // Merge the user's Entra (cloud) group memberships into the Member Of tab (best-effort, when signed in).
             if (IsUser && _graph.IsSignedIn && !string.IsNullOrWhiteSpace(_cloudUpn))
-                _ = LoadCloudMembershipsAsync(_cloudUpn!, distinguishedName);
+                _ = LoadCloudMembershipsAsync(_cloudUpn!, token);
 
             // Classify the on-prem groups (Security/Distribution + scope) for the Member Of "Type" column (best-effort).
             if (MemberOf.Any(m => !m.IsCloud))
-                _ = LoadOnPremGroupKindsAsync(distinguishedName);
+                _ = LoadOnPremGroupKindsAsync(token);
 
             HasObject = true;
         }
         catch (Exception ex)
         {
+            if (token != _loadToken) return; // superseded: its failure is not this pane's problem
             _onError(DirectoryService.Friendly(ex));
             Clear();
         }
-        finally { IsBusy = false; }
+        finally { if (token == _loadToken) IsBusy = false; }
     }
 
     [RelayCommand]
@@ -635,12 +650,12 @@ public partial class EditPaneViewModel : ObservableObject
     /// <summary>Best-effort merge of the user's <b>cloud-only</b> Entra group memberships into the Member Of list
     /// (marked "Cloud"). Synced groups are deliberately excluded — they're already shown as their on-prem rows;
     /// listing their Entra twin too would conflate synced and cloud-only groups.</summary>
-    private async Task LoadCloudMembershipsAsync(string upn, string forDn)
+    private async Task LoadCloudMembershipsAsync(string upn, int token)
     {
         try
         {
             var groups = await _graph.GetUserGroupsByUpnAsync(upn);
-            if (!string.Equals(_dn, forDn, StringComparison.OrdinalIgnoreCase)) return; // selection changed mid-load
+            if (token != _loadToken) return; // superseded (a reload of the same object counts)
             foreach (var g in groups.Where(g => !g.IsSynced))
                 if (MemberOf.All(m => !(m.IsCloud && string.Equals(m.Dn, g.Id, StringComparison.OrdinalIgnoreCase))))
                     // Distribution lists / mail-enabled security groups are Exchange-managed — label their source
@@ -654,7 +669,7 @@ public partial class EditPaneViewModel : ObservableObject
 
     /// <summary>Best-effort fill of the on-prem groups' <see cref="GroupMembership.Kind"/> column
     /// (Security/Distribution + scope, read from each group's <c>groupType</c> bitmask in one query).</summary>
-    private async Task LoadOnPremGroupKindsAsync(string forDn)
+    private async Task LoadOnPremGroupKindsAsync(int token)
     {
         try
         {
@@ -662,7 +677,7 @@ public partial class EditPaneViewModel : ObservableObject
                               .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             if (dns.Count == 0) return;
             var kinds = await _directory.GetGroupTypesAsync(dns);
-            if (!string.Equals(_dn, forDn, StringComparison.OrdinalIgnoreCase)) return; // selection changed mid-load
+            if (token != _loadToken) return; // superseded (a reload of the same object counts)
             foreach (var m in MemberOf.Where(m => !m.IsCloud))
                 if (kinds.TryGetValue(m.Dn, out var k) && !string.IsNullOrEmpty(k))
                     m.Kind = k;
