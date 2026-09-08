@@ -212,20 +212,19 @@ public sealed class GraphService : IGraphService
 
         // Every page, not just the first. A single Top=200 read silently presented the first 200 members as
         // the whole group — the same trap the AD range walk and Exchange's -ResultSize Unlimited avoid.
-        var all = new List<CloudMember>();
-        var page = await _graph.Groups[groupId].Members
-            .GetAsync(rc => rc.QueryParameters.Top = MembershipPageSize, cancellationToken);
-        for (var pages = 1; page is not null; pages++)
-        {
-            foreach (var o in page.Value ?? new List<DirectoryObject>()) all.Add(ToMember(o));
-            if (string.IsNullOrEmpty(page.OdataNextLink)) break;
-            if (pages >= MaxMembershipPages)
-                throw new InvalidOperationException(
-                    $"refusing to return a partial list: group {groupId} still had more pages after "
-                    + $"{all.Count:N0} members. Read it in the Entra admin centre instead.");
-            page = await _graph.Groups[groupId].Members
-                .WithUrl(page.OdataNextLink).GetAsync(cancellationToken: cancellationToken);
-        }
+        // The loop itself lives in PageDrain so it can be tested without the Graph SDK.
+        var all = await PageDrain.DrainAsync<CloudMember>(
+            async (next, ct) =>
+            {
+                var page = next is null
+                    ? await _graph.Groups[groupId].Members.GetAsync(rc => rc.QueryParameters.Top = MembershipPageSize, ct)
+                    : await _graph.Groups[groupId].Members.WithUrl(next).GetAsync(cancellationToken: ct);
+                return new PageDrain.Page<CloudMember>(
+                    (page?.Value ?? new List<DirectoryObject>()).Select(ToMember), page?.OdataNextLink);
+            },
+            MaxMembershipPages,
+            read => $"group {groupId} still had more pages after {read:N0} members. Read it in the Entra admin centre instead.",
+            cancellationToken);
         return all.OrderBy(m => m.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList();
     }
 
@@ -831,18 +830,20 @@ public sealed class GraphService : IGraphService
     /// the refusal to return a partial list — is written once.
     /// </summary>
     private async Task<IReadOnlyList<CloudGroup>> DrainGroupPagesAsync(
-        GroupCollectionResponse? page, string what, CancellationToken cancellationToken)
+        GroupCollectionResponse? first, string what, CancellationToken cancellationToken)
     {
-        var all = new List<CloudGroup>();
-        for (var pages = 1; page is not null; pages++)
-        {
-            foreach (var g in page.Value ?? new List<Group>()) all.Add(ToCloudGroup(g));
-            if (string.IsNullOrEmpty(page.OdataNextLink)) break;
-            if (pages >= MaxMembershipPages)
-                throw new InvalidOperationException(
-                    $"refusing to return a partial list: the {what} still had more pages after {all.Count:N0} groups.");
-            page = await _graph!.Groups.WithUrl(page.OdataNextLink).GetAsync(cancellationToken: cancellationToken);
-        }
+        var all = await PageDrain.DrainAsync<CloudGroup>(
+            async (next, ct) =>
+            {
+                // The caller already fetched page one (the request differs per object kind), so serve it
+                // here and follow the continuation for everything after.
+                var page = next is null ? first : await _graph!.Groups.WithUrl(next).GetAsync(cancellationToken: ct);
+                return new PageDrain.Page<CloudGroup>(
+                    (page?.Value ?? new List<Group>()).Select(ToCloudGroup), page?.OdataNextLink);
+            },
+            MaxMembershipPages,
+            read => $"the {what} still had more pages after {read:N0} groups.",
+            cancellationToken);
         return all.OrderBy(g => g.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList();
     }
 

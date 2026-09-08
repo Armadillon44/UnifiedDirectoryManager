@@ -123,27 +123,33 @@ $src = Get-Content -Raw $svc
 Check 'no empty-list swallow remains' 0 `
     ([regex]::Matches($src, 'Could not read (object|cloud) group memberships')).Count
 
-# Every membership read must follow the continuation link.
-Check 'membership reads drain their pages' $true ($src -match 'DrainGroupPagesAsync')
-Check 'group members follow OdataNextLink' $true ($src -match 'Members\s*\r?\n?\s*\.WithUrl\(page\.OdataNextLink\)')
-
-# Running past the guard must THROW, not return what was read so far — returning a partial list silently is
-# the exact defect being fixed.
-Check 'the paging guard throws rather than truncating' $true `
-    ($src -match 'refusing to return a partial list')
+# Every membership read must page through PageDrain rather than reading a single page. How that loop
+# BEHAVES — stopping, not dropping the last page, refusing to truncate — is covered properly in
+# test-drain.ps1 against the real loop. Asserting it again by regex here would only pin the loop's local
+# variable names and its prose, which is how a suite starts failing for the wrong reasons.
+$drains = ([regex]::Matches($src, 'PageDrain\.DrainAsync')).Count
+Check 'both membership reads drain their pages' $true ($drains -ge 2)
 Check 'and no read is still pinned to one 200-row page' $false ($src -match 'QueryParameters\.Top = 200')
+
+# A 404 means the object has no Entra twin — a normal answer for an on-prem-only account. Treating it as
+# a read failure made the "memberships are MISSING" warning fire on ordinary service accounts.
+Check 'a 404 is not treated as a read failure' $true ($src -match 'ResponseStatusCode == 404')
 
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 
 Write-Host @'
 
-NOT covered here, and why:
-  * F2's actual race (two overlapping LoadAsync calls resolving out of order) and F3/F4's paging behaviour
-    both need fakes for IDirectoryService (31 members) and IGraphService. The app has no service-fake
-    infrastructure, so these are asserted structurally above rather than behaviourally. Building a recording
-    fake would make this suite real, and would also unlock the F18/F19 cloud-pane races.
-  * The scenario runner's cancel path is covered at the rule (CancelNote) but not end to end, for the same
-    reason.
+Coverage note:
+  * The F2 race and the paging loop ARE now driven behaviourally, in test-editpane-race.ps1 (against
+    FakeDirectoryService, which parks a load until the test releases it) and test-drain.ps1 (against the
+    real PageDrain loop with an in-memory fetch). The assertions above are the structural remainder.
+  * Still not driven: whether the Graph SDK deserialises a memberOf continuation link correctly. That is
+    Microsoft's contract rather than this code's, and reaching it needs an HTTP-level seam in
+    GraphService that does not exist.
+  * Also not driven: that a superseded load does not clear the pane on FAILURE. The guard is there and is
+    correct, but pwsh ships a different System.DirectoryServices.Protocols than the app builds against, so
+    the error path throws on the assembly load before reaching the code under test. Verified by reasoning
+    only -- see the same note in test-favorites.ps1.
 '@ -ForegroundColor DarkGray
 
 if ($fail -gt 0) { exit 1 }

@@ -15,3 +15,4 @@ dist/
 .vs/
 *.user
 *.suo
+.claude/output-styles/STYLE.md

@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Test doubles for the app's service interfaces.
+
+    A separate project rather than a folder in the product: nothing here ships in the executable, and the
+    product project stays free of code that exists only for tests.
+
+    It builds into the same debug\ folder the app does, because every suite loads its assemblies from there
+    by reflection.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <UseWPF>true</UseWPF>
+    <IsPackable>false</IsPackable>
+    <OutputPath>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\..\debug'))\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\UnifiedDirectoryManager\UnifiedDirectoryManager.csproj" />
+  </ItemGroup>
+
+</Project>
