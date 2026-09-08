@@ -144,6 +144,10 @@ public partial class CopyToTemplateViewModel : ObservableObject
                 }
 
             // Cloud group memberships (best-effort, only when signed in to Entra).
+            //
+            // A failed read must be visible here too, or the template is saved missing groups nobody knows
+            // were dropped — and every user created from it inherits the gap.
+            var cloudUnread = false;
             if (_graph.IsSignedIn && map.TryGetValue("userPrincipalName", out var upn2) && upn2.RawValues.Count > 0)
             {
                 try
@@ -166,10 +170,15 @@ public partial class CopyToTemplateViewModel : ObservableObject
                     }
                     HasCloudGroups = CloudGroups.Count > 0;
                 }
-                catch (Exception ex) { AppLog.Instance.Warn("Could not load cloud groups for copy-to-template: " + ex.Message); }
+                catch (Exception ex)
+                {
+                    cloudUnread = true;
+                    AppLog.Instance.Warn("Could not load cloud groups for copy-to-template: " + ex.Message);
+                }
             }
 
             Status = $"{Attributes.Count} attribute(s), {OnPremGroups.Count} on-prem group(s), {CloudGroups.Count} cloud group(s) available.";
+            if (cloudUnread) Status = "⚠ The source user's cloud groups could not be read, so any they belong to are MISSING from this list. " + Status;
         }
         catch (Exception ex)
         {

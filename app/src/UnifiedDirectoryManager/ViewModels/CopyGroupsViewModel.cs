@@ -88,6 +88,10 @@ public partial class CopyGroupsViewModel : ObservableObject
 
             // Cloud-only group memberships (best-effort, when signed in). Synced groups are excluded — they
             // come across with their on-prem group above.
+            //
+            // "Best-effort" must not mean "silently short". A failed read here used to leave the list looking
+            // like a complete set of memberships, and the operator copied it.
+            var cloudUnread = false;
             if (_graph.IsSignedIn && map.TryGetValue("userPrincipalName", out var srcUpn) && srcUpn.RawValues.Count > 0)
             {
                 try
@@ -106,12 +110,17 @@ public partial class CopyGroupsViewModel : ObservableObject
                             Detail = g.IsExchangeManaged ? "Exchange" : "Cloud",
                         });
                 }
-                catch (Exception ex) { AppLog.Instance.Warn("Could not load source cloud groups for copy-groups: " + ex.Message); }
+                catch (Exception ex)
+                {
+                    cloudUnread = true;
+                    AppLog.Instance.Warn("Could not load source cloud groups for copy-groups: " + ex.Message);
+                }
             }
 
             Status = Groups.Count == 0
                 ? "This user isn't a member of any groups."
                 : $"Loaded {Groups.Count} group(s). Untick any you don't want, pick a target user, then Copy.";
+            if (cloudUnread) Status = "⚠ The source user's cloud groups could not be read, so any they belong to are MISSING from this list. " + Status;
         }
         catch (Exception ex) { Status = "Could not load the source user's groups: " + DirectoryService.Friendly(ex); }
         finally { IsBusy = false; }

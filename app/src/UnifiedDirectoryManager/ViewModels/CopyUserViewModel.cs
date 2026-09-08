@@ -175,6 +175,10 @@ public partial class CopyUserViewModel : ObservableObject
 
             // Cloud-only group memberships (best-effort, when signed in). Synced groups are excluded — they
             // come across via the on-prem groups above. Copying these needs a post-create Entra Connect sync.
+            //
+            // A failed read has to be visible: the copy form otherwise presents a short list as the source
+            // user's full membership.
+            var cloudUnread = false;
             if (_graph.IsSignedIn && map.TryGetValue("userPrincipalName", out var srcUpn) && srcUpn.RawValues.Count > 0)
             {
                 try
@@ -195,10 +199,15 @@ public partial class CopyUserViewModel : ObservableObject
                     }
                     HasCloudGroups = CloudGroups.Count > 0;
                 }
-                catch (Exception ex) { AppLog.Instance.Warn("Could not load source cloud groups for copy: " + ex.Message); }
+                catch (Exception ex)
+                {
+                    cloudUnread = true;
+                    AppLog.Instance.Warn("Could not load source cloud groups for copy: " + ex.Message);
+                }
             }
 
             Status = "Enter the new user's name. Address, office, title, department, manager and group memberships were copied from the source and can be edited.";
+            if (cloudUnread) Status = "⚠ The source user's cloud groups could not be read, so any they belong to are MISSING from this list. " + Status;
         }
         catch (Exception ex) { Status = "Could not load the source user: " + DirectoryService.Friendly(ex); }
         finally { IsBusy = false; }
