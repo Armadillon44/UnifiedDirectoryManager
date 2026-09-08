@@ -146,7 +146,16 @@ public sealed class GraphService : IGraphService
         if (user is null) return null;
 
         var licenses = await ResolveLicensesAsync(user, cancellationToken);
-        var groups = await GetUserGroupsAsync(user.Id ?? upn, cancellationToken);
+        // The user exists — that is what this method answers, and the bulk-create sync poll asks nothing
+        // else. memberOf is a reference property and lags the object during a sync, so a failure here must
+        // not turn a found user into a not-found one. The gap is reported rather than hidden.
+        IReadOnlyList<CloudGroup> groups;
+        try { groups = await GetUserGroupsAsync(user.Id ?? upn, cancellationToken); }
+        catch (Exception ex)
+        {
+            groups = Array.Empty<CloudGroup>();
+            AppLog.Instance.Warn($"Read {upn} but not their cloud group memberships: " + GraphErrors.Friendly(ex));
+        }
         return new CloudUserInfo(
             user.Id ?? string.Empty,
             user.DisplayName,
@@ -212,8 +221,8 @@ public sealed class GraphService : IGraphService
             if (string.IsNullOrEmpty(page.OdataNextLink)) break;
             if (pages >= MaxMembershipPages)
                 throw new InvalidOperationException(
-                    "refusing to return a partial list: group " + groupId + " has more than "
-                    + $"{MaxMembershipPages * MembershipPageSize:N0} members. Read it in the Entra admin centre instead.");
+                    $"refusing to return a partial list: group {groupId} still had more pages after "
+                    + $"{all.Count:N0} members. Read it in the Entra admin centre instead.");
             page = await _graph.Groups[groupId].Members
                 .WithUrl(page.OdataNextLink).GetAsync(cancellationToken: cancellationToken);
         }
@@ -800,12 +809,20 @@ public sealed class GraphService : IGraphService
         //
         // Cast memberOf to groups so the group-only $select (Teams/Dynamic/Synced flags) applies — the
         // untyped directoryObject collection omits resourceProvisioningOptions/membershipRule.
-        var page = kind switch
+        GroupCollectionResponse? page;
+        try
         {
+            page = kind switch
+            {
             CloudObjectKind.Device => await _graph.Devices[objectId].MemberOf.GraphGroup.GetAsync(rc => { rc.QueryParameters.Select = GroupSelect; rc.QueryParameters.Top = MembershipPageSize; }, cancellationToken),
             CloudObjectKind.Group => await _graph.Groups[objectId].MemberOf.GraphGroup.GetAsync(rc => { rc.QueryParameters.Select = GroupSelect; rc.QueryParameters.Top = MembershipPageSize; }, cancellationToken),
-            _ => await _graph.Users[objectId].MemberOf.GraphGroup.GetAsync(rc => { rc.QueryParameters.Select = GroupSelect; rc.QueryParameters.Top = MembershipPageSize; }, cancellationToken),
-        };
+                _ => await _graph.Users[objectId].MemberOf.GraphGroup.GetAsync(rc => { rc.QueryParameters.Select = GroupSelect; rc.QueryParameters.Top = MembershipPageSize; }, cancellationToken),
+            };
+        }
+        catch (ODataError ex) when (ex.ResponseStatusCode == 404)
+        {
+            return Array.Empty<CloudGroup>(); // the object has no Entra twin — not a read failure
+        }
         return await DrainGroupPagesAsync(page, $"memberships of {objectId}", cancellationToken);
     }
 
@@ -823,8 +840,7 @@ public sealed class GraphService : IGraphService
             if (string.IsNullOrEmpty(page.OdataNextLink)) break;
             if (pages >= MaxMembershipPages)
                 throw new InvalidOperationException(
-                    "refusing to return a partial list: the " + what + " run past "
-                    + $"{MaxMembershipPages * MembershipPageSize:N0} groups.");
+                    $"refusing to return a partial list: the {what} still had more pages after {all.Count:N0} groups.");
             page = await _graph!.Groups.WithUrl(page.OdataNextLink).GetAsync(cancellationToken: cancellationToken);
         }
         return all.OrderBy(g => g.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList();
@@ -848,18 +864,31 @@ public sealed class GraphService : IGraphService
     /// <summary>Reads the user's cloud group memberships (direct memberOf, groups only).</summary>
     private async Task<IReadOnlyList<CloudGroup>> GetUserGroupsAsync(string idOrUpn, CancellationToken cancellationToken)
     {
-        // Also deliberately un-swallowed: Copy User, Copy Groups to User and Save-as-template all build on
-        // this, and an empty list from a transient failure means the operator copies an incomplete set of
-        // memberships and is told nothing.
+        // Deliberately un-swallowed for real failures: Copy User, Copy Groups to User and Save-as-template
+        // all build on this, and an empty list from a transient failure means the operator copies an
+        // incomplete set of memberships and is told nothing.
+        //
+        // A 404 is NOT a failure. It is how Graph says this UPN has no Entra user at all — the normal answer
+        // for a service account, a filtered-out OU, or a user created minutes ago. Reporting that as
+        // "memberships could not be read" would cry wolf on ordinary on-prem-only accounts, so it returns
+        // empty exactly as it did before, matching GetUserByUpnAsync's own handling of the same status.
         //
         // Cast memberOf to groups so we can $select group-only properties — resourceProvisioningOptions
         // (Teams), membershipRule (Dynamic), onPremisesSyncEnabled (Synced) aren't returned on the
         // untyped directoryObject collection, which would leave Teams groups unidentified.
-        var page = await _graph!.Users[idOrUpn].MemberOf.GraphGroup.GetAsync(rc =>
+        GroupCollectionResponse? page;
+        try
         {
-            rc.QueryParameters.Select = GroupSelect;
-            rc.QueryParameters.Top = MembershipPageSize;
-        }, cancellationToken);
+            page = await _graph!.Users[idOrUpn].MemberOf.GraphGroup.GetAsync(rc =>
+            {
+                rc.QueryParameters.Select = GroupSelect;
+                rc.QueryParameters.Top = MembershipPageSize;
+            }, cancellationToken);
+        }
+        catch (ODataError ex) when (ex.ResponseStatusCode == 404)
+        {
+            return Array.Empty<CloudGroup>(); // no cloud account for this UPN — not a read failure
+        }
         return await DrainGroupPagesAsync(page, $"cloud group memberships of {idOrUpn}", cancellationToken);
     }
 

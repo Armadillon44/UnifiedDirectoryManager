@@ -704,7 +704,16 @@ public partial class EditPaneViewModel : ObservableObject
                     MemberOf.Add(new GroupMembership(g.DisplayName, g.Id, g.IsExchangeManaged ? "Exchange" : "Cloud",
                         isCloud: true, kind: g.KindLabel, isExchange: g.IsExchangeManaged, smtp: g.Mail));
         }
-        catch (Exception ex) { AppLog.Instance.Warn("Could not load cloud group memberships: " + ex.Message); }
+        catch (Exception ex)
+        {
+            // Same rule as the Copy flows: a short membership list must not be presented as the whole one.
+            // Remove-from-groups operates off this list, so a silent gap here is a removal that quietly
+            // misses groups.
+            if (token == _loadToken)
+                _onError("Cloud group memberships could not be read, so any cloud groups are MISSING from Member Of: "
+                         + GraphErrors.Friendly(ex));
+            AppLog.Instance.Warn("Could not load cloud group memberships: " + ex.Message);
+        }
     }
 
     /// <summary>Best-effort fill of the on-prem groups' <see cref="GroupMembership.Kind"/> column

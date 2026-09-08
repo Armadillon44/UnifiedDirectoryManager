@@ -655,10 +655,17 @@ public partial class MainViewModel : ObservableObject
 
             if (cloud.Count > 0)
             {
-                var cloudId = await ResolveCloudIdForRowAsync(row);
-                if (cloudId is null)
+                string? cloudId = null;
+                var lookupFailed = false;
+                try { cloudId = await ResolveCloudIdForRowAsync(row); }
+                catch (Exception ex)
+                {
+                    lookupFailed = true;
+                    errors.Add("Couldn't check Entra ID — cloud groups skipped: " + GraphErrors.Friendly(ex));
+                }
+                if (!lookupFailed && cloudId is null)
                     errors.Add("Not found in Entra ID (may not be synced) — cloud groups skipped.");
-                else
+                else if (cloudId is not null)
                     foreach (var g in cloud)
                     {
                         try { await _graph.AddMemberToGroupAsync(g.CloudId!, cloudId); }
@@ -689,26 +696,27 @@ public partial class MainViewModel : ObservableObject
     }
 
     /// <summary>Resolves an on-prem list row to its Entra (cloud) object id; null if not synced/found.</summary>
+    /// <remarks>
+    /// Failures are deliberately NOT caught here. "No Entra twin" is a null return; a FAILED lookup is an
+    /// exception. Collapsing the two made a throttled request read as "not synced" while every cloud group
+    /// was silently skipped, so the caller tells them apart.
+    /// </remarks>
     private async Task<string?> ResolveCloudIdForRowAsync(AdObjectRow row)
     {
-        try
+        switch (row.Type)
         {
-            switch (row.Type)
-            {
-                case AdObjectType.User:
-                    var upn = row.Get("userPrincipalName");
-                    if (string.IsNullOrWhiteSpace(upn)) upn = await LoadCorrelationAsync(row.DistinguishedName, "userPrincipalName", formatted: false);
-                    return string.IsNullOrWhiteSpace(upn) ? null : (await _graph.GetUserByUpnAsync(upn))?.Id;
-                case AdObjectType.Computer:
-                    return string.IsNullOrWhiteSpace(row.Name) ? null : (await _graph.GetDevicesByComputerAsync(row.Name, null)).FirstOrDefault()?.Id;
-                case AdObjectType.Group:
-                    var sid = await LoadCorrelationAsync(row.DistinguishedName, "objectSid", formatted: true); // formatted S-1-5-…
-                    return string.IsNullOrWhiteSpace(sid) ? null : (await _graph.GetGroupByOnPremSidAsync(sid))?.Id;
-                default:
-                    return null;
-            }
+            case AdObjectType.User:
+                var upn = row.Get("userPrincipalName");
+                if (string.IsNullOrWhiteSpace(upn)) upn = await LoadCorrelationAsync(row.DistinguishedName, "userPrincipalName", formatted: false);
+                return string.IsNullOrWhiteSpace(upn) ? null : (await _graph.GetUserByUpnAsync(upn))?.Id;
+            case AdObjectType.Computer:
+                return string.IsNullOrWhiteSpace(row.Name) ? null : (await _graph.GetDevicesByComputerAsync(row.Name, null)).FirstOrDefault()?.Id;
+            case AdObjectType.Group:
+                var sid = await LoadCorrelationAsync(row.DistinguishedName, "objectSid", formatted: true); // formatted S-1-5-…
+                return string.IsNullOrWhiteSpace(sid) ? null : (await _graph.GetGroupByOnPremSidAsync(sid))?.Id;
+            default:
+                return null;
         }
-        catch (Exception ex) { AppLog.Instance.Warn($"Cloud id resolution failed for {row.Name}: {ex.Message}"); return null; }
     }
 
     /// <summary>Resolves the recipient identity Exchange Online should treat as a distribution-group member for

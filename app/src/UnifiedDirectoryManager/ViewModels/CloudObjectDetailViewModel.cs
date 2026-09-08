@@ -85,6 +85,21 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     public ObservableCollection<CloudPropertySection> Sections { get; } = new();
     public ObservableCollection<CloudLicense> Licenses { get; } = new();
     public ObservableCollection<CloudGroup> Memberships { get; } = new();
+    /// <summary>
+    /// How many rows these lists will render. The reads behind them now page to exhaustion, which is right
+    /// for correctness — a scenario step must see every membership — but these two lists bind to a
+    /// deliberately NON-virtualised ListView (CloudDetailView.xaml turns virtualisation off to work around a
+    /// lazy-paint bug), so every row becomes a real container on the UI thread. A 10,000-member group would
+    /// freeze the window.
+    ///
+    /// The single Top=200 read this replaced capped it by accident. This caps it on purpose, and says so
+    /// instead of quietly showing a prefix.
+    /// </summary>
+    private const int DisplayCap = 500;
+
+    private static string TooManyToShow(int total, string what) =>
+        $"Showing the first {DisplayCap:N0} of {total:N0} {what}. Use the Entra admin centre to see them all.";
+
     public ObservableCollection<CloudMember> Members { get; } = new();
 
     public CloudObjectDetailViewModel(IGraphService graph, IExchangeService exchange, IDialogService dialogs)
@@ -586,8 +601,9 @@ public partial class CloudObjectDetailViewModel : ObservableObject
                         _usageLocation = info.UsageLocation;
                         foreach (var l in info.Licenses) Licenses.Add(l);
                         HasLicenses = Licenses.Count > 0;
-                        foreach (var g in info.Groups) Memberships.Add(g);
+                        foreach (var g in info.Groups.Take(DisplayCap)) Memberships.Add(g);
                         HasMemberships = Memberships.Count > 0;
+                        if (info.Groups.Count > DisplayCap) Status = TooManyToShow(info.Groups.Count, "memberships");
                     }
                 }
             }
@@ -602,16 +618,18 @@ public partial class CloudObjectDetailViewModel : ObservableObject
 
                 var members = await _graph.GetGroupMembersAsync(row.Id);
                 if (!ReferenceEquals(_currentTarget, row)) return;
-                foreach (var m in members) Members.Add(m);
+                foreach (var m in members.Take(DisplayCap)) Members.Add(m);
                 HasMembers = Members.Count > 0;
+                if (members.Count > DisplayCap) Status = TooManyToShow(members.Count, "members");
             }
             else if (IsDevice)
             {
                 // Devices can be group members too — load their memberships so they can be managed here.
                 var groups = await _graph.GetObjectMemberOfAsync(row.Id, row.Kind);
                 if (!ReferenceEquals(_currentTarget, row)) return;
-                foreach (var g in groups) Memberships.Add(g);
+                foreach (var g in groups.Take(DisplayCap)) Memberships.Add(g);
                 HasMemberships = Memberships.Count > 0;
+                if (groups.Count > DisplayCap) Status = TooManyToShow(groups.Count, "memberships");
             }
         }
         catch (Exception ex)
