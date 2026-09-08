@@ -1,8 +1,45 @@
 # Code review findings — 2.3.1 baseline
 
-Status: **findings recorded, no fixes made.** The working tree these were found in is `master` at
-**`ac09e77` (tag `v2.3.1`)**. Every `file:line` below is pinned to that commit — verify against
-`git show ac09e77:<path>` if lines have drifted by the time this is worked.
+Status: **4 of 28 fixed. See the status table below before starting anything.**
+
+The working tree these were found in is `master` at **`ac09e77` (tag `v2.3.1`)**. Every `file:line` below is
+pinned to that commit. **Several of those files have since changed** — `EditPaneViewModel.cs`,
+`GraphService.cs`, `MainViewModel.cs` and `ScenarioRunner.cs` have all shifted — so resolve any line number
+against the original with `git show ac09e77:<path>` rather than trusting it against the current tree.
+
+---
+
+## Status
+
+Fixed on branch `fix/silent-failures-2.3.2` (not yet merged at the time of writing; check whether it has
+landed before repeating any of it).
+
+| # | Finding | State | Where |
+|---|---|---|---|
+| **F2** | Overlapping loads → Save writes to the wrong object | **Fixed** | `412d219`. The first attempt (`07f9fc3`) guarded only the superseded continuation and left the defect reachable; the real fix stops publishing `_dn` before the load owns the pane. Also fixed `Clear()` not invalidating an in-flight load, the `_originalProtected` baseline being written before the staleness check, and the two group commands, which write rather than repaint and were never guarded at all |
+| **F3** | "Remove all cloud groups" reports Success on a failed read | **Fixed** | `c6aa9f4`. `ScenarioRunner` needed no change — its per-step catch was already correct, so removing the swallow was enough |
+| **F4** | Cloud member/membership lists silently capped at 200 | **Fixed** | `c6aa9f4`, then `46f08d1` moved the loop into `PageDrain`. Note the display cap added in `fad94d9`: the lists bind to a deliberately non-virtualised `ListView`, so the reads drain fully but the pane renders the first 500 and says how many it is not showing |
+| **F9** | Cancelled scenario recorded as Success | **Fixed** | `4c921dd`, corrected in `412d219` (the rule had no `cancelled` check on its first branch — the exact gap its own test comment claimed to protect) |
+| — | *everything else below* | **Not started** | — |
+
+**Regressions the fixes introduced, and their fixes**, recorded because they are the kind of thing that gets
+re-broken: a 404 is how Graph says an object has no Entra twin, and un-swallowing briefly turned that into a
+"memberships are MISSING" warning on ordinary on-prem-only accounts; `GetUserByUpnAsync` briefly failed when
+a *reference property* lagged during a sync, which would have made the bulk-create poll report a present user
+as absent; and removing the 200-row read removed an accidental cap on a non-virtualised list. All fixed in
+`fad94d9`.
+
+**Test infrastructure now exists** (`46f08d1`), which changes what is cheap to fix from here:
+
+- `app/test/UnifiedDirectoryManager.TestSupport` — `FakeDirectoryService` can **park a read until the test
+  releases it**, and records every write, so timing bugs are testable. `InertGraphService` /
+  `InertExchangeService` exist so a view model can be constructed without a tenant.
+- `PageDrain` — the paging loop, extracted and tested over an in-memory fetch.
+- **CI runs all ten suites on every push and pull request** (`.github/workflows/build-and-test.yml`).
+
+That unlocks **F18 and F19** in particular: they are the same race family as F2, and were untestable before.
+
+---
 
 This document is written to be picked up cold, by a session with no memory of the review. It contains:
 how the findings were produced and what "confirmed" means; practical notes on building and testing this
@@ -561,3 +598,8 @@ finder's, at `ac09e77`.
 
 Tier 2 items: verify-then-fold into whichever package touches the same file, or file as issues.
 The two efficiency items marked as issue-#5 territory must go through that locked plan instead.
+
+**Before starting a package, re-read the status table at the top.** F2, F3, F4 and F9 are done, and package
+3's remaining members (F18, F19) are now testable in a way they were not when this was written — use
+`FakeDirectoryService` rather than asserting structurally, which is the mistake the F2 work made first time
+and had to undo.
