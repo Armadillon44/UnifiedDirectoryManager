@@ -1,6 +1,6 @@
 # Code review findings — 2.3.1 baseline
 
-Status: **13 of 28 fixed. See the status table below before starting anything.**
+Status: **14 of 28 fixed. See the status table below before starting anything.**
 
 The working tree these were found in is `master` at **`ac09e77` (tag `v2.3.1`)**. Every `file:line` below is
 pinned to that commit. **Several of those files have since changed** — `EditPaneViewModel.cs`,
