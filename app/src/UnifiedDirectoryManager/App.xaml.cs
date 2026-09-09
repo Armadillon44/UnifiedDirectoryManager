@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Threading;
 using UnifiedDirectoryManager.Services;
@@ -41,6 +42,21 @@ public partial class App : Application
         var savedSearches = new SavedSearchStore();
         var settingsStore = new SettingsStore();
         var settings = settingsStore.Load();
+
+        // Settings coming back as defaults reads exactly like a first run. Since 2.3.0 this file holds
+        // operator data — pinned favourites and saved connections — so an unreadable one has to be said out
+        // loud, with the name of the copy that was kept, or the loss looks like the app forgetting.
+        if (settingsStore.RecoveredFrom is { } bad)
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "UnifiedDirectoryManager");
+            MessageBox.Show(
+                "The saved settings file could not be read, so this session is starting from defaults. " +
+                "Pinned favourites and saved connection details are not loaded." + Environment.NewLine + Environment.NewLine +
+                "The unreadable file was kept as " + bad + " in" + Environment.NewLine + dir + Environment.NewLine + Environment.NewLine +
+                "If you need those favourites back, contact IT before making changes here.",
+                "Unified Directory Manager", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
 
         // Entra ID / Microsoft Graph cloud layer. Configure (but don't sign in) from saved
         // identifiers so a cached token can be reused silently; sign-in stays interactive.
