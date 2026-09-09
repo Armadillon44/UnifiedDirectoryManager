@@ -409,25 +409,17 @@ public partial class CopyUserViewModel : ObservableObject
         finally { IsBusy = false; }
     }
 
-    private string Resolve(string pattern, string sam)
-    {
-        if (string.IsNullOrEmpty(pattern)) return string.Empty;
-        return Regex.Replace(pattern,
-            "{(first|last|middle|firstInitial|lastInitial|middleInitial|initials|sam|upnSuffix)}",
-            m => m.Groups[1].Value.ToLowerInvariant() switch
-            {
-                "first" => FirstName.Trim(),
-                "last" => LastName.Trim(),
-                "middle" => MiddleName.Trim(),
-                "firstinitial" => Ini(FirstName),
-                "lastinitial" => Ini(LastName),
-                "middleinitial" => Ini(MiddleName),
-                "initials" => Initials.Trim(),
-                "sam" => sam,
-                "upnsuffix" => _upnSuffix,
-                _ => m.Value,
-            }, RegexOptions.IgnoreCase);
-    }
+    /// <summary>
+    /// Resolves a naming pattern through the SHARED resolver. This used to be a near-verbatim private copy
+    /// of it — same regex, same nine tokens, same switch — and it had already drifted: it resolved
+    /// {upnSuffix} without trimming, so a template whose suffix carried a trailing space produced
+    /// "jdoe@contoso.com " here and "jdoe@contoso.com" in New User, and the trailing space went into AD.
+    /// A token added to the builder never reached this window at all.
+    /// </summary>
+    private string Resolve(string pattern, string sam) =>
+        UserAttributeBuilder.Resolve(
+            new UserAttributeBuilder.NameTokens(FirstName, MiddleName, LastName, Initials, _upnSuffix),
+            pattern, sam);
 
     private static string DomainOf(IReadOnlyDictionary<string, AdAttribute> map, string ldap)
     {
@@ -440,7 +432,6 @@ public partial class CopyUserViewModel : ObservableObject
         return string.Empty;
     }
 
-    private static string Ini(string name) { var t = name.Trim(); return t.Length > 0 ? t[..1] : string.Empty; }
     // Use the shared sanitizer so Copy User honors the same logon-name conventions as New User / bulk
     // create (lowercased, accents folded, special characters dropped).
     private static string Sanitize(string sam) => UserAttributeBuilder.SanitizeSam(sam);

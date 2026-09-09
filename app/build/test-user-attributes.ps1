@@ -3,8 +3,9 @@
   Checks UserAttributeBuilder — the shared resolver behind New User, Copy User and Bulk Create.
 
 .DESCRIPTION
-  Everything three creation paths write to a new account comes out of this one pure function, and until now
-  none of it was covered. The rules that matter are about what does NOT get written: a blank field must not
+  Everything three creation paths write to a new account comes out of this one pure function -- which was
+  only true of two of them until F26. Copy User kept a near-verbatim private copy of the resolver, and that
+  copy had drifted. The rules that matter are about what does NOT get written: a blank field must not
   write an empty attribute, and an explicitly entered value must beat the template default rather than the
   other way round.
 
@@ -197,5 +198,87 @@ $vm3.EmployeeId = ''
 $cleared = $map.Invoke($null, @($vm3, $imported))
 Check 'clearing the box removes it'         $false $cleared.AttributeOverrides.ContainsKey('employeeID')
 Check 'without disturbing the others'       'Hut 8' $cleared.AttributeOverrides['department']
+Write-Host "`n== one resolver, not one per window (F26) ==" -ForegroundColor Cyan
+# Copy User carried a private copy of Resolve: same regex, same nine tokens, same switch. It had already
+# drifted -- the copy resolved {upnSuffix} WITHOUT trimming -- so the same template produced a different
+# UPN depending on which window created the user, and the difference went into AD.
+$Tokens = [UnifiedDirectoryManager.Services.UserAttributeBuilder+NameTokens]
+
+# The exact drift. A template suffix with a trailing space is easy to save and impossible to see.
+$untrimmed = $Tokens::new('Jane', '', 'Doe', '', 'contoso.com ')
+Check 'the suffix is trimmed'          'jdoe@contoso.com' ($B::Resolve($untrimmed, '{sam}@{upnSuffix}', 'jdoe'))
+# And not just the suffix: a name pasted from a spreadsheet carries whitespace too.
+$spacey = $Tokens::new('  Jane ', ' Q ', ' Doe  ', ' JQD ', ' contoso.com ')
+Check 'first is trimmed'               'Jane' ($B::Resolve($spacey, '{first}', 'x'))
+Check 'last is trimmed'                'Doe' ($B::Resolve($spacey, '{last}', 'x'))
+Check 'middle is trimmed'              'Q' ($B::Resolve($spacey, '{middle}', 'x'))
+Check 'initials are trimmed'           'JQD' ($B::Resolve($spacey, '{initials}', 'x'))
+Check 'and initials come off the trimmed name' 'J' ($B::Resolve($spacey, '{firstInitial}', 'x'))
+
+# Every token the pattern language documents, so a switch arm cannot be dropped unnoticed.
+$jane = $Tokens::new('Jane', 'Quinn', 'Doe', 'JQD', 'contoso.com')
+Check '{first}'                        'Jane' ($B::Resolve($jane, '{first}', 'jdoe'))
+Check '{middle}'                       'Quinn' ($B::Resolve($jane, '{middle}', 'jdoe'))
+Check '{last}'                         'Doe' ($B::Resolve($jane, '{last}', 'jdoe'))
+Check '{firstInitial}'                 'J' ($B::Resolve($jane, '{firstInitial}', 'jdoe'))
+Check '{middleInitial}'                'Q' ($B::Resolve($jane, '{middleInitial}', 'jdoe'))
+Check '{lastInitial}'                  'D' ($B::Resolve($jane, '{lastInitial}', 'jdoe'))
+Check '{initials}'                     'JQD' ($B::Resolve($jane, '{initials}', 'jdoe'))
+Check '{sam}'                          'jdoe' ($B::Resolve($jane, '{sam}', 'jdoe'))
+Check '{upnSuffix}'                    'contoso.com' ($B::Resolve($jane, '{upnSuffix}', 'jdoe'))
+Check 'tokens are case-insensitive'    'Jane' ($B::Resolve($jane, '{FIRST}', 'jdoe'))
+Check 'an unknown token is left alone' '{nickname}' ($B::Resolve($jane, '{nickname}', 'jdoe'))
+Check 'an empty pattern stays empty'   '' ($B::Resolve($jane, '', 'jdoe'))
+Check 'a missing middle name vanishes' 'Jane .Doe' ($B::Resolve(($Tokens::new('Jane', '', 'Doe', '', 'x')), '{first} {middleInitial}.{last}', 'jdoe'))
+
+# The point of the whole exercise: Copy User must now go through this, not around it -- and the way to
+# prove that is to run ITS resolver, not the shared one, and watch the drift be gone.
+#
+# CopyUserViewModel's constructor wants the whole service graph (directory, template store, dialogs,
+# graph, cloud provisioning) for a method that reads five string fields. GetUninitializedObject skips it
+# entirely; the fields are then set directly, so no property-changed machinery runs either.
+$CopyVm = [UnifiedDirectoryManager.ViewModels.CopyUserViewModel]
+$NonPublic = [System.Reflection.BindingFlags]'NonPublic,Instance'
+$copyResolve = $CopyVm.GetMethod('Resolve', $NonPublic)
+if ($null -eq $copyResolve) { throw 'CopyUserViewModel has no Resolve — has it been refactored?' }
+
+function New-CopyVm([string]$first, [string]$middle, [string]$last, [string]$initials, [string]$suffix) {
+    $vm = [System.Runtime.CompilerServices.RuntimeHelpers]::GetUninitializedObject($CopyVm)
+    foreach ($pair in @(@('_firstName', $first), @('_middleName', $middle), @('_lastName', $last),
+                        @('_initials', $initials), @('_upnSuffix', $suffix))) {
+        $f = $CopyVm.GetField($pair[0], $NonPublic)
+        if ($null -eq $f) { throw "CopyUserViewModel has no field $($pair[0])" }
+        $f.SetValue($vm, $pair[1])
+    }
+    return $vm
+}
+
+# THE DRIFT, through Copy User's own method. The fork resolved {upnSuffix} without trimming, so this
+# produced "jdoe@contoso.com " -- a UPN with a trailing space, written into AD.
+$vmCopy = New-CopyVm 'Jane' '' 'Doe' '' 'contoso.com '
+Check 'Copy User trims the suffix too' 'jdoe@contoso.com' ($copyResolve.Invoke($vmCopy, @('{sam}@{upnSuffix}', 'jdoe')))
+
+# And the two windows now agree, token for token, on the same messy input. That is the whole claim.
+$messy = @{ First = '  Jane '; Middle = ' Q '; Last = ' Doe  '; Initials = ' JQD '; Suffix = ' contoso.com ' }
+$vmCopy = New-CopyVm $messy.First $messy.Middle $messy.Last $messy.Initials $messy.Suffix
+$sharedTokens = $Tokens::new($messy.First, $messy.Middle, $messy.Last, $messy.Initials, $messy.Suffix)
+foreach ($pattern in '{first}', '{middle}', '{last}', '{firstInitial}', '{middleInitial}', '{lastInitial}',
+                     '{initials}', '{sam}', '{upnSuffix}', '{first}.{last}@{upnSuffix}') {
+    $viaCopy = $copyResolve.Invoke($vmCopy, @($pattern, 'jdoe'))
+    $viaShared = $B::Resolve($sharedTokens, $pattern, 'jdoe')
+    Check "  both windows agree on $pattern" $viaShared $viaCopy
+}
+# The point of the whole exercise: Copy User must now go through this, not around it.
+$copySrc = Get-Content -Raw (Join-Path (Split-Path -Parent $root) 'app\src\UnifiedDirectoryManager\ViewModels\CopyUserViewModel.cs')
+Check 'Copy User calls the shared resolver' $true ($copySrc -match 'UserAttributeBuilder\.Resolve\(')
+# The fork's fingerprints: its own regex, and the private initial helper only it used.
+Check 'and keeps no regex of its own'       $false ($copySrc -match 'firstInitial\|lastInitial\|middleInitial')
+Check 'nor its own initial helper'          $false ($copySrc -match 'private static string Ini\(')
+
+# Bulk Create reaches the same resolver through Suggest/Build, so all three creation paths agree. This is
+# what the header of this file claims, and until F26 it was only true of two of them.
+$builderSrc = Get-Content -Raw (Join-Path (Split-Path -Parent $root) 'app\src\UnifiedDirectoryManager\Services\UserAttributeBuilder.cs')
+$resolvers = ([regex]::Matches($builderSrc, 'firstInitial\|lastInitial\|middleInitial')).Count
+Check 'exactly one resolver exists'         1 $resolvers
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }
