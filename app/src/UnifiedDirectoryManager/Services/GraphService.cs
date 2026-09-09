@@ -58,8 +58,26 @@ public sealed class GraphService : IGraphService
 
     public void Configure(string tenantId, string clientId)
     {
-        _tenantId = tenantId?.Trim();
-        _clientId = clientId?.Trim();
+        var newTenant = tenantId?.Trim();
+        var newClient = clientId?.Trim();
+
+        // A change of tenant or app registration invalidates who is signed in. The record was kept with
+        // "??=", which never replaces a non-null one, so Configure(tenantB) built a credential whose
+        // AUTHORITY was B but whose bound ACCOUNT was still A's — and IsSignedIn / SignedInAccount went on
+        // reporting A's identity with no sign-in to B having happened. Cancel the browser prompt that
+        // follows and the app carries on in that state: wrong-tenant requests, or opaque token failures,
+        // where it should simply have said "not signed in".
+        //
+        // It matters beyond Graph. The Exchange channel borrows this account name to CONNECT with, and keys
+        // its live session on it.
+        if (!string.Equals(newTenant, _tenantId, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(newClient, _clientId, StringComparison.OrdinalIgnoreCase))
+        {
+            _record = null;
+        }
+
+        _tenantId = newTenant;
+        _clientId = newClient;
         _skuMap = null; // a different tenant has a different SKU catalogue
         _licenseGroupMap = null;
         _groupNameCache.Clear();
@@ -71,9 +89,18 @@ public sealed class GraphService : IGraphService
             return;
         }
 
-        // Reuse any persisted authentication record so a cached token can be used silently.
-        _record ??= TryLoadAuthRecord();
+        // Reuse a persisted authentication record so a cached token can be used silently — but only one that
+        // belongs to this tenant AND this app registration. The record encodes its own authority, so handing
+        // over someone else's is the same defect by a different route.
+        _record ??= LoadAuthRecordFor(_tenantId!, _clientId!);
 
+        BuildCredential();
+        AppLog.Instance.Info($"Graph client configured for tenant '{_tenantId}'.");
+    }
+
+    /// <summary>Builds the credential and Graph client around whatever <see cref="_record"/> currently is.</summary>
+    private void BuildCredential()
+    {
         var options = new InteractiveBrowserCredentialOptions
         {
             TenantId = _tenantId,
@@ -85,8 +112,28 @@ public sealed class GraphService : IGraphService
 
         _credential = new InteractiveBrowserCredential(options);
         _graph = new GraphServiceClient(_credential, Scopes);
-        AppLog.Instance.Info($"Graph client configured for tenant '{_tenantId}'.");
     }
+
+    /// <summary>
+    /// The persisted authentication record, but only when it belongs to the tenant and app registration
+    /// being configured now. A record from another tenant is left on disk rather than deleted: switching
+    /// back should sign the operator straight in again, which is the point of persisting it.
+    /// </summary>
+    private static AuthenticationRecord? LoadAuthRecordFor(string tenantId, string clientId)
+    {
+        var record = TryLoadAuthRecord();
+        if (record is null || RecordBelongsTo(record, tenantId, clientId)) return record;
+
+        AppLog.Instance.Info(
+            $"The saved Entra sign-in is for tenant '{record.TenantId}', not '{tenantId}'; ignoring it.");
+        return null;
+    }
+
+    /// <summary>Whether a saved sign-in applies to this tenant and app registration.</summary>
+    internal static bool RecordBelongsTo(AuthenticationRecord? record, string? tenantId, string? clientId) =>
+        record is not null
+        && string.Equals(record.TenantId, tenantId, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(record.ClientId, clientId, StringComparison.OrdinalIgnoreCase);
 
     public async Task SignInAsync(CancellationToken cancellationToken = default)
     {
@@ -105,8 +152,15 @@ public sealed class GraphService : IGraphService
         try { if (File.Exists(AuthRecordPath)) File.Delete(AuthRecordPath); }
         catch (Exception ex) { AppLog.Instance.Warn("Could not clear the saved Graph sign-in: " + ex.Message); }
 
-        // Rebuild the credential without an authentication record so cached tokens aren't reused.
-        if (IsConfigured) Configure(_tenantId!, _clientId!);
+        _skuMap = null;
+        _licenseGroupMap = null;
+        _groupNameCache.Clear();
+
+        // Rebuild the credential without an authentication record so cached tokens aren't reused — but NOT
+        // by calling Configure, which reloads the persisted record from disk. If the delete above failed
+        // (an antivirus scanner holding the file is the usual reason, and it is logged as a warning nobody
+        // reads) that would sign the operator straight back in, on what may be a shared workstation.
+        if (IsConfigured) BuildCredential();
         AppLog.Instance.Info("Signed out of Entra ID.");
     }
 
