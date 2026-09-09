@@ -1,6 +1,7 @@
 # Code review findings — 2.3.1 baseline
 
-Status: **24 of 28 fixed. Four remain: F20, F21, F23, F25 — all S3, all small.**
+Status: **24 of 28 fixed. The remaining four were reviewed and DEFERRED by the maintainer on 2026-09-09 —
+read "The four that were left" below before reopening any of them.**
 
 The working tree these were found in is `master` at **`ac09e77` (tag `v2.3.1`)**. Every `file:line` below is
 pinned to that commit. **Several of those files have since changed** — `EditPaneViewModel.cs`,
@@ -41,7 +42,42 @@ they have landed before repeating any of it.
 | **F24** | Unticking every cloud group still forces the Entra sync on | **Fixed** | `d2a03f6`. `SyncMandatory` counts ticked rows, and rows are watched individually because an Include toggle raises PropertyChanged on the row, not CollectionChanged on the list. A sync the rule switched on is switched back off; one the operator ticked is left alone |
 | **F27** | `Alert` throws instead of showing when no window exists | **Fixed** | `85dfa4a`. Owner-less when there is no owner, and `Owner` itself no longer assumes `Application.Current` |
 | **F28** | The multi-select OU picker ignores its seeded selection | **Fixed** | `85dfa4a`. The window holds the selection rather than deriving it from the loaded tree, and the seed is carried into `TreeNodeViewModel` so nodes arrive ticked whenever they load. A seeded OU deeper than the loaded tree — or one the directory no longer has — survives to OK |
-| — | *everything else below* | **Not started** | — |
+| — | *the four below* | **Deferred, deliberately** | see the next section |
+
+## The four that were left, and why
+
+F20, F21, F23 and F25 were each re-verified against the current tree on 2026-09-09, confirmed still live,
+and then deliberately NOT fixed. This section exists so the next reader does not spend an afternoon
+re-triaging them.
+
+**F21 — auto-connect drops the ignore-cert flag.** Moot here: this environment does not use LDAPS.
+Connections are plain LDAP on 389, secured with sign+seal. The defect is real — `AppSettings` has no field
+for `IgnoreCertificateErrors`, so neither the startup profile rebuild nor the connect dialog's prefill
+restores it — and it would be a per-launch annoyance for anyone running LDAPS with an untrusted
+certificate. **Reopen it the day LDAPS is turned on, and not before.**
+
+**F25 — the delete-confirmation alphabet keeps a lowercase "o".** The finding frames that "o" as the
+hazard. On re-reading it is not: uppercase "O" and the digit zero are both already excluded from that
+alphabet, so an "o" there cannot be confused with anything, and a mistyped confirmation fails safe (the
+delete simply does not happen). What is actually wrong is narrower: `PassphraseGenerator.SuffixChars`
+carries a comment claiming the "same exclusions used elsewhere" while
+`MainViewModel.RandomConfirmationString` hand-rolls a different set. The cost of leaving it is that the
+next person tightening that rule changes only one of the two.
+
+**F23 — the date tokens are culture-sensitive and write wrong-calendar dates into AD.** Real, and a
+two-word fix (`CultureInfo.InvariantCulture`). It needs a workstation whose default calendar is
+non-Gregorian — th-TH Buddhist, ar-SA Um Al Qura — to bite, and there are none here.
+
+**F20 — the paste resolver's exact rung can never report truncation.** Both exact rungs fetch
+`-ResultSize 20` and then test `Count -gt 20`, which can never be true; the ANR rung fetches 21 for
+exactly this reason. Reaching it needs more than twenty recipients sharing one identical display name, at
+which point the operator is shown the first twenty to choose from without being told there may be more. An
+exact address match cannot reach twenty at all.
+
+Together these are roughly fifteen lines and one small suite. Worth doing as a single cleanup pass if the
+review is ever closed out at 28 of 28; not worth doing on their individual merits.
+
+---
 
 **Regressions the fixes introduced, and their fixes**, recorded because they are the kind of thing that gets
 re-broken: a 404 is how Graph says an object has no Entra twin, and un-swallowing briefly turned that into a
