@@ -323,7 +323,13 @@ public partial class MainViewModel : ObservableObject
     public void Initialize()
     {
         RootNodes.Clear();
+        // Every cached root has to go with the nodes. _favoritesRoot was missed, so RebuildFavorites took
+        // its "already have one" path, skipped the Insert, and repopulated a node that was no longer in the
+        // tree: the Favourites section vanished after a reconnect and pin/unpin went on quietly editing the
+        // orphan — saving correctly, changing nothing on screen — until the app was restarted.
         _cloudRoot = null;
+        _exchangeRoot = null;
+        _favoritesRoot = null;
 
         if (_directory.IsConnected)
         {
@@ -462,11 +468,13 @@ public partial class MainViewModel : ObservableObject
 
     [RelayCommand]
     private void NewUser() =>
-        _dialogs.ShowNewUser(SelectedNode?.DistinguishedName, onCreated: () => _ = List.ReloadAsync());
+        // DirectoryDn, not DistinguishedName: with a cloud section or the Favourites row selected the latter
+        // is a marker like "cloud:Users" or "fav:root", and the create would target "CN=x,fav:root".
+        _dialogs.ShowNewUser(SelectedNode?.DirectoryDn, onCreated: () => _ = List.ReloadAsync());
 
     [RelayCommand]
     private void BulkCreateUsers() =>
-        _dialogs.ShowBulkCreateUsers(SelectedNode?.DistinguishedName, onCreated: () => _ = List.ReloadAsync());
+        _dialogs.ShowBulkCreateUsers(SelectedNode?.DirectoryDn, onCreated: () => _ = List.ReloadAsync());
 
     [RelayCommand]
     private void ManageTemplates() => _dialogs.ShowTemplateEditor();
@@ -575,7 +583,7 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void AdvancedSearch()
     {
-        var query = _dialogs.ShowAdvancedSearch(SelectedNode?.DistinguishedName ?? string.Empty, SearchPinning());
+        var query = _dialogs.ShowAdvancedSearch(SelectedNode?.DirectoryDn ?? string.Empty, SearchPinning());
         if (query is not null)
         {
             StatusMessage = "Showing advanced search results.";

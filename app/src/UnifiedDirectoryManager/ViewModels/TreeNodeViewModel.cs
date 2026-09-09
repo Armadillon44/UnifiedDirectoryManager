@@ -36,6 +36,24 @@ public partial class TreeNodeViewModel : ObservableObject
     public bool IsFavorite => Favorite is not null;
 
     /// <summary>
+    /// This node's distinguished name IF it has a real one, else null.
+    ///
+    /// <see cref="DistinguishedName"/> is overloaded as a marker channel: the cloud sections carry
+    /// "cloud:&lt;kind&gt;", the Favourites row carries "fav:root", and a pinned saved search carries
+    /// "fav:&lt;name&gt;". None of those means anything to a domain controller, and handing one over earns a
+    /// BAD_NAME — which is what issue #8 was, and what still happened afterwards through New User, Bulk
+    /// Create and Advanced Search, because that fix only guarded child enumeration.
+    ///
+    /// Consumers that are about to USE a DN should read this instead. Returning null makes the next
+    /// consumer safe by construction, which a guard added at each call site does not.
+    /// </summary>
+    public string? DirectoryDn =>
+        CloudKind is null && !IsPlaceholder && !IsFavoritesRoot
+        && Favorite is not { Kind: FavoriteKind.SavedSearch }
+            ? Node.DistinguishedName
+            : null;
+
+    /// <summary>
     /// True where this node's children come from a directory search on its own distinguished name. False for
     /// the cloud sections (fixed children) and for every favourite row.
     ///

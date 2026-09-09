@@ -378,5 +378,57 @@ Check 'and it tried again'                   $true (Attempted $realOu)
 Check 'a failed load keeps what was shown'   2 $realOu.Children.Count
 Check 'including the real child'             'Child' $realOu.Children[1].Name
 
+Write-Host "`n== a marker node never hands out a distinguished name (F16) ==" -ForegroundColor Cyan
+# DistinguishedName is overloaded as a marker channel: the cloud sections carry "cloud:<kind>", the
+# Favourites row "fav:root", a pinned saved search "fav:<name>". Issue #8 stopped the tree enumerating
+# those, but they still reached New User, Bulk Create and Advanced Search as if they were real DNs.
+# DirectoryDn is the safe accessor: null wherever there is no real DN to give.
+$favRootNode = $Node::new([UnifiedDirectoryManager.Models.FavoriteEntry]$null, 'Favourites', $null, $onErr)
+$pinnedOuNode = $Node::new((Ou 'OU=Sales,DC=contoso,DC=net'), 'Sales', $null, $onErr)
+$pinnedSearchNode = $Node::new((Search 'Disabled users'), 'Disabled users', $null, $onErr)
+
+Check 'the Favourites row offers no DN'   $null $favRootNode.DirectoryDn
+Check 'nor does a pinned saved search'    $null $pinnedSearchNode.DirectoryDn
+# A pinned CONTAINER does have a real DN -- that is the whole point of pinning it.
+Check 'but a pinned OU offers its real DN' 'OU=Sales,DC=contoso,DC=net' $pinnedOuNode.DirectoryDn
+
+# The cloud sections have leaked "cloud:<kind>" this way since they were added.
+$CloudKind = [UnifiedDirectoryManager.ViewModels.CloudNodeKind]
+$cloudNode = $Node::new($CloudKind::Users, 'Users', $null, $onErr, $null)
+Check 'a cloud section offers no DN'      $null $cloudNode.DirectoryDn
+Check 'though it still carries its marker' 'cloud:Users' $cloudNode.DistinguishedName
+
+# The negative control: a real container must still hand over its DN, or every create dialog loses its
+# target OU and the guard has traded one bug for another.
+$realOuNode2 = New-Object UnifiedDirectoryManager.Models.AdNode
+$realOuNode2.DistinguishedName = 'OU=Real,DC=contoso,DC=net'
+$realOuNode2.Name = 'Real'
+$realOuNode2.Type = [UnifiedDirectoryManager.Models.AdObjectType]::OrganizationalUnit
+$realNode = $Node::new($realOuNode2, [UnifiedDirectoryManager.Services.IDirectoryService]$null, $onErr, $null, $false)
+Check 'a real OU still offers its DN'     'OU=Real,DC=contoso,DC=net' $realNode.DirectoryDn
+# The "Loading..." placeholder is not a target either.
+$placeholder = $Node::new($realOuNode2, [UnifiedDirectoryManager.Services.IDirectoryService]$null, $onErr, $null, $true)
+Check 'a placeholder offers no DN'        $null $placeholder.DirectoryDn
+
+# And the consumers must actually use it. A regex over the source because the alternative is standing up
+# MainViewModel, which needs the whole service graph.
+# $root is reused as a tree node further up this file, so derive the repo root from $PSScriptRoot.
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$mainSrc = Get-Content -Raw (Join-Path $repoRoot 'app\src\UnifiedDirectoryManager\ViewModels\MainViewModel.cs')
+Check 'no create dialog is handed a raw node DN' $false ($mainSrc -match 'Show(NewUser|BulkCreateUsers|AdvancedSearch)\(SelectedNode\?\.DistinguishedName')
+$viaSafe = ([regex]::Matches($mainSrc, 'SelectedNode\?\.DirectoryDn')).Count
+Check 'all three read DirectoryDn instead'      $true ($viaSafe -ge 3)
+
+Write-Host "`n== the Favourites row survives a reconnect (F17) ==" -ForegroundColor Cyan
+# Initialize() clears RootNodes but used to leave _favoritesRoot set, so RebuildFavorites took its
+# "already have one" path, skipped the Insert, and repopulated a node no longer in the tree. The section
+# vanished until restart, and pin/unpin silently edited the orphan.
+$MainVm = [UnifiedDirectoryManager.ViewModels.MainViewModel]
+$initSrc = [regex]::Match($mainSrc, '(?s)public void Initialize\(\).*?\r?\n    \}').Value
+Check 'Initialize clears the node list'       $true ($initSrc -match 'RootNodes\.Clear\(\)')
+# Every cached root has to be dropped with it, or it becomes an orphan the rebuild keeps reusing.
+foreach ($f in '_cloudRoot', '_exchangeRoot', '_favoritesRoot') {
+    Check "  and resets $f" $true ($initSrc -match ([regex]::Escape($f) + '\s*=\s*null'))
+}
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }
