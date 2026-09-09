@@ -91,8 +91,18 @@ public partial class NewUserViewModel : ObservableObject
     /// <summary>The issued pass — shown read-only with a Copy button; visible only once (never persisted).</summary>
     [ObservableProperty] private string _tapCode = string.Empty;
 
-    /// <summary>True when cloud/Exchange groups or a Temporary Access Pass are selected — the post-create sync is then required.</summary>
-    public bool SyncMandatory => CloudGroups.Count > 0 || DistributionGroups.Count > 0 || IssueTap;
+    /// <summary>
+    /// True when cloud/Exchange groups or a Temporary Access Pass are actually SELECTED — the post-create
+    /// sync is then required.
+    ///
+    /// Ticked rows, not rows present. A template seeds these lists, and unticking every row used to leave
+    /// this true: the sync stayed forced on, its checkbox stayed disabled, and CreateAsync then refused to
+    /// create anybody until an Entra Connect server was entered for a sync nothing needed. The only way out
+    /// was deleting the rows rather than unticking them. Validate() has always counted ticks (see
+    /// needsCloud); this is the same question and now gives the same answer.
+    /// </summary>
+    public bool SyncMandatory =>
+        CloudGroups.Any(g => g.Include) || DistributionGroups.Any(g => g.Include) || IssueTap;
 
     /// <summary>Section-header visibility for the New User group list.</summary>
     public bool HasCloudGroups => CloudGroups.Count > 0;
@@ -131,17 +141,68 @@ public partial class NewUserViewModel : ObservableObject
         _settings = settings;
         _entraConnectServer = settings.EntraConnectServer ?? string.Empty;
         // Selecting cloud / Exchange groups makes the sync mandatory; keep the dependent state in sync.
-        void OnGroupsChanged(object? _, System.Collections.Specialized.NotifyCollectionChangedEventArgs __)
-        {
-            OnPropertyChanged(nameof(SyncMandatory));
-            OnPropertyChanged(nameof(SyncCheckboxEnabled));
-            OnPropertyChanged(nameof(HasCloudGroups));
-            OnPropertyChanged(nameof(HasDistributionGroups));
-            if (SyncMandatory) RunEntraSync = true;
-        }
-        CloudGroups.CollectionChanged += OnGroupsChanged;
-        DistributionGroups.CollectionChanged += OnGroupsChanged;
+        CloudGroups.CollectionChanged += OnGroupRowsChanged;
+        DistributionGroups.CollectionChanged += OnGroupRowsChanged;
         ReloadTemplates();
+    }
+
+    /// <summary>
+    /// True when <see cref="RunEntraSync"/> was switched on by the mandatory rule rather than by the
+    /// operator, so it can be switched back off when the rule stops applying — and, just as importantly,
+    /// left alone when it does not. Someone who ticked the box themselves keeps their choice.
+    /// </summary>
+    private bool _syncForcedByRule;
+
+    /// <summary>
+    /// Re-evaluates everything that depends on which groups are ticked. Called on a collection change AND on
+    /// an Include toggle: ticking a checkbox raises PropertyChanged on the ROW, not CollectionChanged on the
+    /// list, so subscribing to the list alone left this stale for the whole of the operator's session.
+    /// </summary>
+    private void RefreshSyncState()
+    {
+        OnPropertyChanged(nameof(SyncMandatory));
+        OnPropertyChanged(nameof(SyncCheckboxEnabled));
+        // Section headers stay keyed on rows PRESENT, not rows ticked: a section that vanished when its last
+        // box was cleared would take the boxes with it and leave no way to tick one again.
+        OnPropertyChanged(nameof(HasCloudGroups));
+        OnPropertyChanged(nameof(HasDistributionGroups));
+
+        if (SyncMandatory)
+        {
+            if (!RunEntraSync) { RunEntraSync = true; _syncForcedByRule = true; }
+        }
+        else if (_syncForcedByRule)
+        {
+            RunEntraSync = false;
+            _syncForcedByRule = false;
+        }
+    }
+
+    private void OnGroupRowsChanged(object? _, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+    {
+        foreach (var row in e.OldItems?.OfType<TemplateCopyGroupRow>() ?? [])
+            row.PropertyChanged -= OnGroupRowPropertyChanged;
+
+        foreach (var row in e.NewItems?.OfType<TemplateCopyGroupRow>() ?? [])
+            row.PropertyChanged += OnGroupRowPropertyChanged;
+
+        // A Reset (what Clear() raises) names no OldItems, so re-attach from what is actually there now.
+        // Detaching first keeps this idempotent.
+        if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset)
+        {
+            foreach (var row in CloudGroups.Concat(DistributionGroups))
+            {
+                row.PropertyChanged -= OnGroupRowPropertyChanged;
+                row.PropertyChanged += OnGroupRowPropertyChanged;
+            }
+        }
+
+        RefreshSyncState();
+    }
+
+    private void OnGroupRowPropertyChanged(object? _, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(TemplateCopyGroupRow.Include)) RefreshSyncState();
     }
 
     public string? DefaultOu { private get; set; }
@@ -240,12 +301,9 @@ public partial class NewUserViewModel : ObservableObject
         RefreshPreview();
     }
 
-    partial void OnIssueTapChanged(bool value)
-    {
-        OnPropertyChanged(nameof(SyncMandatory));
-        OnPropertyChanged(nameof(SyncCheckboxEnabled));
-        if (value) RunEntraSync = true; // a TAP needs the user in Entra first → force the post-create sync
-    }
+    // A TAP needs the user in Entra first, so it forces the post-create sync — through the same rule as the
+    // groups, which means clearing it releases the sync again instead of stranding it on.
+    partial void OnIssueTapChanged(bool value) => RefreshSyncState();
 
     partial void OnFirstNameChanged(string value) { ApplySuggestions(force: false); RefreshPreview(); }
     partial void OnLastNameChanged(string value) { ApplySuggestions(force: false); RefreshPreview(); }

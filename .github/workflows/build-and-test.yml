@@ -55,7 +55,7 @@ jobs:
                     'test-user-attributes', 'test-silent-failures', 'test-drain',
                     'test-settings-store', 'test-exchange-channel',
                     'test-directory-writes', 'test-csv-import', 'test-graph-identity',
-                    'test-entra-sync'
+                    'test-entra-sync', 'test-newuser-sync'
           $failed = @()
           foreach ($s in $suites) {
             $path = "./app/build/$s.ps1"
