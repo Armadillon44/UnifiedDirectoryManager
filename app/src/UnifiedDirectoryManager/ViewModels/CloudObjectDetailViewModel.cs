@@ -23,6 +23,25 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     // superseded and must not touch Sections.
     private int _detailToken;
 
+    /// <summary>
+    /// What a read of Exchange detail did.
+    ///
+    /// Three states rather than a bool, because "the read worked" and "the pane has moved on" are not the
+    /// same answer to a caller that is about to copy the sections back into a list row. A save whose re-read
+    /// was superseded reported success, and <see cref="SyncRowFromSections"/> then stamped the NEW
+    /// selection's address onto the OLD group's row — which is the identifier every later resolution reads,
+    /// so the old group was afterwards addressed by another group's address.
+    /// </summary>
+    private enum ExchangeRead
+    {
+        /// <summary>The sections on screen describe the row that was asked for. Only this permits acting on them.</summary>
+        Loaded,
+        /// <summary>The read failed and this row is still the target: the summary stays up and Status says why.</summary>
+        Failed,
+        /// <summary>Another selection superseded this read. The pane belongs to something else now; do nothing.</summary>
+        Superseded,
+    }
+
     /// <summary>The selected mailbox's ExchangeGuid, captured from the detail read; null for other kinds.</summary>
     private string? _mailboxExchangeGuid;
 
@@ -278,12 +297,17 @@ public partial class CloudObjectDetailViewModel : ObservableObject
                     saved += $" {string.Join(", ", same)} already matched what was typed; Exchange ignores case and order.";
                 }
                 IsBusy = false;
-                if (await LoadExchangeDetailAsync(row, mailbox: false, identityOverride: identity))
+                var reread = await LoadExchangeDetailAsync(row, mailbox: false, identityOverride: identity);
+                if (reread == ExchangeRead.Loaded)
                 {
                     SyncRowFromSections(row);
                     Status = saved;
                 }
-                else if (ReferenceEquals(_currentTarget, row))
+                // Superseded: the operator clicked another row while the re-read was queued behind this save
+                // on the serialised Exchange channel. Sections now describe THAT row, so copying them into
+                // this one would give this group the other group's address — and the row is what every later
+                // identity resolution reads. Say nothing and touch nothing; the pane is not ours any more.
+                else if (reread == ExchangeRead.Failed)
                 {
                     // The write landed; only the re-read failed. Leaving the edited rows on screen would keep
                     // the Save bar armed over changes that are already applied, and invite a second send of the
@@ -397,8 +421,9 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     {
         var row = _currentTarget;
         if (row is null || !IsMailbox) return;
-        if (!await LoadExchangeDetailAsync(row, mailbox: true)) return;
-        if (!ReferenceEquals(_currentTarget, row)) return;
+        // Loaded is the only outcome that means these sections describe THIS mailbox; the copy below writes
+        // them into its list row, so anything else has to stop here.
+        if (await LoadExchangeDetailAsync(row, mailbox: true) != ExchangeRead.Loaded) return;
 
         // The grid keeps asserting the old mailbox type otherwise, and it is a visible column.
         var byKey = Sections.SelectMany(s => s.Properties)
@@ -568,18 +593,28 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         if (!_graph.IsSignedIn) return;
         // A mailbox is described by Exchange, not Graph — mailbox type, forwarding, holds, quotas, archive state
         // and the protocol flags have no Graph equivalent at all.
-        if (row.Kind == CloudObjectKind.Mailbox) { await LoadExchangeDetailAsync(row, mailbox: true); return; }
+        // Nothing is copied back into the row on this path, so the outcome is only of interest to the pane,
+        // which the read has already updated itself.
+        if (row.Kind == CloudObjectKind.Mailbox) { _ = await LoadExchangeDetailAsync(row, mailbox: true); return; }
         if (row.Kind == CloudObjectKind.Group && row.Source == CloudObjectSource.Exchange)
         {
-            await LoadExchangeDetailAsync(row, mailbox: false);
+            _ = await LoadExchangeDetailAsync(row, mailbox: false);
             return;
         }
+
+        // The row reference alone cannot tell a superseded load from a current one, because re-selecting the
+        // SAME row is an ordinary event: Save, Revert and enable/disable all call SetTarget(row) to re-read.
+        // That bumps the token, clears the lists and starts a second load — and the first load's
+        // continuation then sailed past a reference check that still matched, appending its results beside
+        // the new ones. Every licence, membership and member rendered twice.
+        var token = _detailToken;
+        bool Current() => token == _detailToken && ReferenceEquals(_currentTarget, row);
 
         IsBusy = true;
         try
         {
             var sections = await _graph.GetObjectDetailAsync(row.Id, row.Kind);
-            if (!ReferenceEquals(_currentTarget, row)) return; // selection moved on
+            if (!Current()) return; // selection moved on
             if (sections.Count > 0)
             {
                 UnwireSections();
@@ -595,7 +630,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
                 if (!string.IsNullOrEmpty(upn))
                 {
                     var info = await _graph.GetUserByUpnAsync(upn);
-                    if (!ReferenceEquals(_currentTarget, row)) return;
+                    if (!Current()) return;
                     if (info is not null)
                     {
                         _usageLocation = info.UsageLocation;
@@ -617,7 +652,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
                 CanAddMembers = !string.Equals(origin, "Synced", StringComparison.OrdinalIgnoreCase) && !isDynamic;
 
                 var members = await _graph.GetGroupMembersAsync(row.Id);
-                if (!ReferenceEquals(_currentTarget, row)) return;
+                if (!Current()) return;
                 foreach (var m in members.Take(DisplayCap)) Members.Add(m);
                 HasMembers = Members.Count > 0;
                 if (members.Count > DisplayCap) Status = TooManyToShow(members.Count, "members");
@@ -626,7 +661,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
             {
                 // Devices can be group members too — load their memberships so they can be managed here.
                 var groups = await _graph.GetObjectMemberOfAsync(row.Id, row.Kind);
-                if (!ReferenceEquals(_currentTarget, row)) return;
+                if (!Current()) return;
                 foreach (var g in groups.Take(DisplayCap)) Memberships.Add(g);
                 HasMemberships = Memberships.Count > 0;
                 if (groups.Count > DisplayCap) Status = TooManyToShow(groups.Count, "memberships");
@@ -635,9 +670,9 @@ public partial class CloudObjectDetailViewModel : ObservableObject
         catch (Exception ex)
         {
             AppLog.Instance.Warn("Could not load full cloud details: " + ex.Message);
-            if (ReferenceEquals(_currentTarget, row)) Status = "Could not load full details: " + ex.Message;
+            if (Current()) Status = "Could not load full details: " + ex.Message;
         }
-        finally { if (ReferenceEquals(_currentTarget, row)) IsBusy = false; }
+        finally { if (Current()) IsBusy = false; }
     }
 
     /// <summary>
@@ -647,9 +682,10 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     /// </summary>
     /// <param name="identityOverride">Addresses this read directly instead of resolving it from the row. Used
     /// after a save, where changing the alias may have rewritten the address the row still carries.</param>
-    /// <returns>False only when the read itself failed. A read superseded by another selection reports true:
-    /// the pane has moved on, and its caller must not act on a target that is no longer on screen.</returns>
-    private async Task<bool> LoadExchangeDetailAsync(CloudObjectRow row, bool mailbox, string? identityOverride = null)
+    /// <returns>Which of the three outcomes in <see cref="ExchangeRead"/> happened. Only
+    /// <see cref="ExchangeRead.Loaded"/> means the sections on screen describe <paramref name="row"/>, and
+    /// only then may a caller copy them back into it.</returns>
+    private async Task<ExchangeRead> LoadExchangeDetailAsync(CloudObjectRow row, bool mailbox, string? identityOverride = null)
     {
         // A group is addressed by its SMTP; a mailbox may be reached by UPN too.
         var identity = identityOverride ?? (mailbox
@@ -660,7 +696,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
             Status = mailbox
                 ? "This mailbox has no address, so Exchange can't be asked about it."
                 : "This group has no email address, so Exchange can't be asked about it.";
-            return false;
+            return ExchangeRead.Failed;
         }
 
         var token = _detailToken;
@@ -670,7 +706,7 @@ public partial class CloudObjectDetailViewModel : ObservableObject
             var sections = mailbox
                 ? await _exchange.GetMailboxDetailAsync(identity)
                 : await _exchange.GetDistributionGroupDetailAsync(identity);
-            if (token != _detailToken || !ReferenceEquals(_currentTarget, row)) return true; // superseded
+            if (token != _detailToken || !ReferenceEquals(_currentTarget, row)) return ExchangeRead.Superseded;
             UnwireSections();
             Sections.Clear();
             foreach (var s in sections) Sections.Add(s);
@@ -684,15 +720,18 @@ public partial class CloudObjectDetailViewModel : ObservableObject
             // For a mailbox this addresses the usage read exactly. For a group it addresses the WRITE, which
             // matters because changing the alias can rewrite the primary address the row was found by.
             if (mailbox) _mailboxExchangeGuid = guid; else _exchangeGroupGuid = guid;
-            return true;
+            return ExchangeRead.Loaded;
         }
         catch (Exception ex)
         {
             AppLog.Instance.Warn($"Could not load Exchange details for '{identity}': {ex.Message}");
+            // A failure on a read the pane has already moved past is not this row's failure to report, and
+            // Failed is what tells the caller "still your row, say something" — so separate them here rather
+            // than leaving each caller to re-check.
+            if (token != _detailToken || !ReferenceEquals(_currentTarget, row)) return ExchangeRead.Superseded;
             // The summary built from the list row stays on screen, so the pane still shows something true.
-            if (token == _detailToken)
-                Status = (mailbox ? "Could not load mailbox details: " : "Could not load group details: ") + ex.Message;
-            return false;
+            Status = (mailbox ? "Could not load mailbox details: " : "Could not load group details: ") + ex.Message;
+            return ExchangeRead.Failed;
         }
         finally { if (token == _detailToken) IsBusy = false; }
     }

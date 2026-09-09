@@ -68,7 +68,8 @@ jobs:
       - name: Run test suites (WPF, single-threaded apartment)
         shell: pwsh
         run: |
-          $suites = 'test-tabselection', 'test-paste-dialog', 'test-search-dialog', 'test-editpane-race'
+          $suites = 'test-tabselection', 'test-paste-dialog', 'test-search-dialog', 'test-editpane-race',
+                    'test-cloudpane-race'
           $failed = @()
           foreach ($s in $suites) {
             $path = "./app/build/$s.ps1"
