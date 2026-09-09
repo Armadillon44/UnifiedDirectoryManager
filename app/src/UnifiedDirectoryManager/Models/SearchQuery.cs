@@ -111,11 +111,13 @@ public sealed class SearchQuery
 
     private static string ObjectClassFilter(AdObjectType type) => type switch
     {
-        // person but not computer (computers derive from user)
+        // person but not computer (computers derive from user), and not a mail contact either
         AdObjectType.User => "(&(objectCategory=person)(objectClass=user))",
         AdObjectType.Computer => "(objectCategory=computer)",
         AdObjectType.Group => "(objectCategory=group)",
-        AdObjectType.Contact => "(objectCategory=contact)",
+        // A contact's defaultObjectCategory is CN=Person, so "(objectCategory=contact)" matched NOTHING and
+        // the Contacts option in Advanced Search always returned an empty result.
+        AdObjectType.Contact => "(&(objectCategory=person)(objectClass=contact))",
         AdObjectType.OrganizationalUnit => "(objectCategory=organizationalUnit)",
         _ => "(|(objectCategory=person)(objectCategory=computer)(objectCategory=group))",
     };

@@ -255,13 +255,24 @@ public sealed class DirectoryService : IDirectoryService
     {
         return Task.Run<IReadOnlyList<AdObjectRow>>(() =>
         {
+            // objectCategory is NOT the object's class. A contact's defaultObjectCategory is CN=Person, so
+            // "(objectCategory=contact)" matches nothing at all, and "(objectCategory=person)" matches mail
+            // contacts as well as user accounts. Both have to be narrowed by objectClass.
+            //
+            // The category is still worth keeping in each filter: it is indexed and single-valued, so it is
+            // what makes the search cheap. objectClass is neither.
             var categoryFilter = type switch
             {
                 AdObjectType.Group => "(objectCategory=group)",
                 AdObjectType.Computer => "(objectCategory=computer)",
-                AdObjectType.Contact => "(objectCategory=contact)",
-                AdObjectType.User => "(objectCategory=person)",
-                // Unknown / Any: users, groups and computers (valid group members)
+                AdObjectType.Contact => "(&(objectCategory=person)(objectClass=contact))",
+                // Not just objectCategory=person: that is a mail contact too, and this list feeds every
+                // "Select manager" picker and the CSV importer's manager lookup, where binding a contact
+                // where a user account was meant writes a manager nobody can log in as.
+                AdObjectType.User => "(&(objectCategory=person)(objectClass=user))",
+                // Unknown / Any: whatever can be a group member — users, contacts, computers and groups.
+                // Contacts belong here: AD accepts one as a distribution-group member and as managedBy, and
+                // both of those pickers open in this mode.
                 _ => "(|(objectCategory=person)(objectCategory=group)(objectCategory=computer))",
             };
             var nameMatch = string.IsNullOrWhiteSpace(text)
@@ -875,29 +886,142 @@ public sealed class DirectoryService : IDirectoryService
     public Task RemoveMembersAsync(string groupDn, IReadOnlyList<string> memberDns, CancellationToken cancellationToken = default) =>
         Task.Run(() => ModifyMembers(groupDn, memberDns, add: false), cancellationToken);
 
-    /// <summary>Adds/removes members on a single group's <c>member</c> attribute in one commit.</summary>
+    /// <summary>Adds/removes members on a single group's <c>member</c> attribute.</summary>
     private void ModifyMembers(string groupDn, IReadOnlyList<string> memberDns, bool add)
     {
-        using var group = Required.CreateEntry(groupDn);
-        var members = group.Properties["member"];
-        var changed = 0;
+        var wanted = memberDns.Where(dn => !string.IsNullOrWhiteSpace(dn)).Select(dn => dn.Trim()).ToList();
+        if (wanted.Count == 0) return;
+        ApplyMemberChange(groupDn, wanted, add);
+        AppLog.Instance.Info(
+            $"{(add ? "Added" : "Removed")} {wanted.Count} member(s) {(add ? "to" : "from")} group {groupDn}.");
+    }
+
+    // LDAP result codes for the two ways a membership write can fail by being unnecessary (RFC 4511 §4.1.9).
+    private const int LdapNoSuchAttribute = 16;        // removing a value the attribute does not hold
+    private const int LdapAttributeOrValueExists = 20; // adding a value it already holds
+
+    /// <summary>
+    /// True when the directory refused a membership write because it already agrees with what was asked.
+    ///
+    /// This is the whole correctness model for membership writes. The old code decided beforehand, with
+    /// <c>PropertyValueCollection.Contains</c>, and got it wrong twice over: that comparison is ordinal
+    /// CASE-SENSITIVE while AD compares distinguished names case-insensitively, and the property cache it
+    /// searched holds only the first ~1500 values of a large group. A DN that arrived in different casing —
+    /// from a CSV, from Entra's onPremisesDistinguishedName, from an older export — made a REMOVE find
+    /// nothing, skip silently, and report success while the person was still in the group.
+    ///
+    /// Asking the directory instead of guessing cannot be wrong about either. Takes an int rather than a
+    /// ResultCode so the rule can be exercised from the test suites, which run under a PowerShell that ships
+    /// an older System.DirectoryServices.Protocols and cannot load this assembly's version of that type.
+    /// </summary>
+    internal static bool IsMembershipNoOp(int resultCode, bool add) =>
+        add ? resultCode == LdapAttributeOrValueExists
+            : resultCode == LdapNoSuchAttribute;
+
+    /// <summary>
+    /// Applies one directed add/delete of <paramref name="memberDns"/> on <paramref name="groupDn"/>'s
+    /// <c>member</c> attribute. A directed LDAP modify, not a read-modify-write: the DC compares the DNs
+    /// itself, case-insensitively and against the whole attribute rather than a truncated client-side cache.
+    /// </summary>
+    private void ApplyMemberChange(string groupDn, IReadOnlyList<string> memberDns, bool add)
+    {
+        using var conn = Required.CreateLdapConnection();
+        ApplyMembershipPolicy(
+            memberDns, add,
+            send: batch => conn.SendRequest(MemberModify(groupDn, batch, add)),
+            resultCodeOf: ex => ex is Protocols.DirectoryOperationException doe && doe.Response is not null
+                ? (int)doe.Response.ResultCode
+                : null,
+            describe: Friendly,
+            note: message => AppLog.Instance.Info($"{groupDn}: {message}"));
+    }
+
+    /// <summary>
+    /// How a membership write decides what counts as done, separated from the LDAP transport so it can be
+    /// exercised without a domain controller — this is the app's most dangerous write path and the one whose
+    /// failures are silent.
+    ///
+    /// The whole set goes in one request first, because that is one round trip for the ordinary case. If the
+    /// DC rejects it, the request is retried ONE MEMBER AT A TIME: a single bad value aborts an entire LDAP
+    /// modify, and the old read-modify-write did one commit at the end, so one duplicate DN threw away every
+    /// other add in the call. Per member, each is judged on its own and the good ones still land.
+    ///
+    /// A member that is already in the state asked for is success. The caller asked for a state, not for an
+    /// event, and treating "already a member" as a failure would make re-running a termination scenario —
+    /// which is exactly what an operator does after a partial failure — report broken.
+    /// </summary>
+    /// <param name="send">Performs one modify carrying the given values. Throws on refusal.</param>
+    /// <param name="resultCodeOf">The LDAP result code behind an exception, or null if it was not one.</param>
+    /// <param name="describe">Renders an exception for an operator.</param>
+    /// <param name="note">Records something worth knowing that is not a failure.</param>
+    internal static void ApplyMembershipPolicy(
+        IReadOnlyList<string> memberDns,
+        bool add,
+        Action<IReadOnlyList<string>> send,
+        Func<Exception, int?> resultCodeOf,
+        Func<Exception, string> describe,
+        Action<string> note)
+    {
+        if (memberDns.Count == 0) return;
+
+        try
+        {
+            send(memberDns);
+            return;
+        }
+        catch (Exception ex)
+        {
+            if (memberDns.Count == 1)
+            {
+                // Nothing to salvage by retrying a single value, so answer now: either the directory already
+                // agreed, or this is a real failure and the caller should see the directory's own words.
+                if (IsMembershipNoOp(resultCodeOf(ex) ?? -1, add)) return;
+                throw;
+            }
+            note($"a batched membership change was rejected ({resultCodeOf(ex)?.ToString() ?? describe(ex)}); "
+                 + "retrying one member at a time so the rest still apply");
+        }
+
+        var failures = new List<string>();
+        var applied = 0;
         foreach (var memberDn in memberDns)
         {
-            if (string.IsNullOrWhiteSpace(memberDn)) continue;
-            if (add)
+            try
             {
-                if (!members.Contains(memberDn)) { members.Add(memberDn); changed++; }
+                send(new[] { memberDn });
+                applied++;
             }
-            else
+            catch (Exception ex) when (IsMembershipNoOp(resultCodeOf(ex) ?? -1, add))
             {
-                if (members.Contains(memberDn)) { members.Remove(memberDn); changed++; }
+                // Already in the state asked for.
+            }
+            catch (Exception ex)
+            {
+                failures.Add($"{NameResolver.RdnFallback(memberDn)}: {describe(ex)}");
             }
         }
-        if (changed > 0)
+
+        if (failures.Count == 0) return;
+
+        // Say what DID happen as well as what did not: the caller is about to tell an operator whether the
+        // group is now what they asked for, and "some of it worked" is the answer they need.
+        throw new InvalidOperationException(
+            $"Could not {(add ? "add" : "remove")} {failures.Count} of {memberDns.Count} member(s) "
+            + $"{(add ? "to" : "from")} the group ({applied} succeeded). "
+            + string.Join("; ", failures.Take(5))
+            + (failures.Count > 5 ? $" (+{failures.Count - 5} more)" : string.Empty));
+    }
+
+    /// <summary>One add-values or delete-values modify against a group's <c>member</c> attribute.</summary>
+    private static Protocols.ModifyRequest MemberModify(string groupDn, IReadOnlyList<string> memberDns, bool add)
+    {
+        var mod = new Protocols.DirectoryAttributeModification
         {
-            group.CommitChanges();
-            AppLog.Instance.Info($"{(add ? "Added" : "Removed")} {changed} member(s) {(add ? "to" : "from")} group {groupDn}.");
-        }
+            Name = "member",
+            Operation = add ? Protocols.DirectoryAttributeOperation.Add : Protocols.DirectoryAttributeOperation.Delete,
+        };
+        foreach (var dn in memberDns) mod.Add(dn);
+        return new Protocols.ModifyRequest(groupDn, mod);
     }
 
     /// <summary>
@@ -1022,21 +1146,19 @@ public sealed class DirectoryService : IDirectoryService
         }, cancellationToken);
     }
 
+    /// <summary>
+    /// The inverse of <see cref="ModifyMembers"/>: one member, several groups. Same correctness model — the
+    /// directory decides whether the change is needed, so a differently-cased DN and a group with more than
+    /// ~1500 members both behave the same as the easy case.
+    /// </summary>
     private void ModifyGroupMembership(string memberDn, IReadOnlyList<string> groupDns, bool add)
     {
+        if (string.IsNullOrWhiteSpace(memberDn)) return;
+        var member = memberDn.Trim();
         foreach (var groupDn in groupDns)
         {
             if (string.IsNullOrWhiteSpace(groupDn)) continue;
-            using var group = Required.CreateEntry(groupDn);
-            var members = group.Properties["member"];
-            if (add)
-            {
-                if (!members.Contains(memberDn)) { members.Add(memberDn); group.CommitChanges(); }
-            }
-            else
-            {
-                if (members.Contains(memberDn)) { members.Remove(memberDn); group.CommitChanges(); }
-            }
+            ApplyMemberChange(groupDn.Trim(), new[] { member }, add);
         }
     }
 
