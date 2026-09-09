@@ -20,7 +20,20 @@ public sealed class BulkUserCsvImporter
         _graph = graph;
     }
 
-    private enum Field { First, Middle, Last, Initials, Sam, Upn, Email, Manager, CloudGroups, IssueTap, Attribute, Unknown }
+    private enum Field
+    {
+        First, Middle, Last, Initials, Sam, Upn, Email, Manager, CloudGroups, IssueTap, Attribute,
+
+        /// <summary>
+        /// A real AD attribute that this importer must not write. Separate from <see cref="Unknown"/>
+        /// because the operator needs to be told something different: the column WAS understood, and it was
+        /// skipped on purpose. "Isn't a recognized field" would send them off to fix a spelling that is
+        /// already right.
+        /// </summary>
+        NotWritable,
+
+        Unknown,
+    }
 
     /// <summary>Outcome of a pre-import format check: <see cref="Errors"/> block the import; <see cref="Warnings"/> are advisory.</summary>
     public sealed record CsvFormatCheck(IReadOnlyList<string> Errors, IReadOnlyList<string> Warnings)
@@ -88,6 +101,15 @@ public sealed class BulkUserCsvImporter
         if (unknown.Count > 0)
             warnings.Add("These columns aren’t recognized and will be ignored: " + string.Join(", ", unknown) + ".");
 
+        // Named one at a time, before the import runs, because each has its own reason and this is the check
+        // that saves an operator from re-importing the app's own export and watching every row fail.
+        for (var i = 0; i < headers.Count; i++)
+        {
+            if (map[i].Field != Field.NotWritable) continue;
+            warnings.Add($"Column “{headers[i]}” can’t be set when creating a user — "
+                         + $"{WhyNotWritable(map[i].Ldap!)}. It will be ignored.");
+        }
+
         var ragged = rows.Count(r => r.Count > headers.Count);
         if (ragged > 0)
             warnings.Add($"{ragged} row(s) have more values than columns — check for unquoted commas. Extra values are ignored.");
@@ -127,6 +149,10 @@ public sealed class BulkUserCsvImporter
                     case Field.Manager: await ResolveManagerAsync(row, value, ct); break;
                     case Field.CloudGroups: await ResolveCloudGroupsAsync(row, value, ct); break;
                     case Field.Attribute: row.AttributeOverrides[map[c].Ldap!] = value; break;
+                    case Field.NotWritable:
+                        row.Warnings.Add($"Column “{headers[c]}” can’t be set when creating a user — "
+                                         + $"{WhyNotWritable(map[c].Ldap!)}. Ignored.");
+                        break;
                     case Field.Unknown:
                         row.Warnings.Add($"Column “{headers[c]}” isn’t a recognized field — ignored.");
                         break;
@@ -173,7 +199,31 @@ public sealed class BulkUserCsvImporter
 
         // Anything else: try to treat the header as an attribute (friendly name or raw lDAPDisplayName).
         var ldap = AttributeCatalog.Ldap(header.Trim()); // returns the input unchanged if unknown
-        return AttributeCatalog.IsKnown(ldap) ? (Field.Attribute, ldap) : (Field.Unknown, null);
+        if (!AttributeCatalog.IsKnown(ldap)) return (Field.Unknown, null);
+        return WhyNotWritable(ldap) is null ? (Field.Attribute, ldap) : (Field.NotWritable, ldap);
+    }
+
+    /// <summary>
+    /// Why this importer will not write <paramref name="ldapName"/> when creating a user, or null when it will.
+    ///
+    /// The importer used to accept any attribute the catalog knew about. The list export's first column is
+    /// "Name", which the catalog maps to the system-owned RDN attribute <c>name</c>: exporting a list,
+    /// editing it and importing it back — the obvious thing to try — put that column into the create
+    /// request, the DC rejected the write, and EVERY row failed with one opaque LDAP error. "Distinguished
+    /// name", "Member of" and "When created" are all in that export too.
+    ///
+    /// Multi-valued and DN-valued attributes are refused for a different reason: an override is a single
+    /// string, so a cell holding several proxy addresses would go in as one literal value, and a cell
+    /// holding a person's name where a distinguished name is required fails the row. Refusing and saying so
+    /// beats writing something quietly wrong into the directory.
+    /// </summary>
+    private static string? WhyNotWritable(string ldapName)
+    {
+        var meta = AttributeCatalog.Meta(ldapName);
+        if (meta.IsReadOnly) return "the directory owns this value and will not accept a write";
+        if (meta.IsMultiValued) return "it holds several values, and a CSV cell is one";
+        if (meta.IsDnValued) return "it needs a distinguished name, which this importer cannot resolve here";
+        return null;
     }
 
     private static bool ParseBool(string value) =>
