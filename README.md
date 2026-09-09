@@ -8,6 +8,70 @@ the things ADUC never had: reusable **new-user templates**, GUI **advanced searc
 Built with **WPF on .NET 10**. Ships as a **self-contained, single-file `.exe`** for **win-x64** and
 **win-arm64** — no .NET install required on the target machine (Windows 10 / 11).
 
+> **v2.3.2 — a correctness release. 24 defects found by a full code review, fixed and covered by tests.**
+>
+> No new features. Everything here is something the app was already doing wrong, most of it quietly. The
+> review swept the whole codebase, confirmed 28 defects by hand, and this release closes 24 of them; the
+> four left are documented with reasons in `docs/code-review-2.3.1-findings.md`.
+>
+> **Operations that said they had worked, and had not.**
+> - **Removing somebody from a group could silently do nothing.** The check for whether a change was needed
+>   compared distinguished names case-sensitively, while AD compares them case-insensitively. A name that
+>   arrived in different casing — from a CSV, from Entra, from an older export — made the removal skip and
+>   report success while the person stayed in the group. Adding one duplicate could also throw away every
+>   other add in the same batch. Membership changes now go straight to the directory and let it decide.
+> - **"Remove all cloud groups" reported success when the membership read had failed** or been cut short,
+>   so a termination could report a clean finish over groups nobody had looked at.
+> - **Cloud member and membership lists stopped at 200** and presented that as the whole set.
+> - **A cancelled scenario was recorded as a success**, including one interrupted part-way through a target.
+> - **Editing two objects quickly could apply one object's changes to the other's** distinguished name.
+>
+> **Things that hung, or could not be stopped.**
+> - **A hung Exchange Online call blocked every Exchange feature** for the rest of the session. The timeout
+>   that was supposed to prevent that could never fire, and the Cancel buttons could not reach it.
+> - **Closing the window during an Exchange operation froze the app** for up to three minutes on the way out.
+> - **The Entra Connect sync had no time limit at all**, so an unresponsive server stalled New User, Copy
+>   User and Bulk Create until the app was killed. It now gives up, says so, and stops the helper it started.
+>
+> **Wrong identity.**
+> - **An Exchange Online session outlived the administrator it belonged to.** Signing out and back in as a
+>   different admin in the same tenant kept the first admin's session, so mailbox and distribution-list
+>   changes ran with their permissions and under their name in the audit log.
+> - **Changing the tenant kept the previous tenant's signed-in account**, which is what the check above
+>   depends on.
+>
+> **Data and input that went missing.**
+> - **A damaged settings file destroyed every pinned favourite.** Settings are now written to a temporary
+>   file and renamed into place, and an unreadable one is kept aside and reported at startup rather than
+>   quietly replaced with defaults.
+> - **Pasting an Outlook address line silently dropped people.** `"Doe, Jane" <jane@x.com>, John Smith
+>   <john@y.com>` kept only the last address, and the lost person was not counted anywhere.
+> - **Advanced Search's "pick OUs" threw away the scope you already had** — it opened with nothing ticked
+>   and returned nothing.
+> - **Favourites vanished after reconnecting**, and pinning went on editing a list that was no longer shown.
+> - **Late error messages were thrown away** when no window was open — "Password not set", a failed import,
+>   a failed sync.
+>
+> **Wrong thing on screen, or in the request.**
+> - **Advanced Search's "Contacts" always came back empty**, and "Users" quietly included mail contacts —
+>   which is how a contact could be set as somebody's manager.
+> - **Re-importing the app's own CSV export failed every row.** Columns the directory owns, like `Name`, are
+>   now named and skipped before the import runs instead of being sent to the domain controller.
+> - **Copy user and New User disagreed about the same template**, because Copy user had its own copy of the
+>   naming-pattern code. It had drifted, and could write a user principal name with a trailing space.
+> - **Unticking every cloud group still forced the Entra sync on**, with its checkbox disabled, and then
+>   refused to create the user without an Entra Connect server for a sync nothing needed.
+> - **Re-selecting the same object doubled its licences, memberships and members** on screen.
+> - **An ambiguous mailbox lookup returned a mailbox stitched together from several**, and the convert and
+>   forwarding actions then acted on it.
+> - **Favourites and the cloud sections could send an internal marker to a domain controller** as if it were
+>   a real name, from New User, Bulk Create and Advanced Search.
+>
+> **Under the hood.** The app now has 19 test suites and 942 assertions, run by GitHub Actions on
+> every push. Every fix above was checked by reverting it and confirming the tests caught it. One defect
+> still got through that — see "What a real domain controller changed" in the findings document, which is
+> worth reading before trusting a test that stands in for a live system.
+>
 > **v2.3.1 — an Employee ID at creation, and a favourites fix.**
 > - **Employee ID** (`employeeID`) can now be set while creating a user, on both the **New User** wizard and
 >   **Copy user…**. It was already editable afterwards, searchable, a list column, and importable per row from

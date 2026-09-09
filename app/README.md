@@ -342,6 +342,15 @@ and written to the group's `member` attribute.
 The same three buttons appear on an Entra group's Members tab in the cloud pane, and in the
 **Distribution group members** window for an Exchange group.
 
+*(2.3.2.)* Membership changes are handed to the directory rather than worked out here first, which
+makes them safe to repeat: adding somebody who is already a member, or removing somebody who is not
+one, succeeds quietly instead of reporting an error. Re-running a scenario that partly applied is
+therefore fine. It also fixes a silent failure — the old check compared distinguished names
+letter-for-letter while AD ignores case, so a name that arrived in a different casing (from a CSV,
+from Entra, from an older export) made a removal skip and still report success. And one duplicate no
+longer costs the rest of a batch: if the directory refuses the group as a whole, each member is
+retried on its own, and anything that does fail is named along with how many succeeded.
+
 ### Paste a list of members
 
 *(New in 2.3.0.)* **Paste a list…** sits beside *Add members…* on an AD group, an Entra group and a
@@ -467,6 +476,11 @@ template out as a `.json` file for someone else to Import.
 
 The New User wizard, the template editor and the New Group dialog all have a **Browse…** button that
 opens a directory-tree picker, so you choose the target OU/container instead of typing its DN.
+
+Advanced search's **pick OUs** uses the same tree with tick-boxes. *(Fixed in 2.3.2: it opened with
+nothing ticked and returned nothing, so the search scope you already had was discarded. It now opens
+with your current OUs ticked and keeps them — including ones further down the tree than you have
+expanded, and ones the directory no longer has, which are handed back untouched rather than dropped.)*
 
 ## Copy user
 
@@ -599,6 +613,13 @@ the dialog.
 WinRM must be enabled on the Connect server and the account must be allowed to run the ADSync cmdlet.
 From an Entra-only client the "current user" option typically won't authenticate, so supply on-prem
 credentials.
+
+*(2.3.2.)* The sync gives up after five minutes and stops the helper process it started. It used to
+wait forever, so an unresponsive Connect server stalled New User, Copy User and Bulk Create until the
+app was killed; Bulk Create's own Cancel can now reach it too. Either way the report says the sync
+**may already have started on the server** rather than calling it a failure — the command only asks
+for a cycle to be queued, so a sync can well be running by the time the app stops waiting. Check
+Entra Connect before starting another one.
 
 ## Entra ID (cloud)
 
@@ -938,6 +959,11 @@ Everything lives under `%APPDATA%\UnifiedDirectoryManager\` and follows your Win
 - `Logs\` — the application log.
 - `OperationLogs\` — scenario operation logs and group-deletion records. Change this folder under
   **Settings ▸ Logs**; leave it blank to use the default.
+
+*(2.3.2.)* `settings.json` is written to a temporary file and renamed into place, so a crash or a full
+disk cannot leave it half-written — which used to destroy every pinned favourite. If it cannot be read
+at startup it is kept as `settings.bad-1.json` and the app says so, rather than silently starting from
+defaults and overwriting it. If you see that message, the old file is still there to read by hand.
 
 Passwords are never stored here. Credentials go to the Windows Credential Manager, and the Entra
 sign-in to a DPAPI-encrypted token cache.
