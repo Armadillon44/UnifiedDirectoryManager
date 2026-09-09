@@ -32,7 +32,7 @@ they have landed before repeating any of it.
 | **F6** | The Exchange session survives a same-tenant admin switch | **Fixed** | `d6c8b65`. The session records which signed-in account it belongs to and is dropped when that changes, sign-out included |
 | **F18** | Re-targeting the same cloud row lets a superseded load double every list | **Fixed** | `c18a81d`. `LoadDetailAsync` captures `_detailToken` and checks it alongside the row reference |
 | **F19** | A superseded post-save re-read stamps the new selection's values onto the old row | **Fixed** | `c18a81d`. The read now returns Loaded / Failed / Superseded, and only Loaded permits writing the sections back into a row |
-| **F5** | Membership writes silently skip, or lose the whole batch | **Fixed** | `4e9fbe1`. Directed LDAP modify instead of a read-modify-write: the DC compares the DNs, case-insensitively and against the whole attribute. "Already a member" is success, and a rejected batch retries per member so one bad value no longer takes the others with it. The policy is extracted as `ApplyMembershipPolicy` so it can be driven without a DC |
+| **F5** | Membership writes silently skip, or lose the whole batch | **Fixed** | `4e9fbe1`. Directed LDAP modify instead of a read-modify-write: the DC compares the DNs, case-insensitively and against the whole attribute. "Already a member" is success, and a rejected batch retries per member so one bad value no longer takes the others with it. The policy is extracted as `ApplyMembershipPolicy` so it can be driven without a DC. **Then corrected in `a468962` after live testing — see "What a real domain controller changed" below** |
 | **F10** | Contact filter matches nothing; User filter also matches contacts | **Fixed** | `4e9fbe1`. Both narrowed by `objectClass` in both places that define them. Note the finding was wrong about where the Contact half bites — nothing opens the picker in Contact mode; it is Advanced Search. Any/Unknown deliberately still admits contacts, which AD accepts as group members |
 | **F11** | A pasted quoted, comma-containing name collapses to its last address | **Fixed** | `33063be`. Commas are found outside quoted names and angle-bracketed addresses, then pieces carrying no address are rejoined to the one they belong to — the unquoted `Doe, Jane <j@x.com>` form needed that second half |
 | **F12** | CSV import maps read-only attributes; re-importing the app's own export fails the batch | **Fixed** | `8a98307`. Read-only, multi-valued and DN-valued columns are classified `NotWritable` and named with a reason, which is deliberately a different message from "unrecognised". Correction: a *bare* export is already refused earlier for having no name column; the shape that reaches the create is an export with First name visible |
@@ -43,6 +43,44 @@ they have landed before repeating any of it.
 | **F27** | `Alert` throws instead of showing when no window exists | **Fixed** | `85dfa4a`. Owner-less when there is no owner, and `Owner` itself no longer assumes `Application.Current` |
 | **F28** | The multi-select OU picker ignores its seeded selection | **Fixed** | `85dfa4a`. The window holds the selection rather than deriving it from the loaded tree, and the seed is carried into `TreeNodeViewModel` so nodes arrive ticked whenever they load. A seeded OU deeper than the loaded tree — or one the directory no longer has — survives to OK |
 | — | *the four below* | **Deferred, deliberately** | see the next section |
+
+## What a real domain controller changed
+
+Everything in this review was fixed and tested against fakes. One defect survived that entirely, and it is
+worth recording how.
+
+**F5's idempotency guard accepted the wrong result code.** It treated LDAP code 20
+(`attributeOrValueExists`) as "already a member", because that is what RFC 4511 implies. Active Directory
+answers **68** (`entryAlreadyExists`) instead — the code meant for adding an ENTRY that already exists —
+which is why the operator saw "The object exists." Adding somebody to a group they were already in was
+reported as a failure. Nothing was written wrongly; the app simply said the write had failed when it had
+merely been unnecessary. Fixed in `a468962`.
+
+**Why no test caught it.** The suite drove the policy through a scripted sender that refused calls with
+whatever code the TEST supplied — so it proved the guard handled code 20 correctly, which it did, and said
+nothing about whether 20 was the right code to handle. The mutation checks passed for the same reason. A
+fake cannot tell you what the real system says; it can only tell you that you handled what you expected.
+Where a rule encodes an assumption about an EXTERNAL system's behaviour, that assumption needs one live
+observation, and the test is only worth as much as that observation.
+
+The fix now reads the DC's extended error as well as the result code, so an unexpected code carrying an
+unmistakable explanation is still understood.
+
+**Verified live against a domain controller** (2026-09-09, dev build):
+
+| What was done | Result |
+|---|---|
+| Add a user to a group they are already in | Reported success, no error |
+| Remove a user from a group they are not in (via Bulk Edit ▸ Remove from groups) | Reported success, no error |
+
+Note the limit on the second row: "reported success" does not distinguish the guard catching a refusal from
+AD accepting the delete-value modify without objecting at all. Either is correct behaviour, but it means the
+remove-side markers (`NO_ATTRIBUTE_OR_VAL`, `00000561`) are not confirmed to have ever fired.
+
+Still not live-tested: a removal where the DN's casing differs from what AD stores, which is the case F5 was
+originally about.
+
+---
 
 ## The four that were left, and why
 
