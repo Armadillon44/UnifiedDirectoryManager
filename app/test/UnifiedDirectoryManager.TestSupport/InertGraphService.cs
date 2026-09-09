@@ -18,7 +18,13 @@ public sealed class InertGraphService : IGraphService
 
     public bool IsConfigured => false;
     public bool IsSignedIn => false;
-    public string? SignedInAccount => null;
+
+    /// <summary>
+    /// Settable, unlike everything else here, because the Exchange channel keys its live session on WHO is
+    /// signed in — a test has to be able to change the admin without a tenant. Null by default, which is
+    /// what the view-model tests that use this class already expect.
+    /// </summary>
+    public string? SignedInAccount { get; set; }
     public void Configure(string tenantId, string clientId) => throw Unused();
     public Task SignInAsync(CancellationToken cancellationToken = default) => throw Unused();
     public void SignOut() => throw Unused();

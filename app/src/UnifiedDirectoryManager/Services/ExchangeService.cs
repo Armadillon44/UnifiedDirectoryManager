@@ -39,6 +39,16 @@ public sealed class ExchangeService : IExchangeService, IDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private string? _organization;
+
+    /// <summary>
+    /// The signed-in account the live session was established for. The pwsh host holds THAT admin's
+    /// Exchange token, so every write runs under their permissions and audit identity. Keying the session on
+    /// the organization alone let a sign-out and a sign-in as a different admin in the same tenant keep the
+    /// previous admin's session alive: <see cref="Configure"/> early-returns when the organization is
+    /// unchanged, and nothing else ever dropped it.
+    /// </summary>
+    private string? _sessionAccount;
+
     private Process? _pwsh;
     private readonly StringBuilder _stderr = new();
     private bool _connected;
@@ -66,9 +76,24 @@ public sealed class ExchangeService : IExchangeService, IDisposable
 
     public void Disconnect()
     {
-        _gate.Wait();
-        try { KillLocked(); }
-        finally { _gate.Release(); }
+        // NEVER block the caller. Both callers run on the UI thread — Configure() when the tenant changes,
+        // and Dispose() from App.OnExit — and an in-flight mailbox listing holds the gate for up to the
+        // 180-second list budget. Waiting on it froze a dead window at shutdown for that long.
+        //
+        // Taking the gate is still preferred: it lets the polite QUIT happen with no operation in flight.
+        if (_gate.Wait(0))
+        {
+            try { KillLocked(); }
+            finally { _gate.Release(); }
+            return;
+        }
+
+        // An operation holds the gate and cannot be interrupted, so abandon it. Killing the host closes the
+        // pipe, which unblocks that operation's read and surfaces to it as a failed op — the right outcome
+        // for a deliberate disconnect. The process handle is swapped atomically, so this is safe to do
+        // without the gate.
+        AppLog.Instance.Info("Disconnecting Exchange Online while an operation is in flight; abandoning it.");
+        KillLocked();
     }
 
     public async Task<MailboxInfo?> GetMailboxAsync(string identity, CancellationToken cancellationToken = default)
@@ -900,6 +925,7 @@ public sealed class ExchangeService : IExchangeService, IDisposable
 
     private async Task EnsureConnectedLockedAsync(CancellationToken ct)
     {
+        DropSessionIfAccountChangedLocked();
         if (IsConnected) return;
         if (!IsConfigured) throw new ExchangeException("Exchange Online isn't configured — set the tenant/organization first.");
 
@@ -935,7 +961,33 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             throw new ExchangeException("Connect to Exchange Online failed: " + ExchangeErrors.Friendly(resp.Error));
         }
         _connected = true;
-        AppLog.Instance.Info($"Connected to Exchange Online ({_organization}) via pwsh host.");
+        _sessionAccount = _graph.SignedInAccount;
+        AppLog.Instance.Info($"Connected to Exchange Online ({_organization}) via pwsh host as {_sessionAccount ?? "(unknown)"}.");
+    }
+
+    /// <summary>
+    /// Ends the live session when it no longer belongs to the signed-in admin, so the next operation
+    /// reconnects as whoever is signed in now.
+    ///
+    /// Who the session belongs to matters as much as which tenant it is in: the host holds ONE admin's
+    /// delegated token, and every mailbox and distribution-list write executes with that admin's permissions
+    /// and appears in the audit log under their name. The session used to be keyed on the organization
+    /// alone, so signing out and back in as a different admin in the same tenant kept the first admin's
+    /// session — Configure() early-returns on an unchanged organization, and nothing else dropped it.
+    ///
+    /// Returns true when a session was dropped; separate from EnsureConnectedLockedAsync so the rule can be
+    /// exercised without a tenant.
+    /// </summary>
+    private bool DropSessionIfAccountChangedLocked()
+    {
+        if (!IsConnected) return false;
+        if (string.Equals(_sessionAccount, _graph.SignedInAccount, StringComparison.OrdinalIgnoreCase)) return false;
+
+        AppLog.Instance.Info(
+            $"The signed-in account changed ({_sessionAccount ?? "(none)"} -> {_graph.SignedInAccount ?? "(none)"}); "
+            + "dropping the Exchange Online session.");
+        KillLocked();
+        return true;
     }
 
     private void StartProcessLocked()
@@ -978,17 +1030,28 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         _pwsh = p;
     }
 
+    /// <summary>
+    /// Stops the host process. Normally called under the gate, but the handle is swapped with
+    /// <see cref="Interlocked"/> so <see cref="Disconnect"/> can also call it while an operation holds the
+    /// gate without two callers racing to kill and dispose the same process.
+    /// </summary>
     private void KillLocked()
     {
         _connected = false;
-        var p = _pwsh;
-        _pwsh = null;
+        _sessionAccount = null;
+        var p = Interlocked.Exchange(ref _pwsh, null);
         if (p is null) return;
         try
         {
             if (!p.HasExited)
             {
                 try { p.StandardInput.WriteLine("QUIT"); p.StandardInput.Flush(); } catch { /* ignore */ }
+                // Closing stdin is what actually ends the host loop when QUIT alone is not enough: the loop's
+                // ReadLine returns null and its "if ($null -eq $line) { break }" escape fires. Without this
+                // the wait below always timed out and the kill always ran — a guaranteed 1.5-second stall on
+                // every disconnect, with the kill landing while Disconnect-ExchangeOnline was still running
+                // and leaking the server-side session.
+                try { p.StandardInput.Close(); } catch { /* ignore */ }
                 if (!p.WaitForExit(1500)) p.Kill(entireProcessTree: true);
             }
         }
@@ -1046,20 +1109,34 @@ public sealed class ExchangeService : IExchangeService, IDisposable
     private async Task<string?> ReadLineLockedAsync(TimeSpan timeout, CancellationToken ct)
     {
         var reader = _pwsh?.StandardOutput ?? throw new ExchangeException("The Exchange Online host is not running.");
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(timeout);
-        try
+
+        // StreamReader.ReadLine blocks in a native pipe read and NOTHING can interrupt it — a token passed
+        // to Task.Run only prevents the delegate from starting, so the previous version's CancelAfter did
+        // nothing at all once the read was under way. The task never completed, the catch that killed the
+        // host was unreachable, and a hung EXO cmdlet blocked forever WHILE HOLDING THE GATE: every Exchange
+        // feature queued behind it and the Cancel buttons did nothing.
+        //
+        // So race the read instead of trying to cancel it. On a timeout, killing the host closes the pipe,
+        // which is what actually ends the orphaned read.
+        var read = Task.Run(reader.ReadLine);
+        using var timer = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var expiry = Task.Delay(timeout, timer.Token);
+
+        if (await Task.WhenAny(read, expiry).ConfigureAwait(false) == read)
         {
-            return await Task.Run(() => reader.ReadLine(), cts.Token).ConfigureAwait(false);
+            timer.Cancel(); // stop the timer rather than leaving it to fire into nothing
+            return await read.ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
-        {
-            // Kill the host either way — an EXO cmdlet can't be interrupted mid-run, so abandon the process
-            // (the next operation restarts it). This unblocks the orphaned blocking ReadLine too.
-            KillLocked();
-            if (ct.IsCancellationRequested) throw;                 // user cancellation → propagate
-            throw new ExchangeException("The Exchange Online operation timed out.");
-        }
+
+        // The orphaned read completes once the pipe closes below. Observe whatever it ends with, or a fault
+        // on a task nobody awaits reaches TaskScheduler.UnobservedTaskException and is logged as a crash.
+        _ = read.ContinueWith(static x => _ = x.Exception, TaskContinuationOptions.OnlyOnFaulted);
+
+        // Kill either way — an EXO cmdlet can't be interrupted mid-run, so abandon the process (the next
+        // operation restarts it).
+        KillLocked();
+        ct.ThrowIfCancellationRequested();                          // user cancellation -> propagate
+        throw new ExchangeException("The Exchange Online operation timed out.");
     }
 
     private string DrainStderr()
@@ -1509,7 +1586,11 @@ public sealed class ExchangeService : IExchangeService, IDisposable
             $verb = if ($sp -lt 0) { $line } else { $line.Substring(0, $sp) }
             $payload = if ($sp -lt 0) { '' } else { $line.Substring($sp + 1) }
             switch ($verb) {
-                'QUIT' { try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}; break }
+                # 'exit', not 'break': in PowerShell a break inside a switch leaves the SWITCH, not the
+                # enclosing while loop, so the host went straight back to blocking on ReadLine. Every
+                # disconnect then waited out the 1.5-second grace period and ended in a kill -- which could
+                # land while Disconnect-ExchangeOnline was still running and leak the server-side session.
+                'QUIT' { try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}; exit }
                 'CONNECT' {
                     try {
                         $p = __arg $payload
