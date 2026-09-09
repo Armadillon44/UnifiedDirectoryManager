@@ -62,21 +62,95 @@ public static class PastedMemberParser
     /// recipients on ONE line, and keeping only one of them loses the rest without a trace — the worst
     /// outcome available here, because the row that survives looks perfectly correct.
     ///
-    /// A semicolon always separates. A comma separates only when every piece carries an address, because a
-    /// comma is far more often the one in "Doe, Jane".
+    /// A semicolon always separates. A comma separates only when the line carries more than one address,
+    /// because a comma is far more often the one in "Doe, Jane" than a separator.
+    ///
+    /// Both splits ignore separators inside a quoted display name or inside an angle-bracketed address, and
+    /// the comma split then rejoins the pieces it tore out of one recipient. Requiring every piece to carry
+    /// an address, as this used to, meant the standard Outlook line
+    ///
+    ///     "Doe, Jane" &lt;jane@x.com&gt;, John Smith &lt;john@y.com&gt;
+    ///
+    /// failed that test on the piece <c>"Doe</c>, stayed one term, and cleaned down to the LAST address on
+    /// it. Jane Doe disappeared: no row, and not counted as a duplicate, a drop or an unreadable line
+    /// either — which is the one outcome this class exists to prevent.
     /// </summary>
     public static IReadOnlyList<string> SplitRecipients(string? rawLine)
     {
         var s = rawLine ?? string.Empty;
+
         if (s.Contains(';'))
-            return s.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        {
+            var bySemicolon = SplitOutsideNames(s, ';');
+            if (bySemicolon.Count > 0) return bySemicolon;
+        }
 
         if (s.Count(c => c == '@') > 1)
         {
-            var parts = s.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (parts.Length > 1 && parts.All(p => p.Contains('@'))) return parts;
+            var parts = RejoinNameFragments(SplitOutsideNames(s, ','));
+            if (parts.Count > 1) return parts;
         }
         return [s];
+    }
+
+    /// <summary>
+    /// Splits on <paramref name="separator"/>, ignoring any that falls inside a quoted display name or
+    /// inside an angle-bracketed address. Empty pieces are dropped and each is trimmed, as the plain
+    /// <c>Split</c> this replaces did.
+    ///
+    /// Only the double quote opens a quoted name. An apostrophe cannot: O'Brien would put the rest of the
+    /// line inside a quote that never closes.
+    /// </summary>
+    private static List<string> SplitOutsideNames(string s, char separator)
+    {
+        var parts = new List<string>();
+        var start = 0;
+        var quoted = false;
+        var angleDepth = 0;
+
+        for (var i = 0; i < s.Length; i++)
+        {
+            var c = s[i];
+            if (c == '"') quoted = !quoted;
+            else if (quoted) continue;
+            else if (c == '<') angleDepth++;
+            else if (c == '>' && angleDepth > 0) angleDepth--;
+            else if (c == separator && angleDepth == 0)
+            {
+                parts.Add(s[start..i]);
+                start = i + 1;
+            }
+        }
+        parts.Add(s[start..]);
+
+        return parts.Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+    }
+
+    /// <summary>
+    /// Puts back together the pieces a comma split tore out of ONE recipient.
+    ///
+    /// An unquoted "Doe, Jane &lt;jane@x.com&gt;" splits into "Doe" and "Jane &lt;jane@x.com&gt;", and Outlook
+    /// writes that form as readily as the quoted one. A piece carrying no address is not a person on their
+    /// own — it is the front of the next piece's name, so it is held and joined to it.
+    ///
+    /// A trailing piece with no address IS taken as a person: nothing follows for it to belong to, and a
+    /// bare display name is a perfectly ordinary thing to paste.
+    /// </summary>
+    private static List<string> RejoinNameFragments(List<string> parts)
+    {
+        var recipients = new List<string>();
+        var pending = new List<string>();
+
+        foreach (var part in parts)
+        {
+            pending.Add(part);
+            if (!part.Contains('@')) continue; // still collecting a display name
+            recipients.Add(string.Join(", ", pending));
+            pending.Clear();
+        }
+        if (pending.Count > 0) recipients.Add(string.Join(", ", pending));
+
+        return recipients;
     }
 
     /// <summary>Strips the decoration a paste arrives with, without touching the name inside it.</summary>
