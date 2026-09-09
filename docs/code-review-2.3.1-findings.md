@@ -1,6 +1,7 @@
 # Code review findings — 2.3.1 baseline
 
-Status: **4 of 28 fixed. See the status table below before starting anything.**
+Status: **24 of 28 fixed. The remaining four were reviewed and DEFERRED by the maintainer on 2026-09-09 —
+read "The four that were left" below before reopening any of them.**
 
 The working tree these were found in is `master` at **`ac09e77` (tag `v2.3.1`)**. Every `file:line` below is
 pinned to that commit. **Several of those files have since changed** — `EditPaneViewModel.cs`,
@@ -11,8 +12,9 @@ against the original with `git show ac09e77:<path>` rather than trusting it agai
 
 ## Status
 
-Fixed on branch `fix/silent-failures-2.3.2` (not yet merged at the time of writing; check whether it has
-landed before repeating any of it).
+Fixed on branches `fix/silent-failures-2.3.2`, `fix/review-batch-2`, `fix/review-batch-3` and
+`fix/review-batch-4`, each branched off the last. None was merged at the time of writing, so check whether
+they have landed before repeating any of it.
 
 | # | Finding | State | Where |
 |---|---|---|---|
@@ -20,7 +22,62 @@ landed before repeating any of it).
 | **F3** | "Remove all cloud groups" reports Success on a failed read | **Fixed** | `c6aa9f4`. `ScenarioRunner` needed no change — its per-step catch was already correct, so removing the swallow was enough |
 | **F4** | Cloud member/membership lists silently capped at 200 | **Fixed** | `c6aa9f4`, then `46f08d1` moved the loop into `PageDrain`. Note the display cap added in `fad94d9`: the lists bind to a deliberately non-virtualised `ListView`, so the reads drain fully but the pane renders the first 500 and says how many it is not showing |
 | **F9** | Cancelled scenario recorded as Success | **Fixed** | `4c921dd`, corrected in `412d219` (the rule had no `cancelled` check on its first branch — the exact gap its own test comment claimed to protect) |
-| — | *everything else below* | **Not started** | — |
+| **F16** | Marker DNs ("fav:root", "cloud:Users") reach New User / Bulk Create / Advanced Search | **Fixed** | `e1ffc6f`. `TreeNodeViewModel.DirectoryDn` returns null wherever there is no real DN, so the next consumer is safe by construction rather than by a guard repeated at each call site |
+| **F17** | The Favourites section vanishes after a reconnect | **Fixed** | `e1ffc6f`. `Initialize()` now drops `_favoritesRoot` with the other cached roots; pin/unpin had been quietly editing an orphan |
+| **F8** | A torn settings write destroys every pinned favourite | **Fixed** | `d8c4985`. Write-then-rename, and an unreadable file is kept as `settings.bad-<n>.json` and reported through the new `ISettingsStore.RecoveredFrom`, which startup shows the operator |
+| **F13** | An ambiguous mailbox identity returns a merged, fabricated mailbox | **Fixed** | `c1f4dc5`. A single result is trusted; an array is filtered by `__isWanted`; several matches refuse rather than guess |
+| **F1** | The operation timeout is inert; a hung call deadlocks every Exchange feature | **Fixed** | `d6c8b65`. The read is raced against `Task.Delay`; killing the host is what ends the orphaned `ReadLine` |
+| **F14** | The host's `QUIT` breaks the wrong scope; every disconnect ends in a kill | **Fixed** | `d6c8b65`. The arm `exit`s, and `KillLocked` closes stdin so the loop's null-line escape is reachable |
+| **F15** | App exit blocks the UI thread on the gate | **Fixed** | `d6c8b65`. `Disconnect` tries the gate without waiting and otherwise kills the host out from under the in-flight op |
+| **F6** | The Exchange session survives a same-tenant admin switch | **Fixed** | `d6c8b65`. The session records which signed-in account it belongs to and is dropped when that changes, sign-out included |
+| **F18** | Re-targeting the same cloud row lets a superseded load double every list | **Fixed** | `c18a81d`. `LoadDetailAsync` captures `_detailToken` and checks it alongside the row reference |
+| **F19** | A superseded post-save re-read stamps the new selection's values onto the old row | **Fixed** | `c18a81d`. The read now returns Loaded / Failed / Superseded, and only Loaded permits writing the sections back into a row |
+| **F5** | Membership writes silently skip, or lose the whole batch | **Fixed** | `4e9fbe1`. Directed LDAP modify instead of a read-modify-write: the DC compares the DNs, case-insensitively and against the whole attribute. "Already a member" is success, and a rejected batch retries per member so one bad value no longer takes the others with it. The policy is extracted as `ApplyMembershipPolicy` so it can be driven without a DC |
+| **F10** | Contact filter matches nothing; User filter also matches contacts | **Fixed** | `4e9fbe1`. Both narrowed by `objectClass` in both places that define them. Note the finding was wrong about where the Contact half bites — nothing opens the picker in Contact mode; it is Advanced Search. Any/Unknown deliberately still admits contacts, which AD accepts as group members |
+| **F11** | A pasted quoted, comma-containing name collapses to its last address | **Fixed** | `33063be`. Commas are found outside quoted names and angle-bracketed addresses, then pieces carrying no address are rejoined to the one they belong to — the unquoted `Doe, Jane <j@x.com>` form needed that second half |
+| **F12** | CSV import maps read-only attributes; re-importing the app's own export fails the batch | **Fixed** | `8a98307`. Read-only, multi-valued and DN-valued columns are classified `NotWritable` and named with a reason, which is deliberately a different message from "unrecognised". Correction: a *bare* export is already refused earlier for having no name column; the shape that reaches the create is an export with First name visible |
+| **F7** | Reconfiguring the tenant keeps the old tenant's AuthenticationRecord | **Fixed** | `f509455`. The record is dropped when tenant or client id changes, and a persisted one is only reused when it belongs to that tenant and app registration. `SignOut` no longer rebuilds via `Configure`, which closes the Tier 2 "signed back in when the delete fails" item on the same line. Pairs with F6 — that fix keys the Exchange session on `SignedInAccount`, which this is what makes trustworthy |
+| **F22** | The Entra Connect sync has no timeout and cannot be cancelled | **Fixed** | `2764a46`. A five-minute budget, and the helper process is killed on timeout or cancel — abandoning the awaits used to leave it running with its WinRM session. Correction: `EntraSyncService` always took a token; the layer that dropped it was `CloudProvisioningService`. Neither outcome is reported as a flat failure, because the sync may already be running on the server |
+| **F26** | Copy User forked the template token engine, and the fork had drifted | **Fixed** | `3cf2b1f`. The resolver is shared via a `NameTokens` record. The drift was real and live: the fork resolved `{upnSuffix}` untrimmed, so the same template wrote a UPN with a trailing space from Copy User. The mail-pattern difference is deliberately LEFT — see the commit |
+| **F24** | Unticking every cloud group still forces the Entra sync on | **Fixed** | `d2a03f6`. `SyncMandatory` counts ticked rows, and rows are watched individually because an Include toggle raises PropertyChanged on the row, not CollectionChanged on the list. A sync the rule switched on is switched back off; one the operator ticked is left alone |
+| **F27** | `Alert` throws instead of showing when no window exists | **Fixed** | `85dfa4a`. Owner-less when there is no owner, and `Owner` itself no longer assumes `Application.Current` |
+| **F28** | The multi-select OU picker ignores its seeded selection | **Fixed** | `85dfa4a`. The window holds the selection rather than deriving it from the loaded tree, and the seed is carried into `TreeNodeViewModel` so nodes arrive ticked whenever they load. A seeded OU deeper than the loaded tree — or one the directory no longer has — survives to OK |
+| — | *the four below* | **Deferred, deliberately** | see the next section |
+
+## The four that were left, and why
+
+F20, F21, F23 and F25 were each re-verified against the current tree on 2026-09-09, confirmed still live,
+and then deliberately NOT fixed. This section exists so the next reader does not spend an afternoon
+re-triaging them.
+
+**F21 — auto-connect drops the ignore-cert flag.** Moot here: this environment does not use LDAPS.
+Connections are plain LDAP on 389, secured with sign+seal. The defect is real — `AppSettings` has no field
+for `IgnoreCertificateErrors`, so neither the startup profile rebuild nor the connect dialog's prefill
+restores it — and it would be a per-launch annoyance for anyone running LDAPS with an untrusted
+certificate. **Reopen it the day LDAPS is turned on, and not before.**
+
+**F25 — the delete-confirmation alphabet keeps a lowercase "o".** The finding frames that "o" as the
+hazard. On re-reading it is not: uppercase "O" and the digit zero are both already excluded from that
+alphabet, so an "o" there cannot be confused with anything, and a mistyped confirmation fails safe (the
+delete simply does not happen). What is actually wrong is narrower: `PassphraseGenerator.SuffixChars`
+carries a comment claiming the "same exclusions used elsewhere" while
+`MainViewModel.RandomConfirmationString` hand-rolls a different set. The cost of leaving it is that the
+next person tightening that rule changes only one of the two.
+
+**F23 — the date tokens are culture-sensitive and write wrong-calendar dates into AD.** Real, and a
+two-word fix (`CultureInfo.InvariantCulture`). It needs a workstation whose default calendar is
+non-Gregorian — th-TH Buddhist, ar-SA Um Al Qura — to bite, and there are none here.
+
+**F20 — the paste resolver's exact rung can never report truncation.** Both exact rungs fetch
+`-ResultSize 20` and then test `Count -gt 20`, which can never be true; the ANR rung fetches 21 for
+exactly this reason. Reaching it needs more than twenty recipients sharing one identical display name, at
+which point the operator is shown the first twenty to choose from without being told there may be more. An
+exact address match cannot reach twenty at all.
+
+Together these are roughly fifteen lines and one small suite. Worth doing as a single cleanup pass if the
+review is ever closed out at 28 of 28; not worth doing on their individual merits.
+
+---
 
 **Regressions the fixes introduced, and their fixes**, recorded because they are the kind of thing that gets
 re-broken: a 404 is how Graph says an object has no Entra twin, and un-swallowing briefly turned that into a
@@ -31,13 +88,67 @@ as absent; and removing the 200-row read removed an accidental cap on a non-virt
 
 **Test infrastructure now exists** (`46f08d1`), which changes what is cheap to fix from here:
 
-- `app/test/UnifiedDirectoryManager.TestSupport` — `FakeDirectoryService` can **park a read until the test
-  releases it**, and records every write, so timing bugs are testable. `InertGraphService` /
-  `InertExchangeService` exist so a view model can be constructed without a tenant.
+- `app/test/UnifiedDirectoryManager.TestSupport` — `FakeDirectoryService`, `HoldableGraphService` and
+  `HoldableExchangeService` can **park a read until the test releases it**, and record every write, so
+  timing bugs are testable. `InertGraphService`, `InertExchangeService` and `InertDialogService` let a view
+  model be constructed without a tenant; all three are derivable, with virtual members, so a test overrides
+  the two or three calls it exercises and anything it forgets still throws by name.
 - `PageDrain` — the paging loop, extracted and tested over an in-memory fetch.
-- **CI runs all ten suites on every push and pull request** (`.github/workflows/build-and-test.yml`).
+- **CI runs all nineteen suites on every push and pull request** (`.github/workflows/build-and-test.yml`).
 
-That unlocks **F18 and F19** in particular: they are the same race family as F2, and were untestable before.
+Two patterns are worth copying rather than re-inventing:
+
+- `test-exchange-channel.ps1` drives a **real `pwsh` child over a real pipe**. The inert-timeout bug was
+  invisible to anything else, because `StreamReader.ReadLine` blocks in a native read that no mock
+  reproduces. Each child announces readiness on stderr first, so process launch is not timed as if it were
+  the operation.
+- `test-cloudpane-race.ps1` asserts the **symptom**, not the guard: the licence appears once rather than
+  twice, the superseded load never starts its second round trip, and the saved row keeps its own address.
+  A structural assertion that a token exists passes against fully-restored bug code; this session has
+  already been caught by that once.
+- `test-directory-writes.ps1` shows how to test code that needs a domain controller: extract the DECISION
+  from the transport (`ApplyMembershipPolicy` takes a `send` delegate) and drive it with a scripted sender
+  that refuses chosen calls with chosen LDAP result codes. The traffic itself is then assertable — one
+  request for a clean set, four when one member is a duplicate. Note that anything crossing the
+  `System.DirectoryServices.Protocols` boundary is untestable from PowerShell here (version mismatch), which
+  is why `IsMembershipNoOp` takes an `int`.
+
+Three more ways to test something that looks untestable, all now in use:
+
+- **A view model whose constructor wants the whole service graph**, for a method that reads a few fields:
+  `System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject` skips the constructor, and the
+  backing fields can then be set directly (`test-user-attributes.ps1`, Copy User's resolver). Use it only
+  when the constructor is NOT what is being tested — where it is, build the thing for real
+  (`test-newuser-sync.ps1` needs the event wiring).
+- **A child process that must be killed**: have the script write its own `$PID` to a file and sleep. The
+  test polls for the file, then asserts the process is gone (`test-entra-sync.ps1`).
+- **A WPF window without showing it**: construct it on an STA thread and invoke its handlers by reflection.
+  `OnOk` sets `DialogResult`, which WPF only permits on a window shown via `ShowDialog`, but it assigns the
+  result first — so the exception is expected and ignored (`test-oupicker-alert.ps1`).
+
+Four traps that cost time in this session, all worth knowing before writing a suite:
+
+- **PowerShell variables are case-insensitive**, so a parameter named `$editable` shadows a script variable
+  named `$Editable`, and a loop variable `$p` shadows `$P`. Both produced confusing failures far from the
+  cause.
+- **PowerShell 7 treats typographic quotes as string delimiters.** The app's user-facing messages use them,
+  so a `-like` pattern containing one is a parse error. Flatten to ASCII before matching (see
+  `test-csv-import.ps1`). Also match warnings ONE AT A TIME — joining them first lets a wildcard span two
+  unrelated messages, which silently passed a wrong assertion here.
+- **A value that came through a function parameter is PSObject-wrapped**, and constructor overload
+  resolution then cannot see the overload it is looking straight at: "cannot find an overload for the
+  argument count 3". Cast each argument to the parameter's exact type at the call site.
+- **`return @(...)` unrolls a one-element array into a bare string**, which then indexes by CHARACTER —
+  `$result[0]` came back as `O` rather than a distinguished name. Use `return ,@(...)`.
+
+**Do not trust a build whose output you did not read.** The BG1002 ritual (clean `obj`/`bin`, build twice)
+is in the build notes below, but the failure mode that actually wastes time is subtler: a mutation test that
+"passes" because the mutated code never compiled and the suite ran against the previous DLL. It happened
+three times in this session. Grep the build output for `Error(s)` rather than tailing it, and if a
+behavioural assertion does not flip when it obviously should, check the DLL before believing the test.
+
+Every fix in the table above was mutation-checked — the fix reverted, the suite confirmed red, the fix
+restored — which is what the house rule about guards is for.
 
 ---
 

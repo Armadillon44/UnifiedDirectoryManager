@@ -35,7 +35,24 @@ public static class UserAttributeBuilder
         /// default or token pattern that fits. Blank means "do not write it".
         /// </summary>
         public string EmployeeId { get; init; } = string.Empty;
+
+        /// <summary>What this input's naming tokens resolve to.</summary>
+        public NameTokens Tokens => new(FirstName, MiddleName, LastName, Initials, UpnSuffix);
     }
+
+    /// <summary>
+    /// Everything a naming pattern's tokens can stand for, minus the template. Split out from
+    /// <see cref="Input"/> so a caller holding names but no template — Copy User — can use the shared
+    /// resolver instead of keeping a copy of it. Keeping a copy is exactly what went wrong: the fork
+    /// resolved {upnSuffix} untrimmed, so the same template produced a UPN with a trailing space from Copy
+    /// User and a clean one from New User, and the trailing space was written into AD.
+    /// </summary>
+    public sealed record NameTokens(
+        string FirstName = "",
+        string MiddleName = "",
+        string LastName = "",
+        string Initials = "",
+        string UpnSuffix = "");
 
     /// <summary>Template-derived suggestions for the editable mail/UPN/proxy fields.</summary>
     public sealed record Suggestions(string Email, string Upn, string ProxyText);
@@ -109,25 +126,32 @@ public static class UserAttributeBuilder
     public static IReadOnlyList<string> ResolveProxies(string proxyText) =>
         proxyText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
 
-    private static string Resolve(Input i, string pattern, string sam)
+    /// <summary>
+    /// Resolves one naming pattern. THE single source of truth for what a token means — New User, Bulk
+    /// Create and Copy User all come through here, so a token added to this switch reaches every creation
+    /// path, and none of them can quietly disagree about trimming.
+    /// </summary>
+    public static string Resolve(NameTokens t, string pattern, string sam)
     {
         if (string.IsNullOrEmpty(pattern)) return string.Empty;
         return Regex.Replace(pattern,
             "{(first|last|middle|firstInitial|lastInitial|middleInitial|initials|sam|upnSuffix)}",
             m => m.Groups[1].Value.ToLowerInvariant() switch
             {
-                "first" => i.FirstName.Trim(),
-                "last" => i.LastName.Trim(),
-                "middle" => i.MiddleName.Trim(),
-                "firstinitial" => Initial(i.FirstName),
-                "lastinitial" => Initial(i.LastName),
-                "middleinitial" => Initial(i.MiddleName),
-                "initials" => i.Initials.Trim(),
+                "first" => t.FirstName.Trim(),
+                "last" => t.LastName.Trim(),
+                "middle" => t.MiddleName.Trim(),
+                "firstinitial" => Initial(t.FirstName),
+                "lastinitial" => Initial(t.LastName),
+                "middleinitial" => Initial(t.MiddleName),
+                "initials" => t.Initials.Trim(),
                 "sam" => sam,
-                "upnsuffix" => i.UpnSuffix.Trim(),
+                "upnsuffix" => t.UpnSuffix.Trim(),
                 _ => m.Value,
             }, RegexOptions.IgnoreCase);
     }
+
+    private static string Resolve(Input i, string pattern, string sam) => Resolve(i.Tokens, pattern, sam);
 
     private static string Initial(string name)
     {

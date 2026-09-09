@@ -58,8 +58,26 @@ public sealed class GraphService : IGraphService
 
     public void Configure(string tenantId, string clientId)
     {
-        _tenantId = tenantId?.Trim();
-        _clientId = clientId?.Trim();
+        var newTenant = tenantId?.Trim();
+        var newClient = clientId?.Trim();
+
+        // A change of tenant or app registration invalidates who is signed in. The record was kept with
+        // "??=", which never replaces a non-null one, so Configure(tenantB) built a credential whose
+        // AUTHORITY was B but whose bound ACCOUNT was still A's — and IsSignedIn / SignedInAccount went on
+        // reporting A's identity with no sign-in to B having happened. Cancel the browser prompt that
+        // follows and the app carries on in that state: wrong-tenant requests, or opaque token failures,
+        // where it should simply have said "not signed in".
+        //
+        // It matters beyond Graph. The Exchange channel borrows this account name to CONNECT with, and keys
+        // its live session on it.
+        if (!string.Equals(newTenant, _tenantId, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(newClient, _clientId, StringComparison.OrdinalIgnoreCase))
+        {
+            _record = null;
+        }
+
+        _tenantId = newTenant;
+        _clientId = newClient;
         _skuMap = null; // a different tenant has a different SKU catalogue
         _licenseGroupMap = null;
         _groupNameCache.Clear();
@@ -71,9 +89,18 @@ public sealed class GraphService : IGraphService
             return;
         }
 
-        // Reuse any persisted authentication record so a cached token can be used silently.
-        _record ??= TryLoadAuthRecord();
+        // Reuse a persisted authentication record so a cached token can be used silently — but only one that
+        // belongs to this tenant AND this app registration. The record encodes its own authority, so handing
+        // over someone else's is the same defect by a different route.
+        _record ??= LoadAuthRecordFor(_tenantId!, _clientId!);
 
+        BuildCredential();
+        AppLog.Instance.Info($"Graph client configured for tenant '{_tenantId}'.");
+    }
+
+    /// <summary>Builds the credential and Graph client around whatever <see cref="_record"/> currently is.</summary>
+    private void BuildCredential()
+    {
         var options = new InteractiveBrowserCredentialOptions
         {
             TenantId = _tenantId,
@@ -85,8 +112,28 @@ public sealed class GraphService : IGraphService
 
         _credential = new InteractiveBrowserCredential(options);
         _graph = new GraphServiceClient(_credential, Scopes);
-        AppLog.Instance.Info($"Graph client configured for tenant '{_tenantId}'.");
     }
+
+    /// <summary>
+    /// The persisted authentication record, but only when it belongs to the tenant and app registration
+    /// being configured now. A record from another tenant is left on disk rather than deleted: switching
+    /// back should sign the operator straight in again, which is the point of persisting it.
+    /// </summary>
+    private static AuthenticationRecord? LoadAuthRecordFor(string tenantId, string clientId)
+    {
+        var record = TryLoadAuthRecord();
+        if (record is null || RecordBelongsTo(record, tenantId, clientId)) return record;
+
+        AppLog.Instance.Info(
+            $"The saved Entra sign-in is for tenant '{record.TenantId}', not '{tenantId}'; ignoring it.");
+        return null;
+    }
+
+    /// <summary>Whether a saved sign-in applies to this tenant and app registration.</summary>
+    internal static bool RecordBelongsTo(AuthenticationRecord? record, string? tenantId, string? clientId) =>
+        record is not null
+        && string.Equals(record.TenantId, tenantId, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(record.ClientId, clientId, StringComparison.OrdinalIgnoreCase);
 
     public async Task SignInAsync(CancellationToken cancellationToken = default)
     {
@@ -105,8 +152,15 @@ public sealed class GraphService : IGraphService
         try { if (File.Exists(AuthRecordPath)) File.Delete(AuthRecordPath); }
         catch (Exception ex) { AppLog.Instance.Warn("Could not clear the saved Graph sign-in: " + ex.Message); }
 
-        // Rebuild the credential without an authentication record so cached tokens aren't reused.
-        if (IsConfigured) Configure(_tenantId!, _clientId!);
+        _skuMap = null;
+        _licenseGroupMap = null;
+        _groupNameCache.Clear();
+
+        // Rebuild the credential without an authentication record so cached tokens aren't reused — but NOT
+        // by calling Configure, which reloads the persisted record from disk. If the delete above failed
+        // (an antivirus scanner holding the file is the usual reason, and it is logged as a warning nobody
+        // reads) that would sign the operator straight back in, on what may be a shared workstation.
+        if (IsConfigured) BuildCredential();
         AppLog.Instance.Info("Signed out of Entra ID.");
     }
 
@@ -146,7 +200,16 @@ public sealed class GraphService : IGraphService
         if (user is null) return null;
 
         var licenses = await ResolveLicensesAsync(user, cancellationToken);
-        var groups = await GetUserGroupsAsync(user.Id ?? upn, cancellationToken);
+        // The user exists — that is what this method answers, and the bulk-create sync poll asks nothing
+        // else. memberOf is a reference property and lags the object during a sync, so a failure here must
+        // not turn a found user into a not-found one. The gap is reported rather than hidden.
+        IReadOnlyList<CloudGroup> groups;
+        try { groups = await GetUserGroupsAsync(user.Id ?? upn, cancellationToken); }
+        catch (Exception ex)
+        {
+            groups = Array.Empty<CloudGroup>();
+            AppLog.Instance.Warn($"Read {upn} but not their cloud group memberships: " + GraphErrors.Friendly(ex));
+        }
         return new CloudUserInfo(
             user.Id ?? string.Empty,
             user.DisplayName,
@@ -183,16 +246,40 @@ public sealed class GraphService : IGraphService
             .ToList();
     }
 
+    /// <summary>
+    /// Page size for the membership reads below. Graph's maximum for directory objects is 999; asking for it
+    /// keeps a large group to a handful of round trips instead of dozens.
+    /// </summary>
+    private const int MembershipPageSize = 999;
+
+    /// <summary>
+    /// Runaway guard on the paging loops — far above any real group. Hitting it THROWS rather than returning
+    /// what was read so far: silently handing back a partial membership is the defect these loops exist to
+    /// fix, and a loud failure is the lesser harm.
+    /// </summary>
+    private const int MaxMembershipPages = 200;
+
     public async Task<IReadOnlyList<CloudMember>> GetGroupMembersAsync(string groupId, CancellationToken cancellationToken = default)
     {
         if (_graph is null) throw new InvalidOperationException("Sign in to Entra ID first.");
         if (string.IsNullOrWhiteSpace(groupId)) return Array.Empty<CloudMember>();
 
-        var resp = await _graph.Groups[groupId].Members.GetAsync(rc => rc.QueryParameters.Top = 200, cancellationToken);
-        return (resp?.Value ?? new List<DirectoryObject>())
-            .Select(ToMember)
-            .OrderBy(m => m.DisplayName, StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
+        // Every page, not just the first. A single Top=200 read silently presented the first 200 members as
+        // the whole group — the same trap the AD range walk and Exchange's -ResultSize Unlimited avoid.
+        // The loop itself lives in PageDrain so it can be tested without the Graph SDK.
+        var all = await PageDrain.DrainAsync<CloudMember>(
+            async (next, ct) =>
+            {
+                var page = next is null
+                    ? await _graph.Groups[groupId].Members.GetAsync(rc => rc.QueryParameters.Top = MembershipPageSize, ct)
+                    : await _graph.Groups[groupId].Members.WithUrl(next).GetAsync(cancellationToken: ct);
+                return new PageDrain.Page<CloudMember>(
+                    (page?.Value ?? new List<DirectoryObject>()).Select(ToMember), page?.OdataNextLink);
+            },
+            MaxMembershipPages,
+            read => $"group {groupId} still had more pages after {read:N0} members. Read it in the Entra admin centre instead.",
+            cancellationToken);
+        return all.OrderBy(m => m.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList();
     }
 
     // --- Paged browsing (tree-driven cloud lists) ---
@@ -768,26 +855,50 @@ public sealed class GraphService : IGraphService
     {
         if (_graph is null) throw new InvalidOperationException("Sign in to Entra ID first.");
         if (string.IsNullOrWhiteSpace(objectId)) return Array.Empty<CloudGroup>();
+        // Deliberately NOT wrapped in a catch that returns an empty list. This read feeds the destructive
+        // "remove all cloud groups" scenario step, which iterated the empty result and recorded Success —
+        // a terminated user kept every group while the operation log said otherwise. A failure here has to
+        // reach the caller so that step can fail, matching its on-prem twin.
+        //
+        // Cast memberOf to groups so the group-only $select (Teams/Dynamic/Synced flags) applies — the
+        // untyped directoryObject collection omits resourceProvisioningOptions/membershipRule.
+        GroupCollectionResponse? page;
         try
         {
-            // Cast memberOf to groups so the group-only $select (Teams/Dynamic/Synced flags) applies — the
-            // untyped directoryObject collection omits resourceProvisioningOptions/membershipRule.
-            var resp = kind switch
+            page = kind switch
             {
-                CloudObjectKind.Device => await _graph.Devices[objectId].MemberOf.GraphGroup.GetAsync(rc => { rc.QueryParameters.Select = GroupSelect; rc.QueryParameters.Top = 200; }, cancellationToken),
-                CloudObjectKind.Group => await _graph.Groups[objectId].MemberOf.GraphGroup.GetAsync(rc => { rc.QueryParameters.Select = GroupSelect; rc.QueryParameters.Top = 200; }, cancellationToken),
-                _ => await _graph.Users[objectId].MemberOf.GraphGroup.GetAsync(rc => { rc.QueryParameters.Select = GroupSelect; rc.QueryParameters.Top = 200; }, cancellationToken),
+            CloudObjectKind.Device => await _graph.Devices[objectId].MemberOf.GraphGroup.GetAsync(rc => { rc.QueryParameters.Select = GroupSelect; rc.QueryParameters.Top = MembershipPageSize; }, cancellationToken),
+            CloudObjectKind.Group => await _graph.Groups[objectId].MemberOf.GraphGroup.GetAsync(rc => { rc.QueryParameters.Select = GroupSelect; rc.QueryParameters.Top = MembershipPageSize; }, cancellationToken),
+                _ => await _graph.Users[objectId].MemberOf.GraphGroup.GetAsync(rc => { rc.QueryParameters.Select = GroupSelect; rc.QueryParameters.Top = MembershipPageSize; }, cancellationToken),
             };
-            return (resp?.Value ?? new List<Group>())
-                .Select(ToCloudGroup)
-                .OrderBy(g => g.DisplayName, StringComparer.CurrentCultureIgnoreCase)
-                .ToList();
         }
-        catch (Exception ex)
+        catch (ODataError ex) when (ex.ResponseStatusCode == 404)
         {
-            AppLog.Instance.Warn("Could not read object group memberships: " + ex.Message);
-            return Array.Empty<CloudGroup>();
+            return Array.Empty<CloudGroup>(); // the object has no Entra twin — not a read failure
         }
+        return await DrainGroupPagesAsync(page, $"memberships of {objectId}", cancellationToken);
+    }
+
+    /// <summary>
+    /// Walks a group-collection response to its last page. Shared by the memberOf reads so the paging — and
+    /// the refusal to return a partial list — is written once.
+    /// </summary>
+    private async Task<IReadOnlyList<CloudGroup>> DrainGroupPagesAsync(
+        GroupCollectionResponse? first, string what, CancellationToken cancellationToken)
+    {
+        var all = await PageDrain.DrainAsync<CloudGroup>(
+            async (next, ct) =>
+            {
+                // The caller already fetched page one (the request differs per object kind), so serve it
+                // here and follow the continuation for everything after.
+                var page = next is null ? first : await _graph!.Groups.WithUrl(next).GetAsync(cancellationToken: ct);
+                return new PageDrain.Page<CloudGroup>(
+                    (page?.Value ?? new List<Group>()).Select(ToCloudGroup), page?.OdataNextLink);
+            },
+            MaxMembershipPages,
+            read => $"the {what} still had more pages after {read:N0} groups.",
+            cancellationToken);
+        return all.OrderBy(g => g.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList();
     }
 
     public async Task<bool> GroupExistsAsync(string groupId, CancellationToken cancellationToken = default)
@@ -808,26 +919,32 @@ public sealed class GraphService : IGraphService
     /// <summary>Reads the user's cloud group memberships (direct memberOf, groups only).</summary>
     private async Task<IReadOnlyList<CloudGroup>> GetUserGroupsAsync(string idOrUpn, CancellationToken cancellationToken)
     {
+        // Deliberately un-swallowed for real failures: Copy User, Copy Groups to User and Save-as-template
+        // all build on this, and an empty list from a transient failure means the operator copies an
+        // incomplete set of memberships and is told nothing.
+        //
+        // A 404 is NOT a failure. It is how Graph says this UPN has no Entra user at all — the normal answer
+        // for a service account, a filtered-out OU, or a user created minutes ago. Reporting that as
+        // "memberships could not be read" would cry wolf on ordinary on-prem-only accounts, so it returns
+        // empty exactly as it did before, matching GetUserByUpnAsync's own handling of the same status.
+        //
+        // Cast memberOf to groups so we can $select group-only properties — resourceProvisioningOptions
+        // (Teams), membershipRule (Dynamic), onPremisesSyncEnabled (Synced) aren't returned on the
+        // untyped directoryObject collection, which would leave Teams groups unidentified.
+        GroupCollectionResponse? page;
         try
         {
-            // Cast memberOf to groups so we can $select group-only properties — resourceProvisioningOptions
-            // (Teams), membershipRule (Dynamic), onPremisesSyncEnabled (Synced) aren't returned on the
-            // untyped directoryObject collection, which would leave Teams groups unidentified.
-            var resp = await _graph!.Users[idOrUpn].MemberOf.GraphGroup.GetAsync(rc =>
+            page = await _graph!.Users[idOrUpn].MemberOf.GraphGroup.GetAsync(rc =>
             {
                 rc.QueryParameters.Select = GroupSelect;
-                rc.QueryParameters.Top = 200;
+                rc.QueryParameters.Top = MembershipPageSize;
             }, cancellationToken);
-            return (resp?.Value ?? new List<Group>())
-                .Select(ToCloudGroup)
-                .OrderBy(g => g.DisplayName, StringComparer.CurrentCultureIgnoreCase)
-                .ToList();
         }
-        catch (Exception ex)
+        catch (ODataError ex) when (ex.ResponseStatusCode == 404)
         {
-            AppLog.Instance.Warn("Could not read cloud group memberships: " + ex.Message);
-            return Array.Empty<CloudGroup>();
+            return Array.Empty<CloudGroup>(); // no cloud account for this UPN — not a read failure
         }
+        return await DrainGroupPagesAsync(page, $"cloud group memberships of {idOrUpn}", cancellationToken);
     }
 
     /// <summary>Builds the user's license list with friendly + native names and the assignment source.</summary>

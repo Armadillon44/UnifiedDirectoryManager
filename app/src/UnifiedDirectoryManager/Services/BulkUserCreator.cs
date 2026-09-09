@@ -104,7 +104,7 @@ public sealed class BulkUserCreator
             cloud.EntraConnectServer,
             cloud.SpecifyCredentials ? cloud.Username : null,
             cloud.SpecifyCredentials ? cloud.Password : null,
-            _settings, Report);
+            _settings, Report, ct);
         if (!sync.Success)
         {
             Report("✗ Entra Connect sync failed: " + sync.Output.Replace(Environment.NewLine, " ").Trim());

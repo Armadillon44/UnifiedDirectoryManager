@@ -30,13 +30,18 @@ public sealed class CloudProvisioningService
     /// user when <paramref name="username"/> is blank, else as the supplied account — and persists the server
     /// to <paramref name="settings"/>. Returns the raw sync outcome; the caller decides whether a failure is fatal.
     /// </summary>
+    /// <param name="cancellationToken">Bulk Create's Cancel reaches the sync through here. Dropping it — which
+    /// this method used to do — left the operator's only escape from a hung WinRM call as killing the app.</param>
     public async Task<EntraSyncService.SyncResult> RunDeltaSyncAsync(
-        string server, string? username, string? password, AppSettings settings, Action<string> report)
+        string server, string? username, string? password, AppSettings settings, Action<string> report,
+        CancellationToken cancellationToken = default)
     {
         server = server.Trim();
         var hasUser = !string.IsNullOrWhiteSpace(username);
         report($"• Starting Entra Connect delta sync on {server} ({(hasUser ? username!.Trim() : "current user")})…");
-        var sync = await _entraSync.RunDeltaSyncAsync(server, hasUser ? username!.Trim() : null, hasUser ? password : null);
+        var sync = await _entraSync.RunDeltaSyncAsync(
+            server, hasUser ? username!.Trim() : null, hasUser ? password : null,
+            cancellationToken: cancellationToken);
         settings.EntraConnectServer = server;
         _settingsStore.Save(settings);
         return sync;

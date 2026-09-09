@@ -125,7 +125,7 @@ Check 'the first is not lost'                     'jane@contoso.com' $r.Terms[0]
 Check 'nor the middle one'                        'bob@contoso.com'  $r.Terms[1].Term
 Check 'nor the last'                              'amy@contoso.com'  $r.Terms[2].Term
 Check 'they all trace back to the one line'       1 $r.Terms[2].LineNumber
-# A comma separates only when every piece carries an address, or "Doe, Jane" would be torn in half.
+# A comma separates only when the line carries more than one address, or "Doe, Jane" would be torn in half.
 Check 'a comma between addresses separates' 2 (@($P::SplitRecipients('a@x.com, b@x.com'))).Count
 Check 'but Last, First is left whole'       1 (@($P::SplitRecipients('Doe, Jane'))).Count
 Check 'and so is a lone name'               1 (@($P::SplitRecipients('Jane Doe'))).Count
@@ -168,5 +168,54 @@ $u = [UnifiedDirectoryManager.Models.MemberCandidate]::new('a@x.com', 'A User', 
 Check 'a mailbox is a person'              $true $u.IsPerson
 Check 'and carries no kind suffix'         $false ($u.Label -like '*[[]*')
 
+Write-Host "`n== SplitRecipients: a comma inside a name is not a separator (F11) ==" -ForegroundColor Cyan
+# The standard Outlook To: line. The old rule required EVERY comma-separated piece to contain '@', and the
+# piece '"Doe' does not, so the whole line stayed one term -- and Clean unwraps only the LAST <...> pair.
+# Jane Doe disappeared entirely: no row, and not counted as a duplicate, a drop or an unreadable line.
+$outlook = '"Doe, Jane" <jane@x.com>, John Smith <john@y.com>'
+$parts = @($P::SplitRecipients($outlook))
+Check 'a quoted name does not split'          2 $parts.Count
+Check 'and the quoted person survives'        'jane@x.com' ($P::Clean($parts[0]))
+Check 'along with the other one'              'john@y.com' ($P::Clean($parts[1]))
+$r = $P::Parse($outlook)
+Check 'Parse yields both people'              2 $r.Terms.Count
+Check 'the first is Jane'                     'jane@x.com' $r.Terms[0].Term
+Check 'the second is John'                    'john@y.com' $r.Terms[1].Term
+# Nobody was quietly written off to any of the counters either -- that is what made the loss invisible.
+Check 'nothing counted as unreadable'         0 $r.Unreadable
+Check 'nothing counted as dropped'            0 $r.Dropped
+Check 'nothing counted as duplicate'          0 $r.Duplicates
+
+# Outlook writes the UNQUOTED form just as readily, and it fails the same way for the same reason: the
+# split tears "Doe" off the front of the name it belongs to. A piece with no address is not a person.
+$bare = 'Doe, Jane <jane@x.com>, Roe, Bob <bob@y.com>'
+$parts = @($P::SplitRecipients($bare))
+Check 'an unquoted Last, First rejoins'       2 $parts.Count
+Check 'keeping the whole name with it'        'Doe, Jane <jane@x.com>' $parts[0]
+Check 'and resolving to the right address'    'jane@x.com' ($P::Clean($parts[0]))
+Check 'the second person survives too'        'bob@y.com' ($P::Clean($parts[1]))
+
+# An apostrophe must NOT open a quoted name, or O'Brien swallows the rest of the line.
+$irish = "O'Brien, Sean <sean@x.com>, Ann Lee <ann@y.com>"
+$parts = @($P::SplitRecipients($irish))
+Check 'an apostrophe is just a letter'        2 $parts.Count
+Check 'Sean resolves'                         'sean@x.com' ($P::Clean($parts[0]))
+Check 'and Ann resolves'                      'ann@y.com' ($P::Clean($parts[1]))
+
+# A trailing piece with no address is a person in their own right: nothing follows for it to belong to.
+$trailing = 'Jane <jane@x.com>, Bob <bob@y.com>, Carl'
+$parts = @($P::SplitRecipients($trailing))
+Check 'a trailing bare name is kept'          3 $parts.Count
+Check 'as itself'                             'Carl' $parts[2]
+
+# The negative control, and the reason this cannot simply split on every comma. With no addresses at all
+# there is no separator to find, and "Doe, Jane" is one person whose name contains a comma.
+Check 'no addresses means no comma split'     1 (@($P::SplitRecipients('Doe, Jane'))).Count
+Check 'one address means no comma split'      1 (@($P::SplitRecipients('Doe, Jane <jane@x.com>'))).Count
+Check 'and that one still resolves'           'jane@x.com' ($P::Clean('Doe, Jane <jane@x.com>'))
+
+# A semicolon still always separates, and now ignores one inside a quoted name too.
+Check 'a semicolon separates'                 2 (@($P::SplitRecipients('a@x.com; b@y.com'))).Count
+Check 'but not inside quotes'                 1 (@($P::SplitRecipients('"Sales; Marketing" <sm@x.com>'))).Count
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

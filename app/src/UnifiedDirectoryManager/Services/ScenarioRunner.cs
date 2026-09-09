@@ -39,7 +39,12 @@ public sealed class ScenarioRunner
             // target is reported failed only if one or more steps failed.
             var stepFailures = new List<string>();
             var cancelled = false;
+            // >0 when the cancel landed INSIDE that step rather than between two, which is worth
+            // distinguishing in an audit trail: an interrupted step may have partly applied.
+            var interruptedStep = 0;
             var n = 0;
+            // The Save-operation-log step makes no change, so it does not count towards the work.
+            var totalSteps = scenario.Steps.Count(s => s.Action != ScenarioActionType.SaveOperationLog);
             foreach (var step in scenario.Steps)
             {
                 if (cancellationToken.IsCancellationRequested) { cancelled = true; break; }
@@ -56,6 +61,9 @@ public sealed class ScenarioRunner
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     cancelled = true;
+                    interruptedStep = n;
+                    operationLog?.Add($"    {n}. ⚠ CANCELLED mid-step — this step may have partly applied");
+                    live?.Report($"    ⚠ cancelled during step {n}");
                     break; // user cancelled mid-step — stop this target; the run ends on the next outer check
                 }
                 catch (Exception ex)
@@ -68,16 +76,27 @@ public sealed class ScenarioRunner
                 }
             }
 
-            if (stepFailures.Count == 0)
+            // A cancel that left work undone is NOT a success. Steps are isolated and AD has no
+            // transactions, so everything before the cancel stayed committed: reporting Success would tell
+            // the operator a termination finished when the account can be disabled but still in every group
+            // and still licensed. Cancelling after the last step really did complete the work, so that case
+            // stays a success.
+            var cancelNote = CancelNote(cancelled, interruptedStep, n, totalSteps);
+
+            if (stepFailures.Count == 0 && cancelNote is null)
             {
                 results.Add(new BulkItemResult(target.DistinguishedName, target.Name, true, null));
-                operationLog?.Add(cancelled ? "    RESULT: Cancelled" : "    RESULT: Success");
+                operationLog?.Add("    RESULT: Success");
             }
             else
             {
-                var summary = $"{stepFailures.Count} step(s) failed: " + string.Join("; ", stepFailures);
+                var parts = new List<string>();
+                if (stepFailures.Count > 0)
+                    parts.Add($"{stepFailures.Count} step(s) failed: " + string.Join("; ", stepFailures));
+                if (cancelNote is not null) parts.Add(cancelNote);
+                var summary = string.Join(" — ", parts);
                 results.Add(new BulkItemResult(target.DistinguishedName, target.Name, false, summary));
-                operationLog?.Add($"    RESULT: {stepFailures.Count} step(s) failed{(cancelled ? " (cancelled)" : "")}");
+                operationLog?.Add($"    RESULT: {summary}");
             }
             operationLog?.Add(string.Empty);
             progress?.Report(++done);
@@ -85,6 +104,26 @@ public sealed class ScenarioRunner
         AppLog.Instance.Info($"Ran scenario “{scenario.Name}” on {targets.Count} object(s): "
                            + $"{results.Count(r => r.Success)} ok, {results.Count(r => !r.Success)} failed.");
         return new BulkResult(results);
+    }
+
+    /// <summary>
+    /// Describes what a cancellation left undone, or null when nothing was left undone.
+    ///
+    /// Extracted so the rule is testable: the boundary that matters is that cancelling AFTER the last step
+    /// really did complete the work and must stay a success, while cancelling between or inside steps must
+    /// not — everything before the cancel stayed committed, so calling it a success would report a
+    /// half-finished termination as done.
+    /// </summary>
+    /// <param name="interruptedStep">Step number the cancel landed INSIDE, or 0 if it landed between steps.</param>
+    /// <param name="stepsRun">How many steps completed.</param>
+    internal static string? CancelNote(bool cancelled, int interruptedStep, int stepsRun, int totalSteps)
+    {
+        if (!cancelled) return null; // nothing was cut short, whatever the counts say
+        if (interruptedStep > 0)
+            return $"cancelled during step {interruptedStep} of {totalSteps} — that step may have partly applied";
+        if (stepsRun < totalSteps)
+            return $"cancelled after step {stepsRun} of {totalSteps} — {totalSteps - stepsRun} step(s) did not run";
+        return null;
     }
 
     /// <summary>

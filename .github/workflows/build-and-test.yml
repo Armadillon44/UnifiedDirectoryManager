@@ -1,0 +1,92 @@
+# Builds the app and runs every test suite on each push and pull request.
+#
+# Why this exists: the suites are plain PowerShell scripts that a developer has to remember to run. Every
+# defect this repository has shipped and later fixed was a silent one — an operation that reported success
+# without doing the work — and that is exactly the class a forgotten test suite fails to catch.
+#
+# Windows is not optional here: the app targets net10.0-windows with WPF, and three of the suites render
+# real windows off-screen to prove that bindings resolve (a broken WPF binding throws nothing, so only
+# rendering catches it).
+name: Build and test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:      # so a run can be kicked off by hand from the Actions tab
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore app/test/UnifiedDirectoryManager.TestSupport/UnifiedDirectoryManager.TestSupport.csproj
+
+      # Both projects already write to <repo>/debug/, which is where every suite loads assemblies from.
+      # Building TestSupport builds the app it references, so this one command covers both.
+      - name: Build (app + test support)
+        run: dotnet build app/test/UnifiedDirectoryManager.TestSupport/UnifiedDirectoryManager.TestSupport.csproj -c Debug --no-restore -warnaserror
+
+      - name: Confirm the built assembly is where the suites expect it
+        shell: pwsh
+        run: |
+          $dll = Join-Path $PWD 'debug/UnifiedDirectoryManager.dll'
+          if (-not (Test-Path $dll)) { throw "Build did not produce $dll — the suites will not find it." }
+          $v = [System.Reflection.AssemblyName]::GetAssemblyName($dll).Version
+          Write-Host "Built UnifiedDirectoryManager $v"
+          $support = Join-Path $PWD 'debug/UnifiedDirectoryManager.TestSupport.dll'
+          if (-not (Test-Path $support)) { throw "Test-support assembly missing — the race suite cannot run." }
+
+      # Split into two steps because the WPF suites need a single-threaded apartment. Each script exits
+      # non-zero on any failed assertion, and `$ErrorActionPreference` plus the explicit check below turn
+      # that into a failed job — without it, a red suite would scroll past and the job would pass green.
+      - name: Run test suites (non-UI)
+        shell: pwsh
+        run: |
+          $suites = 'test-favorites', 'test-paste-parser', 'test-hostscript',
+                    'test-user-attributes', 'test-silent-failures', 'test-drain',
+                    'test-settings-store', 'test-exchange-channel',
+                    'test-directory-writes', 'test-csv-import', 'test-graph-identity',
+                    'test-entra-sync', 'test-newuser-sync'
+          $failed = @()
+          foreach ($s in $suites) {
+            $path = "./app/build/$s.ps1"
+            if (-not (Test-Path $path)) { $failed += "$s (missing)"; continue }
+            Write-Host "::group::$s"
+            pwsh -NoProfile -File $path
+            if ($LASTEXITCODE -ne 0) { $failed += $s }
+            Write-Host "::endgroup::"
+          }
+          if ($failed.Count -gt 0) { throw "Failed suites: $($failed -join ', ')" }
+
+      - name: Run test suites (WPF, single-threaded apartment)
+        shell: pwsh
+        run: |
+          $suites = 'test-tabselection', 'test-paste-dialog', 'test-search-dialog', 'test-editpane-race',
+                    'test-cloudpane-race', 'test-oupicker-alert'
+          $failed = @()
+          foreach ($s in $suites) {
+            $path = "./app/build/$s.ps1"
+            if (-not (Test-Path $path)) { $failed += "$s (missing)"; continue }
+            Write-Host "::group::$s"
+            pwsh -NoProfile -STA -File $path
+            if ($LASTEXITCODE -ne 0) { $failed += $s }
+            Write-Host "::endgroup::"
+          }
+          if ($failed.Count -gt 0) { throw "Failed suites: $($failed -join ', ')" }
+
+      - name: Check for vulnerable packages
+        shell: pwsh
+        run: |
+          $out = dotnet list app/src/UnifiedDirectoryManager/UnifiedDirectoryManager.csproj package --vulnerable --include-transitive | Out-String
+          Write-Host $out
+          # The command exits 0 even when it finds something, so the report has to be read.
+          if ($out -match 'has the following vulnerable packages') { throw "Vulnerable packages found — see the report above." }

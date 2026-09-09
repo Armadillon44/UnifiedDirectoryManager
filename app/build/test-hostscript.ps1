@@ -814,5 +814,89 @@ Check 'the op never addresses by -Identity' $false ($rrCode -match 'Get-\w+[^|]*
 # A leading wildcard is documented as not allowed in Exchange Online, and slow wherever it is tolerated.
 Check 'and uses no leading wildcard'        $false ($rrBody -match "like '\*")
 
+# --- 8. the mailbox probe -------------------------------------------------------------------------
+Write-Host "`n== get-mailbox: one mailbox, or none, but never a blend ==" -ForegroundColor Cyan
+# This op answers "does this person have a mailbox, and what kind". Its null answer drives the licence-
+# removal guardrail and the ExOL tab's "no mailbox found". Its non-null answer is what Convert to Shared
+# and Set forwarding then act on, so a wrong one writes to the wrong mailbox.
+#
+# The trap: Get-Mailbox returns an ARRAY when the identity is ambiguous, and EVERY mailbox in the tenant
+# when the identity does not exist at all. `$null -eq `$m is false for an array, and [string]`$arr.DisplayName
+# space-joins the lot -- so the op used to hand back one fabricated mailbox stitched out of several.
+$gmStart = ($all | Select-String -Pattern "^\s*'get-mailbox' \{\s*$" | Select-Object -First 1).LineNumber
+if (-not $gmStart) { throw 'Could not locate the get-mailbox op.' }
+$depth = 0; $gmEnd = $null
+for ($i = $gmStart - 1; $i -lt $all.Count; $i++) {
+    $depth += ([regex]::Matches($all[$i], '\{')).Count
+    $depth -= ([regex]::Matches($all[$i], '\}')).Count
+    if ($depth -le 0) { $gmEnd = $i; break }
+}
+if (-not $gmEnd) { throw 'Could not locate the end of the get-mailbox op.' }
+$gmBody = ($all[$gmStart..($gmEnd - 1)]) -join "`n"
+if ($gmBody -notmatch 'Get-Mailbox') { throw 'The extracted op does not contain the read.' }
+
+$script:gmReturn = @()
+function Get-Mailbox { [CmdletBinding()] param([string]$Identity) return $script:gmReturn }
+function __emit($obj) { $script:emitted += $obj }
+function Mbx($upn, $smtp, $display, $type) {
+    [pscustomobject]@{
+        UserPrincipalName = $upn; PrimarySmtpAddress = $smtp; DisplayName = $display
+        RecipientTypeDetails = $type; ForwardingAddress = ''; DeliverToMailboxAndForward = 'False'
+        Alias = ($upn -split '@')[0]; Identity = "contoso.com/Users/$display"; Name = $display
+        Guid = '33333333-3333-3333-3333-333333333333'
+        ExternalDirectoryObjectId = '44444444-4444-4444-4444-444444444444'
+    }
+}
+# Runs the op and returns what it emitted.
+function RunGetMailbox($identity, $returns) {
+    $script:emitted = @(); $script:gmReturn = $returns
+    $r = [pscustomobject]@{ op = 'get-mailbox'; identity = $identity }
+    try { Invoke-Expression $gmBody } catch { return [pscustomobject]@{ ok = $false; error = $_.Exception.Message } }
+    if ($script:emitted.Count -ne 1) { return [pscustomobject]@{ ok = $false; error = "emitted $($script:emitted.Count) times" } }
+    return $script:emitted[0]
+}
+
+$jane = Mbx 'jane@contoso.com' 'jane.doe@contoso.com' 'Jane Doe' 'UserMailbox'
+$bob  = Mbx 'bob@contoso.com'  'bob@contoso.com'      'Bob Roe'  'SharedMailbox'
+
+$res = RunGetMailbox 'jane@contoso.com' @($jane)
+Check 'one mailbox comes back'          $true  ($res.ok -eq $true -and $null -ne $res.data)
+Check 'with its own display name'       'Jane Doe' $res.data.DisplayName
+Check 'and its own primary address'     'jane.doe@contoso.com' $res.data.PrimarySmtpAddress
+Check 'and its own type'                'UserMailbox' $res.data.RecipientTypeDetails
+
+# Exchange resolved exactly one object, so it matched by SOME identity form -- possibly one __isWanted does
+# not list, such as an alias-only proxy address. A single result is trusted; rejecting it here would report
+# "no mailbox" for people who have one.
+$res = RunGetMailbox 'an-old-alias@contoso.com' @($jane)
+Check 'a single result is trusted'      'Jane Doe' $res.data.DisplayName
+
+$res = RunGetMailbox 'nobody@contoso.com' @()
+Check 'no mailbox is reported as none'  $true ($res.ok -eq $true -and $null -eq $res.data)
+
+# THE BUG. A non-existent identity makes Exchange hand back the whole tenant. None of them is the person
+# who was asked about, so the honest answer is that they have no mailbox -- not a blend of two strangers.
+$res = RunGetMailbox 'ghost@contoso.com' @($jane, $bob)
+Check 'returns-everything is not a hit' $true ($res.ok -eq $true -and $null -eq $res.data)
+
+# The other array shape: several rows, one of which really is the target. Take that one, not the first.
+$res = RunGetMailbox 'bob@contoso.com' @($jane, $bob)
+Check 'the matching row is chosen'      'Bob Roe' $res.data.DisplayName
+Check 'and not the first row'           'bob@contoso.com' $res.data.PrimarySmtpAddress
+Check 'nor a blend of the two'          'SharedMailbox' $res.data.RecipientTypeDetails
+
+# Genuinely ambiguous: two rows both answer to the identity. Guessing here would convert or forward the
+# wrong mailbox, so the op refuses and says which term to use instead.
+$twin = Mbx 'bob@contoso.com' 'bob.roe@contoso.com' 'Bob Roe (2)' 'UserMailbox'
+$res = RunGetMailbox 'bob@contoso.com' @($bob, $twin)
+Check 'an ambiguous identity is refused' $false $res.ok
+Check 'and no mailbox is offered'        $true  ($null -eq $res.data)
+Check 'and the message says why'         $true  ($res.error -like '*matches 2 mailboxes*')
+Check 'and says what to use instead'     $true  ($res.error -like '*primary SMTP address*')
+
+# Mutation check: the shape the fix depends on. Reverting to a bare `$null -eq `$m test flips this.
+$gmCode = ($gmBody -split "`n" | Where-Object { $_ -notmatch '^\s*#' }) -join " "
+Check 'the result is normalised to an array' $true ($gmCode -match '@\(Get-Mailbox')
+Check 'and filtered by __isWanted'           $true ($gmCode -match '__isWanted')
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

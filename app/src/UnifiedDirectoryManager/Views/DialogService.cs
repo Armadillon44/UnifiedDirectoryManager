@@ -47,9 +47,15 @@ public sealed class DialogService : IDialogService
         _csvImporter = new BulkUserCsvImporter(directory, graph);
     }
 
+    /// <summary>
+    /// The window a dialog should belong to, or null when there is none — during teardown, or before the
+    /// main window exists. Application.Current is itself null once the app has shut down, which is exactly
+    /// when a late async callback arrives.
+    /// </summary>
     private static Window? Owner =>
-        Application.Current.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive)
-        ?? Application.Current.MainWindow;
+        Application.Current is { } app
+            ? app.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive) ?? app.MainWindow
+            : null;
 
     public IReadOnlyList<AdObjectRow>? PickObjects(string title, AdObjectType type, bool multiSelect)
     {
@@ -145,8 +151,20 @@ public sealed class DialogService : IDialogService
         return window.ShowDialog() == true ? window.SelectedDns : null;
     }
 
-    public void Alert(string title, string message) =>
-        MessageBox.Show(Owner!, message, title, MessageBoxButton.OK, MessageBoxImage.Information);
+    /// <summary>
+    /// Shows a message, owned by a window when there is one and owner-less when there is not.
+    ///
+    /// This used to pass Owner! — a null-forgiveness on a genuinely nullable value — and MessageBox.Show
+    /// throws ArgumentNullException on a null owner. Every other method here assigns `Owner = Owner`, which
+    /// accepts null happily; only this one dereferenced it. The alerts that reached it late — "Password not
+    /// set", an import failure, a sync problem — are exactly the ones that arrive after the window has gone,
+    /// so the message an operator most needed was the one thrown away.
+    /// </summary>
+    public void Alert(string title, string message)
+    {
+        if (Owner is { } owner) MessageBox.Show(owner, message, title, MessageBoxButton.OK, MessageBoxImage.Information);
+        else MessageBox.Show(message, title, MessageBoxButton.OK, MessageBoxImage.Information);
+    }
 
     public void ShowBulkResult(BulkResult result) =>
         new BulkResultWindow(result) { Owner = Owner }.ShowDialog();

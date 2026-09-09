@@ -79,6 +79,16 @@ public partial class EditPaneViewModel : ObservableObject
 
     private string? _dn;
 
+    /// <summary>
+    /// Bumped by every load. A load whose token is stale has been superseded and must not touch the pane —
+    /// it would repopulate every field from the object it read while <see cref="_dn"/> names a different
+    /// one, and the next Save would write those values to the wrong object.
+    ///
+    /// A token rather than a DN comparison because the pane reloads the SAME object after a save, so
+    /// "is this still the same DN" cannot tell a superseded load from the current one.
+    /// </summary>
+    private int _loadToken;
+
     /// <summary>Raised after a successful write so the host can refresh the list view.</summary>
     public event Action? ObjectChanged;
 
@@ -169,6 +179,7 @@ public partial class EditPaneViewModel : ObservableObject
 
     public void Clear()
     {
+        _loadToken++; // cancel any in-flight load: it must not repopulate the pane we are clearing
         _dn = null;
         HasObject = false;
         Title = "No object selected";
@@ -195,7 +206,16 @@ public partial class EditPaneViewModel : ObservableObject
 
     public async Task LoadAsync(string distinguishedName, AdObjectType type)
     {
-        _dn = distinguishedName;
+        var token = ++_loadToken;
+
+        // Nothing may target this object until it is actually loaded. _dn is what SaveAsync and the group
+        // commands write to, so assigning it up front is what let a Save aimed at the object still on screen
+        // land on the one being loaded — with a confirmation naming the object it did NOT write to.
+        //
+        // HasObject goes down for the same reason: the pane was still showing the previous object's fields,
+        // including unsaved edits, with its buttons live. An empty pane during a load is the honest state.
+        _dn = null;
+        HasObject = false;
         Location = DirectoryService.ParentDn(distinguishedName);
         IsUser = type == AdObjectType.User;
         IsComputer = type == AdObjectType.Computer;
@@ -204,6 +224,8 @@ public partial class EditPaneViewModel : ObservableObject
         try
         {
             var attrs = await _directory.LoadObjectAsync(distinguishedName);
+            if (token != _loadToken) return; // superseded — the pane now belongs to another object
+            _dn = distinguishedName; // this load owns the pane from here, so writes may target it
             var map = attrs.GroupBy(a => a.LdapName, StringComparer.OrdinalIgnoreCase)
                            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
@@ -283,6 +305,7 @@ public partial class EditPaneViewModel : ObservableObject
                 try
                 {
                     var membership = await _directory.GetGroupMembersAsync(distinguishedName);
+                    if (token != _loadToken) return; // superseded
                     foreach (var m in membership.Members)
                         Members.Add(new GroupMemberRow(m.Name, m.DistinguishedName));
                     if (membership.Truncated)
@@ -294,8 +317,11 @@ public partial class EditPaneViewModel : ObservableObject
             PopulateAttributeEditor(attrs, type);
 
             // Accidental-deletion protection (read via the object's DACL).
-            try { _originalProtected = await _directory.GetDeletionProtectionAsync(distinguishedName); }
-            catch { _originalProtected = false; } // unreadable DACL: show as unprotected rather than failing the load
+            bool protectedNow;
+            try { protectedNow = await _directory.GetDeletionProtectionAsync(distinguishedName); }
+            catch { protectedNow = false; } // unreadable DACL: show as unprotected rather than failing the load
+            if (token != _loadToken) return; // superseded — must not touch the shared baseline below
+            _originalProtected = protectedNow;
             IsProtectedFromDeletion = _originalProtected;
 
             Title = map.TryGetValue("displayName", out var dn0) && dn0.DisplayValues.Count > 0
@@ -319,20 +345,21 @@ public partial class EditPaneViewModel : ObservableObject
 
             // Merge the user's Entra (cloud) group memberships into the Member Of tab (best-effort, when signed in).
             if (IsUser && _graph.IsSignedIn && !string.IsNullOrWhiteSpace(_cloudUpn))
-                _ = LoadCloudMembershipsAsync(_cloudUpn!, distinguishedName);
+                _ = LoadCloudMembershipsAsync(_cloudUpn!, token);
 
             // Classify the on-prem groups (Security/Distribution + scope) for the Member Of "Type" column (best-effort).
             if (MemberOf.Any(m => !m.IsCloud))
-                _ = LoadOnPremGroupKindsAsync(distinguishedName);
+                _ = LoadOnPremGroupKindsAsync(token);
 
             HasObject = true;
         }
         catch (Exception ex)
         {
+            if (token != _loadToken) return; // superseded: its failure is not this pane's problem
             _onError(DirectoryService.Friendly(ex));
             Clear();
         }
-        finally { IsBusy = false; }
+        finally { if (token == _loadToken) IsBusy = false; }
     }
 
     [RelayCommand]
@@ -476,15 +503,15 @@ public partial class EditPaneViewModel : ObservableObject
     [RelayCommand]
     private async Task AddToGroupsAsync()
     {
-        if (_dn is null) return;
-        var picked = _dialogs.PickGroupsHybrid($"Add “{Title}” to groups");
+        if (CaptureTarget() is not { } who) return;
+        var picked = _dialogs.PickGroupsHybrid($"Add “{who.Title}” to groups");
         if (picked is null || picked.Count == 0) return;
 
         var onPrem = picked.Where(g => g.Channel == GroupChannel.OnPremAd && g.Dn is not null).ToList();
         var cloud = picked.Where(g => g.Channel == GroupChannel.EntraGraph && g.CloudId is not null).ToList();
         var exchange = picked.Where(g => g.Channel == GroupChannel.ExchangeOnline).ToList();
 
-        if (!_dialogs.Confirm("Confirm", $"Add “{Title}” to {picked.Count} group(s)?",
+        if (!_dialogs.Confirm("Confirm", $"Add “{who.Title}” to {picked.Count} group(s)?",
                 picked.Select(g => $"{g.ChannelLabel}: {g.Name}")))
             return;
 
@@ -502,10 +529,19 @@ public partial class EditPaneViewModel : ObservableObject
             var cloudErrors = new List<string>();
             if (cloud.Count > 0)
             {
-                var cloudId = await ResolveCloudObjectIdAsync();
-                if (cloudId is null)
+                string? cloudId = null;
+                var lookupFailed = false;
+                // "No Entra twin" and "the lookup failed" are different facts and must not share a message:
+                // blaming sync for a throttled request sends the operator to the wrong place.
+                try { cloudId = await ResolveCloudObjectIdAsync(who); }
+                catch (Exception ex)
+                {
+                    lookupFailed = true;
+                    cloudErrors.Add("Couldn't check Entra ID for this object — cloud groups were skipped: " + GraphErrors.Friendly(ex));
+                }
+                if (!lookupFailed && cloudId is null)
                     cloudErrors.Add("Couldn't find this object in Entra ID (it may not be synced yet) — cloud groups were skipped.");
-                else
+                else if (cloudId is not null)
                     foreach (var g in cloud)
                     {
                         try { await _graph.AddMemberToGroupAsync(g.CloudId!, cloudId); }
@@ -517,13 +553,13 @@ public partial class EditPaneViewModel : ObservableObject
             // The member identity is this user's UPN (mailboxes/users only).
             if (exchange.Count > 0)
             {
-                if (string.IsNullOrWhiteSpace(_cloudUpn))
+                if (string.IsNullOrWhiteSpace(who.CloudUpn))
                     cloudErrors.Add("No mailbox identity for this object — Exchange distribution groups were skipped.");
                 else
                     foreach (var g in exchange)
                     {
                         var groupId = !string.IsNullOrWhiteSpace(g.Smtp) ? g.Smtp! : (g.CloudId ?? g.Name);
-                        try { await _exchange.AddDistributionGroupMemberAsync(groupId, _cloudUpn!); }
+                        try { await _exchange.AddDistributionGroupMemberAsync(groupId, who.CloudUpn!); }
                         catch (Exception ex) { cloudErrors.Add($"{g.Name} (Exchange): {ex.Message}"); }
                     }
             }
@@ -537,24 +573,36 @@ public partial class EditPaneViewModel : ObservableObject
         finally { IsBusy = false; }
     }
 
-    /// <summary>Resolves the selected object's Entra object id (user by UPN, computer by name); null if not synced.</summary>
-    private async Task<string?> ResolveCloudObjectIdAsync()
+    /// <summary>
+    /// Who a write is FOR, captured when the operator confirms it. A group add/remove takes seconds — each
+    /// Exchange call is a round trip on a serialised channel — and nothing stops the operator selecting
+    /// another object meanwhile. Reading the live fields across those awaits meant the second half of a
+    /// write could target whoever was selected by then: removing the newly-selected user from the previous
+    /// user's distribution lists, and reporting success.
+    /// </summary>
+    private readonly record struct WriteTarget(
+        string Dn, string Title, string? CloudUpn, string? CloudSid, string? ComputerName, bool IsUser, bool IsComputer);
+
+    /// <summary>Snapshots the current object. Null when nothing is loaded, so callers bail as they did before.</summary>
+    private WriteTarget? CaptureTarget() =>
+        _dn is null ? null : new WriteTarget(_dn, Title, _cloudUpn, _cloudSid, _cloudComputerName, IsUser, IsComputer);
+
+    /// <summary>Resolves the captured object's Entra object id (user by UPN, computer by name).</summary>
+    /// <returns>The id, or null when the object genuinely has no Entra twin. Throws when the lookup FAILED —
+    /// the caller must tell those apart, because "not synced" and "Graph is throttling" need different words.</returns>
+    private async Task<string?> ResolveCloudObjectIdAsync(WriteTarget who)
     {
-        try
-        {
-            if (IsUser && !string.IsNullOrWhiteSpace(_cloudUpn))
-                return (await _graph.GetUserByUpnAsync(_cloudUpn))?.Id;
-            if (IsComputer && !string.IsNullOrWhiteSpace(_cloudComputerName))
-                return (await _graph.GetDevicesByComputerAsync(_cloudComputerName, _cloudSid)).FirstOrDefault()?.Id;
-        }
-        catch (Exception ex) { AppLog.Instance.Warn("Cloud object-id resolution failed: " + ex.Message); }
+        if (who.IsUser && !string.IsNullOrWhiteSpace(who.CloudUpn))
+            return (await _graph.GetUserByUpnAsync(who.CloudUpn))?.Id;
+        if (who.IsComputer && !string.IsNullOrWhiteSpace(who.ComputerName))
+            return (await _graph.GetDevicesByComputerAsync(who.ComputerName, who.CloudSid)).FirstOrDefault()?.Id;
         return null;
     }
 
     [RelayCommand]
     private async Task RemoveFromGroupAsync(System.Collections.IList? selected)
     {
-        if (_dn is null) return;
+        if (CaptureTarget() is not { } who) return;
 
         // The "Remove selected" button passes the list's SelectedItems so several groups can be
         // removed at once; fall back to nothing if the parameter is missing.
@@ -566,8 +614,8 @@ public partial class EditPaneViewModel : ObservableObject
         var exchange = groups.Where(g => g.IsExchange).ToList();               // distribution / mail-enabled security
 
         var heading = groups.Count == 1
-            ? $"Remove “{Title}” from this group?"
-            : $"Remove “{Title}” from these {groups.Count} groups?";
+            ? $"Remove “{who.Title}” from this group?"
+            : $"Remove “{who.Title}” from these {groups.Count} groups?";
         var lines = groups.Select(g => $"{g.Source}: {g.Name}").ToList();
         if (cloud.Count > 0)
             lines.Add("Note: membership of a group synced from on-prem AD is mastered on-prem and can't be removed in the cloud.");
@@ -581,17 +629,24 @@ public partial class EditPaneViewModel : ObservableObject
             if (onPrem.Count > 0)
             {
                 var change = new PendingChange { Op = ChangeOp.RemoveFromGroups, Values = onPrem.Select(g => g.Dn).ToList() };
-                await _directory.ApplyChangesAsync(_dn!, new[] { change });
+                await _directory.ApplyChangesAsync(who.Dn, new[] { change });
             }
 
             // Cloud (Graph) groups: resolve this object's Entra id, then remove it from each (the group id is the row's Dn).
             var cloudErrors = new List<string>();
             if (cloud.Count > 0)
             {
-                var cloudId = await ResolveCloudObjectIdAsync();
-                if (cloudId is null)
+                string? cloudId = null;
+                var lookupFailed = false;
+                try { cloudId = await ResolveCloudObjectIdAsync(who); }
+                catch (Exception ex)
+                {
+                    lookupFailed = true;
+                    cloudErrors.Add("Couldn't check Entra ID for this object — cloud groups were NOT removed: " + GraphErrors.Friendly(ex));
+                }
+                if (!lookupFailed && cloudId is null)
                     cloudErrors.Add("Couldn't find this object in Entra ID — cloud groups were skipped.");
-                else
+                else if (cloudId is not null)
                     foreach (var g in cloud)
                     {
                         try { await _graph.RemoveMemberFromGroupAsync(g.Dn, cloudId); }
@@ -603,13 +658,13 @@ public partial class EditPaneViewModel : ObservableObject
             // Exchange module. The member identity is this user's UPN; the group is addressed by its primary SMTP.
             if (exchange.Count > 0)
             {
-                if (string.IsNullOrWhiteSpace(_cloudUpn))
+                if (string.IsNullOrWhiteSpace(who.CloudUpn))
                     cloudErrors.Add("No mailbox identity for this object — Exchange distribution groups were skipped.");
                 else
                     foreach (var g in exchange)
                     {
                         var groupId = !string.IsNullOrWhiteSpace(g.Smtp) ? g.Smtp! : g.Name;
-                        try { await _exchange.RemoveDistributionGroupMemberAsync(groupId, _cloudUpn!); }
+                        try { await _exchange.RemoveDistributionGroupMemberAsync(groupId, who.CloudUpn!); }
                         catch (Exception ex) { cloudErrors.Add($"{g.Name} (Exchange): {ex.Message}"); }
                     }
             }
@@ -635,12 +690,12 @@ public partial class EditPaneViewModel : ObservableObject
     /// <summary>Best-effort merge of the user's <b>cloud-only</b> Entra group memberships into the Member Of list
     /// (marked "Cloud"). Synced groups are deliberately excluded — they're already shown as their on-prem rows;
     /// listing their Entra twin too would conflate synced and cloud-only groups.</summary>
-    private async Task LoadCloudMembershipsAsync(string upn, string forDn)
+    private async Task LoadCloudMembershipsAsync(string upn, int token)
     {
         try
         {
             var groups = await _graph.GetUserGroupsByUpnAsync(upn);
-            if (!string.Equals(_dn, forDn, StringComparison.OrdinalIgnoreCase)) return; // selection changed mid-load
+            if (token != _loadToken) return; // superseded (a reload of the same object counts)
             foreach (var g in groups.Where(g => !g.IsSynced))
                 if (MemberOf.All(m => !(m.IsCloud && string.Equals(m.Dn, g.Id, StringComparison.OrdinalIgnoreCase))))
                     // Distribution lists / mail-enabled security groups are Exchange-managed — label their source
@@ -649,12 +704,21 @@ public partial class EditPaneViewModel : ObservableObject
                     MemberOf.Add(new GroupMembership(g.DisplayName, g.Id, g.IsExchangeManaged ? "Exchange" : "Cloud",
                         isCloud: true, kind: g.KindLabel, isExchange: g.IsExchangeManaged, smtp: g.Mail));
         }
-        catch (Exception ex) { AppLog.Instance.Warn("Could not load cloud group memberships: " + ex.Message); }
+        catch (Exception ex)
+        {
+            // Same rule as the Copy flows: a short membership list must not be presented as the whole one.
+            // Remove-from-groups operates off this list, so a silent gap here is a removal that quietly
+            // misses groups.
+            if (token == _loadToken)
+                _onError("Cloud group memberships could not be read, so any cloud groups are MISSING from Member Of: "
+                         + GraphErrors.Friendly(ex));
+            AppLog.Instance.Warn("Could not load cloud group memberships: " + ex.Message);
+        }
     }
 
     /// <summary>Best-effort fill of the on-prem groups' <see cref="GroupMembership.Kind"/> column
     /// (Security/Distribution + scope, read from each group's <c>groupType</c> bitmask in one query).</summary>
-    private async Task LoadOnPremGroupKindsAsync(string forDn)
+    private async Task LoadOnPremGroupKindsAsync(int token)
     {
         try
         {
@@ -662,7 +726,7 @@ public partial class EditPaneViewModel : ObservableObject
                               .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             if (dns.Count == 0) return;
             var kinds = await _directory.GetGroupTypesAsync(dns);
-            if (!string.Equals(_dn, forDn, StringComparison.OrdinalIgnoreCase)) return; // selection changed mid-load
+            if (token != _loadToken) return; // superseded (a reload of the same object counts)
             foreach (var m in MemberOf.Where(m => !m.IsCloud))
                 if (kinds.TryGetValue(m.Dn, out var k) && !string.IsNullOrEmpty(k))
                     m.Kind = k;

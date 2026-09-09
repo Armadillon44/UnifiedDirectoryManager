@@ -18,6 +18,10 @@ public partial class TreeNodeViewModel : ObservableObject
     private readonly IDirectoryService _directory;
     private readonly Action<string> _onError;
     private readonly Action? _onCheckChanged;
+
+    /// <summary>Distinguished names that start ticked, shared down the whole tree as it loads. Null outside
+    /// the multi-select OU picker.</summary>
+    private readonly ISet<string>? _checkedDns;
     private bool _loaded;
 
     public AdNode Node { get; }
@@ -34,6 +38,24 @@ public partial class TreeNodeViewModel : ObservableObject
 
     /// <summary>True for a pinned row.</summary>
     public bool IsFavorite => Favorite is not null;
+
+    /// <summary>
+    /// This node's distinguished name IF it has a real one, else null.
+    ///
+    /// <see cref="DistinguishedName"/> is overloaded as a marker channel: the cloud sections carry
+    /// "cloud:&lt;kind&gt;", the Favourites row carries "fav:root", and a pinned saved search carries
+    /// "fav:&lt;name&gt;". None of those means anything to a domain controller, and handing one over earns a
+    /// BAD_NAME — which is what issue #8 was, and what still happened afterwards through New User, Bulk
+    /// Create and Advanced Search, because that fix only guarded child enumeration.
+    ///
+    /// Consumers that are about to USE a DN should read this instead. Returning null makes the next
+    /// consumer safe by construction, which a guard added at each call site does not.
+    /// </summary>
+    public string? DirectoryDn =>
+        CloudKind is null && !IsPlaceholder && !IsFavoritesRoot
+        && Favorite is not { Kind: FavoriteKind.SavedSearch }
+            ? Node.DistinguishedName
+            : null;
 
     /// <summary>
     /// True where this node's children come from a directory search on its own distinguished name. False for
@@ -104,14 +126,25 @@ public partial class TreeNodeViewModel : ObservableObject
     /// <summary>Whether this node is ticked in the multi-select OU picker (ignored elsewhere).</summary>
     [ObservableProperty] private bool _isChecked;
 
+    /// <param name="checkedDns">Distinguished names that start out ticked. Carried down to every child as
+    /// the tree loads, because the tree loads LAZILY: a node that should be ticked may not exist yet when
+    /// the picker opens, and having each node answer for itself is the only place the rule works from.</param>
     public TreeNodeViewModel(AdNode node, IDirectoryService directory, Action<string> onError,
-        Action? onCheckChanged = null, bool isPlaceholder = false)
+        Action? onCheckChanged = null, bool isPlaceholder = false, ISet<string>? checkedDns = null)
     {
         Node = node;
         _directory = directory;
         _onError = onError;
         _onCheckChanged = onCheckChanged;
+        _checkedDns = checkedDns;
         IsPlaceholder = isPlaceholder;
+
+        // The FIELD, not the property: setting the property here would fire the check-changed callback
+        // during construction, before the owner has finished wiring itself up.
+        if (!isPlaceholder && checkedDns is not null
+            && !string.IsNullOrEmpty(node.DistinguishedName)
+            && checkedDns.Contains(node.DistinguishedName))
+            _isChecked = true;
 
         if (!isPlaceholder && node.HasChildren)
             Children.Add(new TreeNodeViewModel(
@@ -198,7 +231,9 @@ public partial class TreeNodeViewModel : ObservableObject
             // duration of the call and leave it empty for good if the call failed — a domain controller
             // hiccup would read as "this OU is empty now".
             var children = await _directory.GetChildrenAsync(DistinguishedName);
-            var loaded = children.Select(c => new TreeNodeViewModel(c, _directory, _onError, _onCheckChanged)).ToList();
+            var loaded = children
+                .Select(c => new TreeNodeViewModel(c, _directory, _onError, _onCheckChanged, checkedDns: _checkedDns))
+                .ToList();
             Children.Clear();
             foreach (var child in loaded) Children.Add(child);
         }
