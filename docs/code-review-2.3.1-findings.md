@@ -1,6 +1,6 @@
 # Code review findings — 2.3.1 baseline
 
-Status: **14 of 28 fixed. See the status table below before starting anything.**
+Status: **19 of 28 fixed. See the status table below before starting anything.**
 
 The working tree these were found in is `master` at **`ac09e77` (tag `v2.3.1`)**. Every `file:line` below is
 pinned to that commit. **Several of those files have since changed** — `EditPaneViewModel.cs`,
@@ -11,8 +11,9 @@ against the original with `git show ac09e77:<path>` rather than trusting it agai
 
 ## Status
 
-Fixed on branches `fix/silent-failures-2.3.2` and `fix/review-batch-2` (branched off it; neither merged at
-the time of writing, so check whether they have landed before repeating any of it).
+Fixed on branches `fix/silent-failures-2.3.2`, `fix/review-batch-2` and `fix/review-batch-3`, each branched
+off the last. None was merged at the time of writing, so check whether they have landed before repeating
+any of it.
 
 | # | Finding | State | Where |
 |---|---|---|---|
@@ -30,6 +31,11 @@ the time of writing, so check whether they have landed before repeating any of i
 | **F6** | The Exchange session survives a same-tenant admin switch | **Fixed** | `d6c8b65`. The session records which signed-in account it belongs to and is dropped when that changes, sign-out included |
 | **F18** | Re-targeting the same cloud row lets a superseded load double every list | **Fixed** | `c18a81d`. `LoadDetailAsync` captures `_detailToken` and checks it alongside the row reference |
 | **F19** | A superseded post-save re-read stamps the new selection's values onto the old row | **Fixed** | `c18a81d`. The read now returns Loaded / Failed / Superseded, and only Loaded permits writing the sections back into a row |
+| **F5** | Membership writes silently skip, or lose the whole batch | **Fixed** | `4e9fbe1`. Directed LDAP modify instead of a read-modify-write: the DC compares the DNs, case-insensitively and against the whole attribute. "Already a member" is success, and a rejected batch retries per member so one bad value no longer takes the others with it. The policy is extracted as `ApplyMembershipPolicy` so it can be driven without a DC |
+| **F10** | Contact filter matches nothing; User filter also matches contacts | **Fixed** | `4e9fbe1`. Both narrowed by `objectClass` in both places that define them. Note the finding was wrong about where the Contact half bites — nothing opens the picker in Contact mode; it is Advanced Search. Any/Unknown deliberately still admits contacts, which AD accepts as group members |
+| **F11** | A pasted quoted, comma-containing name collapses to its last address | **Fixed** | `33063be`. Commas are found outside quoted names and angle-bracketed addresses, then pieces carrying no address are rejoined to the one they belong to — the unquoted `Doe, Jane <j@x.com>` form needed that second half |
+| **F12** | CSV import maps read-only attributes; re-importing the app's own export fails the batch | **Fixed** | `8a98307`. Read-only, multi-valued and DN-valued columns are classified `NotWritable` and named with a reason, which is deliberately a different message from "unrecognised". Correction: a *bare* export is already refused earlier for having no name column; the shape that reaches the create is an export with First name visible |
+| **F7** | Reconfiguring the tenant keeps the old tenant's AuthenticationRecord | **Fixed** | `f509455`. The record is dropped when tenant or client id changes, and a persisted one is only reused when it belongs to that tenant and app registration. `SignOut` no longer rebuilds via `Configure`, which closes the Tier 2 "signed back in when the delete fails" item on the same line. Pairs with F6 — that fix keys the Exchange session on `SignedInAccount`, which this is what makes trustworthy |
 | — | *everything else below* | **Not started** | — |
 
 **Regressions the fixes introduced, and their fixes**, recorded because they are the kind of thing that gets
@@ -47,7 +53,7 @@ as absent; and removing the 200-row read removed an accidental cap on a non-virt
   model be constructed without a tenant; all three are derivable, with virtual members, so a test overrides
   the two or three calls it exercises and anything it forgets still throws by name.
 - `PageDrain` — the paging loop, extracted and tested over an in-memory fetch.
-- **CI runs all thirteen suites on every push and pull request** (`.github/workflows/build-and-test.yml`).
+- **CI runs all sixteen suites on every push and pull request** (`.github/workflows/build-and-test.yml`).
 
 Two patterns are worth copying rather than re-inventing:
 
@@ -59,6 +65,22 @@ Two patterns are worth copying rather than re-inventing:
   twice, the superseded load never starts its second round trip, and the saved row keeps its own address.
   A structural assertion that a token exists passes against fully-restored bug code; this session has
   already been caught by that once.
+- `test-directory-writes.ps1` shows how to test code that needs a domain controller: extract the DECISION
+  from the transport (`ApplyMembershipPolicy` takes a `send` delegate) and drive it with a scripted sender
+  that refuses chosen calls with chosen LDAP result codes. The traffic itself is then assertable — one
+  request for a clean set, four when one member is a duplicate. Note that anything crossing the
+  `System.DirectoryServices.Protocols` boundary is untestable from PowerShell here (version mismatch), which
+  is why `IsMembershipNoOp` takes an `int`.
+
+Two traps that cost time in this session, both worth knowing before writing a suite:
+
+- **PowerShell variables are case-insensitive**, so a parameter named `$editable` shadows a script variable
+  named `$Editable`, and a loop variable `$p` shadows `$P`. Both produced confusing failures far from the
+  cause.
+- **PowerShell 7 treats typographic quotes as string delimiters.** The app's user-facing messages use them,
+  so a `-like` pattern containing one is a parse error. Flatten to ASCII before matching (see
+  `test-csv-import.ps1`). Also match warnings ONE AT A TIME — joining them first lets a wildcard span two
+  unrelated messages, which silently passed a wrong assertion here.
 
 Every fix in the table above was mutation-checked — the fix reverted, the suite confirmed red, the fix
 restored — which is what the house rule about guards is for.
