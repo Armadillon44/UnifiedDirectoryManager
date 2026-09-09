@@ -1,6 +1,6 @@
 # Code review findings — 2.3.1 baseline
 
-Status: **4 of 28 fixed. See the status table below before starting anything.**
+Status: **13 of 28 fixed. See the status table below before starting anything.**
 
 The working tree these were found in is `master` at **`ac09e77` (tag `v2.3.1`)**. Every `file:line` below is
 pinned to that commit. **Several of those files have since changed** — `EditPaneViewModel.cs`,
@@ -11,8 +11,8 @@ against the original with `git show ac09e77:<path>` rather than trusting it agai
 
 ## Status
 
-Fixed on branch `fix/silent-failures-2.3.2` (not yet merged at the time of writing; check whether it has
-landed before repeating any of it).
+Fixed on branches `fix/silent-failures-2.3.2` and `fix/review-batch-2` (branched off it; neither merged at
+the time of writing, so check whether they have landed before repeating any of it).
 
 | # | Finding | State | Where |
 |---|---|---|---|
@@ -20,6 +20,16 @@ landed before repeating any of it).
 | **F3** | "Remove all cloud groups" reports Success on a failed read | **Fixed** | `c6aa9f4`. `ScenarioRunner` needed no change — its per-step catch was already correct, so removing the swallow was enough |
 | **F4** | Cloud member/membership lists silently capped at 200 | **Fixed** | `c6aa9f4`, then `46f08d1` moved the loop into `PageDrain`. Note the display cap added in `fad94d9`: the lists bind to a deliberately non-virtualised `ListView`, so the reads drain fully but the pane renders the first 500 and says how many it is not showing |
 | **F9** | Cancelled scenario recorded as Success | **Fixed** | `4c921dd`, corrected in `412d219` (the rule had no `cancelled` check on its first branch — the exact gap its own test comment claimed to protect) |
+| **F16** | Marker DNs ("fav:root", "cloud:Users") reach New User / Bulk Create / Advanced Search | **Fixed** | `e1ffc6f`. `TreeNodeViewModel.DirectoryDn` returns null wherever there is no real DN, so the next consumer is safe by construction rather than by a guard repeated at each call site |
+| **F17** | The Favourites section vanishes after a reconnect | **Fixed** | `e1ffc6f`. `Initialize()` now drops `_favoritesRoot` with the other cached roots; pin/unpin had been quietly editing an orphan |
+| **F8** | A torn settings write destroys every pinned favourite | **Fixed** | `d8c4985`. Write-then-rename, and an unreadable file is kept as `settings.bad-<n>.json` and reported through the new `ISettingsStore.RecoveredFrom`, which startup shows the operator |
+| **F13** | An ambiguous mailbox identity returns a merged, fabricated mailbox | **Fixed** | `c1f4dc5`. A single result is trusted; an array is filtered by `__isWanted`; several matches refuse rather than guess |
+| **F1** | The operation timeout is inert; a hung call deadlocks every Exchange feature | **Fixed** | `d6c8b65`. The read is raced against `Task.Delay`; killing the host is what ends the orphaned `ReadLine` |
+| **F14** | The host's `QUIT` breaks the wrong scope; every disconnect ends in a kill | **Fixed** | `d6c8b65`. The arm `exit`s, and `KillLocked` closes stdin so the loop's null-line escape is reachable |
+| **F15** | App exit blocks the UI thread on the gate | **Fixed** | `d6c8b65`. `Disconnect` tries the gate without waiting and otherwise kills the host out from under the in-flight op |
+| **F6** | The Exchange session survives a same-tenant admin switch | **Fixed** | `d6c8b65`. The session records which signed-in account it belongs to and is dropped when that changes, sign-out included |
+| **F18** | Re-targeting the same cloud row lets a superseded load double every list | **Fixed** | `c18a81d`. `LoadDetailAsync` captures `_detailToken` and checks it alongside the row reference |
+| **F19** | A superseded post-save re-read stamps the new selection's values onto the old row | **Fixed** | `c18a81d`. The read now returns Loaded / Failed / Superseded, and only Loaded permits writing the sections back into a row |
 | — | *everything else below* | **Not started** | — |
 
 **Regressions the fixes introduced, and their fixes**, recorded because they are the kind of thing that gets
@@ -31,13 +41,27 @@ as absent; and removing the 200-row read removed an accidental cap on a non-virt
 
 **Test infrastructure now exists** (`46f08d1`), which changes what is cheap to fix from here:
 
-- `app/test/UnifiedDirectoryManager.TestSupport` — `FakeDirectoryService` can **park a read until the test
-  releases it**, and records every write, so timing bugs are testable. `InertGraphService` /
-  `InertExchangeService` exist so a view model can be constructed without a tenant.
+- `app/test/UnifiedDirectoryManager.TestSupport` — `FakeDirectoryService`, `HoldableGraphService` and
+  `HoldableExchangeService` can **park a read until the test releases it**, and record every write, so
+  timing bugs are testable. `InertGraphService`, `InertExchangeService` and `InertDialogService` let a view
+  model be constructed without a tenant; all three are derivable, with virtual members, so a test overrides
+  the two or three calls it exercises and anything it forgets still throws by name.
 - `PageDrain` — the paging loop, extracted and tested over an in-memory fetch.
-- **CI runs all ten suites on every push and pull request** (`.github/workflows/build-and-test.yml`).
+- **CI runs all thirteen suites on every push and pull request** (`.github/workflows/build-and-test.yml`).
 
-That unlocks **F18 and F19** in particular: they are the same race family as F2, and were untestable before.
+Two patterns are worth copying rather than re-inventing:
+
+- `test-exchange-channel.ps1` drives a **real `pwsh` child over a real pipe**. The inert-timeout bug was
+  invisible to anything else, because `StreamReader.ReadLine` blocks in a native read that no mock
+  reproduces. Each child announces readiness on stderr first, so process launch is not timed as if it were
+  the operation.
+- `test-cloudpane-race.ps1` asserts the **symptom**, not the guard: the licence appears once rather than
+  twice, the superseded load never starts its second round trip, and the saved row keeps its own address.
+  A structural assertion that a token exists passes against fully-restored bug code; this session has
+  already been caught by that once.
+
+Every fix in the table above was mutation-checked — the fix reverted, the suite confirmed red, the fix
+restored — which is what the house rule about guards is for.
 
 ---
 
