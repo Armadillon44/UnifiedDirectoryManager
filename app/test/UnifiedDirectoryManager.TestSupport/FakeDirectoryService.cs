@@ -98,8 +98,46 @@ public sealed class FakeDirectoryService : IDirectoryService
 
     public Task ConnectAsync(ConnectionProfile profile, string password, CancellationToken cancellationToken = default) => throw Unused();
     public void Disconnect() => throw Unused();
-    public AdNode GetRootNode() => throw Unused();
-    public Task<IReadOnlyList<AdNode>> GetChildrenAsync(string distinguishedName, CancellationToken cancellationToken = default) => throw Unused();
+    /// <summary>The tree root handed to a picker. Null until a test builds one.</summary>
+    public AdNode? RootNode { get; set; }
+
+    /// <summary>Children per container DN. A DN with no entry has no children, which is not an error.</summary>
+    public Dictionary<string, List<AdNode>> Tree { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Container DNs whose children were actually asked for, in order — the tree loads lazily, and
+    /// which parts of it a test caused to load is usually the thing under test.</summary>
+    public List<string> ChildReads { get; } = new();
+
+    /// <summary>
+    /// Builds a container node and registers it under <paramref name="parentDn"/> when given.
+    /// <paramref name="hasChildren"/> is stated rather than inferred because AdNode.HasChildren is
+    /// init-only, and it is what decides whether the tree offers to expand the node at all.
+    /// </summary>
+    public AdNode AddOu(string distinguishedName, string name, string? parentDn = null, bool hasChildren = false)
+    {
+        var node = new AdNode
+        {
+            DistinguishedName = distinguishedName,
+            Name = name,
+            Type = AdObjectType.OrganizationalUnit,
+            HasChildren = hasChildren,
+        };
+        if (parentDn is not null)
+        {
+            if (!Tree.TryGetValue(parentDn, out var kids)) Tree[parentDn] = kids = new List<AdNode>();
+            kids.Add(node);
+        }
+        return node;
+    }
+
+    public AdNode GetRootNode() => RootNode ?? throw Unused();
+
+    public Task<IReadOnlyList<AdNode>> GetChildrenAsync(string distinguishedName, CancellationToken cancellationToken = default)
+    {
+        ChildReads.Add(distinguishedName);
+        Tree.TryGetValue(distinguishedName, out var kids);
+        return Task.FromResult((IReadOnlyList<AdNode>)(kids ?? new List<AdNode>()));
+    }
     public Task<IReadOnlyList<AdObjectRow>> ListObjectsAsync(string baseDn, AdObjectType filter, IReadOnlyList<string> columns, bool subtree, CancellationToken cancellationToken = default) => throw Unused();
     public Task<IReadOnlyList<AdObjectRow>> SearchAsync(SearchQuery query, IReadOnlyList<string> columns, CancellationToken cancellationToken = default) => throw Unused();
     public Task<ObjectBasicInfo> GetBasicInfoAsync(string distinguishedName, CancellationToken cancellationToken = default) => throw Unused();
