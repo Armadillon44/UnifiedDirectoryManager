@@ -1526,8 +1526,36 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                         $r = __arg $payload
                         switch ($r.op) {
                             'get-mailbox' {
-                                $m = Get-Mailbox -Identity $r.identity -ErrorAction SilentlyContinue
-                                if ($null -eq $m) { __emit @{ ok = $true; data = $null } }
+                                # This op is a PROBE: null data means "no mailbox", and callers act on that
+                                # (the licence-removal guardrail warns only when a regular mailbox comes back).
+                                # So it must never fabricate one.
+                                #
+                                # A single object is a real resolution -- Exchange matched some identity form,
+                                # possibly one __isWanted does not list (an alias-only proxy address), so trust
+                                # it. An ARRAY is the dangerous shape, and it arrives two ways: a non-existent
+                                # -Identity makes an Exchange Get- cmdlet return EVERY mailbox, and a genuinely
+                                # ambiguous identity returns the several that matched. The old code tested
+                                # $null -eq $m, which is false for an array, and then [string]$m.DisplayName
+                                # space-joined the lot into one blended mailbox with someone else's primary
+                                # address, type and forwarding state -- which the ExOL tab then displayed and
+                                # converted or forwarded.
+                                $want = ([string]$r.identity).Trim()
+                                $all = @(Get-Mailbox -Identity $r.identity -ErrorAction SilentlyContinue)
+                                $m = $null
+                                $ambiguous = $false
+                                if ($all.Count -eq 1) { $m = $all[0] }
+                                elseif ($all.Count -gt 1) {
+                                    $hits = @($all | Where-Object { __isWanted $_ $want })
+                                    if ($hits.Count -eq 1) { $m = $hits[0] }
+                                    elseif ($hits.Count -gt 1) { $ambiguous = $true }
+                                    # $hits.Count -eq 0 is the "returned everything" case: nothing here is the
+                                    # mailbox that was asked for, so the honest answer is that there isn't one.
+                                }
+
+                                if ($ambiguous) {
+                                    __emit @{ ok = $false; error = ("'" + $want + "' matches " + $hits.Count + " mailboxes in Exchange Online, so it is not safe to act on any of them. Use the primary SMTP address or the user principal name instead.") }
+                                }
+                                elseif ($null -eq $m) { __emit @{ ok = $true; data = $null } }
                                 else {
                                     __emit @{ ok = $true; data = @{
                                         DisplayName = [string]$m.DisplayName
