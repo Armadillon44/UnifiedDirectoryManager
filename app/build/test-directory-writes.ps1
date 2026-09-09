@@ -53,24 +53,54 @@ if ($null -eq $policy) { throw 'DirectoryService has no ApplyMembershipPolicy â€
 # loading System.DirectoryServices.Protocols, whose PowerShell-shipped version does not match the one this
 # assembly was built against.
 $NO_SUCH_ATTRIBUTE       = 16   # removing a value the attribute does not hold
-$ATTRIBUTE_OR_VALUE_EXISTS = 20 # adding a value it already holds
+$ATTRIBUTE_OR_VALUE_EXISTS = 20 # adding a value it already holds, per the RFC
 $INSUFFICIENT_ACCESS     = 50   # a real failure, and the one an under-privileged helpdesk account hits
 $UNWILLING_TO_PERFORM    = 53   # a real failure: constraint, e.g. removing the primary group
+# What Active Directory ACTUALLY answers for a member already in the group. Not 20. This suite passed
+# without it, because it asserted the RFC rather than the directory.
+$ENTRY_ALREADY_EXISTS    = 68
+
+# The DC's extended error, verbatim from the failure that exposed this. Protocol text, sent in English
+# whatever the locale -- unlike the exception message, which .NET translates.
+$AD_ALREADY_MEMBER = '00000562: UpdErr: DSID-031A11DA, problem 6005 (ENTRY_EXISTS), data 0'
+$AD_NOT_MEMBER     = '00000561: UpdErr: DSID-031A11E2, problem 5001 (NO_ATTRIBUTE_OR_VAL), data 0'
+$AD_ACCESS_DENIED  = '00002098: SecErr: DSID-03150F94, problem 4003 (INSUFF_ACCESS_RIGHTS), data 0'
+
+function NoOp([int]$code, [bool]$add, [string]$serverError = $null) {
+    return $noOp.Invoke($null, @([int]$code, [bool]$add, [string]$serverError))
+}
 
 Write-Host "`n== which LDAP refusals mean 'the directory already agrees' ==" -ForegroundColor Cyan
 # These two, and only these two. Widening this set would swallow real failures; narrowing it brings back the
 # original bug in a new place, because a re-run of a partly-applied scenario hits them constantly.
-Check 'adding a duplicate value is a no-op'     $true  $noOp.Invoke($null, @([int]$ATTRIBUTE_OR_VALUE_EXISTS, $true))
-Check 'removing an absent value is a no-op'     $true  $noOp.Invoke($null, @([int]$NO_SUCH_ATTRIBUTE, $false))
+Check 'adding a duplicate value is a no-op'     $true  (NoOp $ATTRIBUTE_OR_VALUE_EXISTS $true)
+# THE ONE THAT WAS MISSING, and the reason an operator saw "The object exists." as a failure after adding
+# somebody to a group they were already in.
+Check 'and so does AD, which answers 68'        $true  (NoOp $ENTRY_ALREADY_EXISTS $true)
+Check 'removing an absent value is a no-op'     $true  (NoOp $NO_SUCH_ATTRIBUTE $false)
 # Crossed over, they are NOT no-ops: "no such attribute" on an ADD means the schema has no such attribute,
 # and "value exists" on a REMOVE should never happen at all.
-Check 'but not crossed over (add/no-such)'      $false $noOp.Invoke($null, @([int]$NO_SUCH_ATTRIBUTE, $true))
-Check 'nor crossed over (remove/exists)'        $false $noOp.Invoke($null, @([int]$ATTRIBUTE_OR_VALUE_EXISTS, $false))
-Check 'access denied is a real failure (add)'   $false $noOp.Invoke($null, @([int]$INSUFFICIENT_ACCESS, $true))
-Check 'and on remove'                           $false $noOp.Invoke($null, @([int]$INSUFFICIENT_ACCESS, $false))
-Check 'so is a constraint violation'            $false $noOp.Invoke($null, @([int]$UNWILLING_TO_PERFORM, $false))
-Check 'success is not a refusal at all'         $false $noOp.Invoke($null, @([int]0, $true))
-Check 'nor is "no result code" (-1)'            $false $noOp.Invoke($null, @([int]-1, $false))
+Check 'but not crossed over (add/no-such)'      $false (NoOp $NO_SUCH_ATTRIBUTE $true)
+Check 'nor crossed over (remove/exists)'        $false (NoOp $ATTRIBUTE_OR_VALUE_EXISTS $false)
+Check 'nor entry-exists on a remove'            $false (NoOp $ENTRY_ALREADY_EXISTS $false)
+Check 'access denied is a real failure (add)'   $false (NoOp $INSUFFICIENT_ACCESS $true)
+Check 'and on remove'                           $false (NoOp $INSUFFICIENT_ACCESS $false)
+Check 'so is a constraint violation'            $false (NoOp $UNWILLING_TO_PERFORM $false)
+Check 'success is not a refusal at all'         $false (NoOp 0 $true)
+Check 'nor is "no result code" (-1)'            $false (NoOp -1 $false)
+
+Write-Host "`n== the directory's own words are read, not just its code ==" -ForegroundColor Cyan
+# Betting on the result code alone is what went wrong. The extended error is matched too, so an unexpected
+# code carrying an unmistakable explanation is still understood rather than shown to the operator as a
+# failure. This is the exact string a domain controller sent when the defect was found.
+Check 'an unfamiliar code saying ENTRY_EXISTS'  $true  (NoOp 1 $true $AD_ALREADY_MEMBER)
+Check 'and one saying NO_ATTRIBUTE_OR_VAL'      $true  (NoOp 1 $false $AD_NOT_MEMBER)
+# Still direction-sensitive: "already a member" must never excuse a failed REMOVE.
+Check 'but not for the wrong direction'         $false (NoOp 1 $false $AD_ALREADY_MEMBER)
+Check 'nor the other wrong direction'           $false (NoOp 1 $true $AD_NOT_MEMBER)
+# A real refusal stays a refusal however much text it carries.
+Check 'access denied is still a failure'        $false (NoOp $INSUFFICIENT_ACCESS $true $AD_ACCESS_DENIED)
+Check 'and empty server text excuses nothing'   $false (NoOp 1 $true '')
 
 Write-Host "`n== the write policy: what reaches the directory ==" -ForegroundColor Cyan
 
@@ -85,7 +115,9 @@ namespace UdmTest
     public class LdapRefusal : Exception
     {
         public int Code;
-        public LdapRefusal(int code) : base("LDAP refused with " + code) { Code = code; }
+        public string Server;
+        public LdapRefusal(int code) : this(code, null) { }
+        public LdapRefusal(int code, string server) : base("LDAP refused with " + code) { Code = code; Server = server; }
     }
 
     /// <summary>Records every batch handed to it and refuses the ones the test told it to.</summary>
@@ -93,6 +125,8 @@ namespace UdmTest
     {
         // Keyed by the single DN in a one-value batch; "*" is the whole-set batch.
         public Dictionary<string, int> Refuse = new Dictionary<string, int>();
+        // Optional extended error to send with a refusal, keyed the same way.
+        public Dictionary<string, string> ServerText = new Dictionary<string, string>();
         public List<string> Sent = new List<string>();
 
         public void Send(IReadOnlyList<string> values)
@@ -100,13 +134,22 @@ namespace UdmTest
             var key = values.Count == 1 ? values[0] : "*";
             Sent.Add(string.Join("|", values));
             int code;
-            if (Refuse.TryGetValue(key, out code)) throw new LdapRefusal(code);
+            if (!Refuse.TryGetValue(key, out code)) return;
+            string server;
+            ServerText.TryGetValue(key, out server);
+            throw new LdapRefusal(code, server);
         }
 
         public static int? CodeOf(Exception ex)
         {
             var r = ex as LdapRefusal;
             return r == null ? (int?)null : r.Code;
+        }
+
+        public static string ServerErrorOf(Exception ex)
+        {
+            var r = ex as LdapRefusal;
+            return r == null ? null : r.Server;
         }
 
         public static string Describe(Exception ex) { return ex.Message; }
@@ -122,11 +165,12 @@ function Invoke-Policy([string[]]$dns, [bool]$add, $sender) {
 
     $send      = [Action[System.Collections.Generic.IReadOnlyList[string]]]$sender.Send
     $codeOf    = [Func[System.Exception, System.Nullable[int]]][UdmTest.ScriptedSender]::CodeOf
+    $serverOf  = [Func[System.Exception, string]][UdmTest.ScriptedSender]::ServerErrorOf
     $describe  = [Func[System.Exception, string]][UdmTest.ScriptedSender]::Describe
     $note      = [Action[string]]{ param($m) $script:notes.Add($m) }
 
     try {
-        [void]$policy.Invoke($null, @($list, $add, $send, $codeOf, $describe, $note))
+        [void]$policy.Invoke($null, @($list, $add, $send, $codeOf, $serverOf, $describe, $note))
         return $null
     }
     catch { return $_.Exception.GetBaseException().Message }
@@ -153,6 +197,27 @@ Check 'and A still lands'                  $true ($s.Sent -contains 'CN=A,DC=x')
 Check 'and C still lands'                  $true ($s.Sent -contains 'CN=C,DC=x')
 Check 'the retry is recorded'              1     $notes.Count
 Check 'saying why'                         $true ($notes[0] -like '*retrying one member at a time*')
+
+# --- THE REPORTED FAILURE, end to end -------------------------------------------------------------------
+# One member, already in the group, refused by AD with code 68. This is what an operator did in the dev
+# build and was shown "The object exists." for. The single-member path answers immediately, so there is not
+# even a retry to hide behind.
+$s = [UdmTest.ScriptedSender]::new()
+$s.Refuse['CN=A,DC=x'] = $ENTRY_ALREADY_EXISTS
+$s.ServerText['CN=A,DC=x'] = $AD_ALREADY_MEMBER
+$err = Invoke-Policy @('CN=A,DC=x') $true $s
+Check 'adding an existing member succeeds' $null $err
+Check 'in one request, with no retry'      1     $s.Sent.Count
+
+# And in a batch: the duplicate must not be reported as a failure alongside the ones that worked.
+$s = [UdmTest.ScriptedSender]::new()
+$s.Refuse['*'] = $ENTRY_ALREADY_EXISTS
+$s.ServerText['*'] = $AD_ALREADY_MEMBER
+$s.Refuse['CN=B,DC=x'] = $ENTRY_ALREADY_EXISTS
+$s.ServerText['CN=B,DC=x'] = $AD_ALREADY_MEMBER
+$err = Invoke-Policy @('CN=A,DC=x', 'CN=B,DC=x', 'CN=C,DC=x') $true $s
+Check 'a batch with one existing member succeeds' $null $err
+Check 'and the other two still land'              $true (($s.Sent -contains 'CN=A,DC=x') -and ($s.Sent -contains 'CN=C,DC=x'))
 
 # --- a removal that was already done is success, not a failure -------------------------------------------
 # Re-running a termination scenario after a partial failure hits this on every step that already ran.

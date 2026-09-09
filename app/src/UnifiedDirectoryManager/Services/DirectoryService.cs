@@ -896,9 +896,24 @@ public sealed class DirectoryService : IDirectoryService
             $"{(add ? "Added" : "Removed")} {wanted.Count} member(s) {(add ? "to" : "from")} group {groupDn}.");
     }
 
-    // LDAP result codes for the two ways a membership write can fail by being unnecessary (RFC 4511 §4.1.9).
+    // LDAP result codes for the ways a membership write can fail by being unnecessary (RFC 4511 §4.1.9).
     private const int LdapNoSuchAttribute = 16;        // removing a value the attribute does not hold
-    private const int LdapAttributeOrValueExists = 20; // adding a value it already holds
+    private const int LdapAttributeOrValueExists = 20; // adding a value it already holds, per the RFC
+    // ...and what Active Directory ACTUALLY answers for a member that is already in the group: 68, the code
+    // meant for adding an ENTRY that already exists, which surfaces as "The object exists." Found the only
+    // way it could be found, by doing it against a real domain controller.
+    private const int LdapEntryAlreadyExists = 68;
+
+    /// <summary>
+    /// Markers in a domain controller's extended error that mean a membership change was unnecessary.
+    ///
+    /// Matched as well as the result code, because AD's choice of code is not the one RFC 4511 implies and
+    /// is not worth betting on a second time. These strings are safe to match: the extended error is
+    /// protocol text the DC sends in English whatever the locale, unlike the exception MESSAGE, which .NET
+    /// localises. 0x562 and 0x561 are ERROR_MEMBER_IN_ALIAS and ERROR_MEMBER_NOT_IN_ALIAS.
+    /// </summary>
+    private static readonly string[] AlreadyMemberMarkers = { "ENTRY_EXISTS", "ATT_OR_VAL_EXISTS", "00000562" };
+    private static readonly string[] NotMemberMarkers = { "NO_ATTRIBUTE_OR_VAL", "00000561" };
 
     /// <summary>
     /// True when the directory refused a membership write because it already agrees with what was asked.
@@ -910,13 +925,27 @@ public sealed class DirectoryService : IDirectoryService
     /// from a CSV, from Entra's onPremisesDistinguishedName, from an older export — made a REMOVE find
     /// nothing, skip silently, and report success while the person was still in the group.
     ///
-    /// Asking the directory instead of guessing cannot be wrong about either. Takes an int rather than a
-    /// ResultCode so the rule can be exercised from the test suites, which run under a PowerShell that ships
-    /// an older System.DirectoryServices.Protocols and cannot load this assembly's version of that type.
+    /// Asking the directory instead of guessing cannot be wrong about either. Takes plain values rather than
+    /// a ResultCode so the rule can be exercised from the test suites, which run under a PowerShell that
+    /// ships an older System.DirectoryServices.Protocols and cannot load this assembly's version of it.
+    ///
+    /// Both the code AND the extended error are consulted. The first version of this trusted RFC 4511 and
+    /// accepted only 20 for an add; AD answers 68, so adding somebody to a group they were already in
+    /// reported a failure. Nothing was written wrongly — the write really was unnecessary — but the app said
+    /// it had failed, which is the same class of lie in the opposite direction.
     /// </summary>
-    internal static bool IsMembershipNoOp(int resultCode, bool add) =>
-        add ? resultCode == LdapAttributeOrValueExists
+    internal static bool IsMembershipNoOp(int resultCode, bool add, string? serverError = null)
+    {
+        var byCode = add
+            ? resultCode is LdapAttributeOrValueExists or LdapEntryAlreadyExists
             : resultCode == LdapNoSuchAttribute;
+        if (byCode) return true;
+
+        if (string.IsNullOrEmpty(serverError)) return false;
+        foreach (var marker in add ? AlreadyMemberMarkers : NotMemberMarkers)
+            if (serverError.Contains(marker, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
 
     /// <summary>
     /// Applies one directed add/delete of <paramref name="memberDns"/> on <paramref name="groupDn"/>'s
@@ -929,9 +958,8 @@ public sealed class DirectoryService : IDirectoryService
         ApplyMembershipPolicy(
             memberDns, add,
             send: batch => conn.SendRequest(MemberModify(groupDn, batch, add)),
-            resultCodeOf: ex => ex is Protocols.DirectoryOperationException doe && doe.Response is not null
-                ? (int)doe.Response.ResultCode
-                : null,
+            resultCodeOf: LdapResultCodeOf,
+            serverErrorOf: LdapServerErrorOf,
             describe: Friendly,
             note: message => AppLog.Instance.Info($"{groupDn}: {message}"));
     }
@@ -952,6 +980,7 @@ public sealed class DirectoryService : IDirectoryService
     /// </summary>
     /// <param name="send">Performs one modify carrying the given values. Throws on refusal.</param>
     /// <param name="resultCodeOf">The LDAP result code behind an exception, or null if it was not one.</param>
+    /// <param name="serverErrorOf">The directory's own extended error behind an exception, if it carried one.</param>
     /// <param name="describe">Renders an exception for an operator.</param>
     /// <param name="note">Records something worth knowing that is not a failure.</param>
     internal static void ApplyMembershipPolicy(
@@ -959,6 +988,7 @@ public sealed class DirectoryService : IDirectoryService
         bool add,
         Action<IReadOnlyList<string>> send,
         Func<Exception, int?> resultCodeOf,
+        Func<Exception, string?> serverErrorOf,
         Func<Exception, string> describe,
         Action<string> note)
     {
@@ -975,7 +1005,7 @@ public sealed class DirectoryService : IDirectoryService
             {
                 // Nothing to salvage by retrying a single value, so answer now: either the directory already
                 // agreed, or this is a real failure and the caller should see the directory's own words.
-                if (IsMembershipNoOp(resultCodeOf(ex) ?? -1, add)) return;
+                if (IsMembershipNoOp(resultCodeOf(ex) ?? -1, add, serverErrorOf(ex))) return;
                 throw;
             }
             note($"a batched membership change was rejected ({resultCodeOf(ex)?.ToString() ?? describe(ex)}); "
@@ -991,7 +1021,7 @@ public sealed class DirectoryService : IDirectoryService
                 send(new[] { memberDn });
                 applied++;
             }
-            catch (Exception ex) when (IsMembershipNoOp(resultCodeOf(ex) ?? -1, add))
+            catch (Exception ex) when (IsMembershipNoOp(resultCodeOf(ex) ?? -1, add, serverErrorOf(ex)))
             {
                 // Already in the state asked for.
             }
@@ -1011,6 +1041,24 @@ public sealed class DirectoryService : IDirectoryService
             + string.Join("; ", failures.Take(5))
             + (failures.Count > 5 ? $" (+{failures.Count - 5} more)" : string.Empty));
     }
+
+    // The same refusal reaches this code as two different exception types depending on the path:
+    // LdapConnection throws a DirectoryOperationException carrying a response, while lower-level failures
+    // arrive as an LdapException carrying the server text and its own code. Both are read.
+    private static int? LdapResultCodeOf(Exception ex) => ex switch
+    {
+        Protocols.DirectoryOperationException { Response: { } r } => (int)r.ResultCode,
+        Protocols.LdapException ldap => ldap.ErrorCode,
+        _ => null,
+    };
+
+    private static string? LdapServerErrorOf(Exception ex) => ex switch
+    {
+        Protocols.DirectoryOperationException { Response: { } r } => r.ErrorMessage,
+        Protocols.LdapException ldap => ldap.ServerErrorMessage,
+        DirectoryServicesCOMException com => com.ExtendedErrorMessage,
+        _ => null,
+    };
 
     /// <summary>One add-values or delete-values modify against a group's <c>member</c> attribute.</summary>
     private static Protocols.ModifyRequest MemberModify(string groupDn, IReadOnlyList<string> memberDns, bool add)
