@@ -1036,9 +1036,15 @@ Build the installers:
 ```
 
 Output: `dist/UnifiedDirectoryManager-x64-<version>.msi` and
-`dist/UnifiedDirectoryManager-arm64-<version>.msi`. The version is read from the csproj `<Version>`.
-Both share one `UpgradeCode`, so installing a newer version cleanly replaces an older one. WiX
-sources live in `build/installer/` (`Product.wxs`, `notice.rtf`).
+`dist/UnifiedDirectoryManager-arm64-<version>.msi` — around 60 MB each, since the MSI cabinet compresses
+the exe further. The version is read from the csproj `<Version>`. Both share one `UpgradeCode`, so
+installing a newer version cleanly replaces an older one. WiX sources live in `build/installer/`
+(`Product.wxs`, `notice.rtf`, and `AD.ico` from the project for the Apps & Features entry).
+
+> The Apps & Features icon comes from `AD.ico`, not from the exe. An MSI `Icon` element stores its source
+> file **whole**, in the Icon table, so pointing it at a self-contained 70 MB executable embedded the
+> application a second time and nearly doubled the installer (133 MB for 70 MB of app). A 3 KB `.ico`
+> renders identically.
 
 Deploy interactively (double-click) or silently for GPO / Intune / SCCM:
 

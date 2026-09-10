@@ -29,6 +29,9 @@ $project  = Join-Path $root 'src/UnifiedDirectoryManager/UnifiedDirectoryManager
 $distRoot = Join-Path $root 'dist'
 $wxs      = Join-Path $PSScriptRoot 'installer/Product.wxs'
 $license  = Join-Path $PSScriptRoot 'installer/notice.rtf'
+# The Apps & Features icon. Deliberately the .ico rather than the exe: an MSI Icon element stores its
+# source file whole, so pointing it at the self-contained exe embeds the whole application twice.
+$appIco   = Join-Path $root 'src/UnifiedDirectoryManager/AD.ico'
 
 # Make the dotnet global-tools (wix) reachable even in a fresh shell.
 $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
@@ -73,6 +76,7 @@ foreach ($rid in $Runtimes) {
         -d "AppExe=$exe" `
         -d "AppVersion=$Version" `
         -d "LicenseRtf=$license" `
+        -d "AppIco=$appIco" `
         -o $msi
     if ($LASTEXITCODE -ne 0) { throw "WiX build failed for $arch" }
 }

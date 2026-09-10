@@ -9,6 +9,7 @@
     AppExe      full path to the published dist\<rid>\UnifiedDirectoryManager.exe
     AppVersion  product version, e.g. 1.0.0
     LicenseRtf  full path to the RTF shown on the wizard's agreement page
+    AppIco      full path to AD.ico, for the Apps & Features entry
 
   Build with `-arch x64` or `-arch arm64`; ProgramFiles64Folder resolves to "Program Files" for both.
 -->
@@ -27,9 +28,16 @@
 
     <MediaTemplate EmbedCab="yes" />
 
-    <!-- Icon for the Apps &amp; Features / Add-Remove-Programs entry, taken from the exe itself. -->
-    <Icon Id="AppIcon.exe" SourceFile="$(var.AppExe)" />
-    <Property Id="ARPPRODUCTICON" Value="AppIcon.exe" />
+<!--
+      Icon for the Apps &amp; Features / Add-Remove-Programs entry.
+
+      Taken from AD.ico, NOT from the exe. An Icon element stores its SourceFile whole, in the MSI's Icon
+      table, so pointing this at a 70 MB self-contained executable embedded that executable a SECOND time
+      and very nearly doubled the installer: 133 MB of MSI for 70 MB of application. A 3 KB .ico renders
+      identically in Apps &amp; Features.
+    -->
+    <Icon Id="AppIcon.ico" SourceFile="$(var.AppIco)" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
     <!-- (WixUI_InstallDir already sets ARPNOMODIFY, so the single-file app shows no Modify option.) -->
 
     <StandardDirectory Id="ProgramFiles64Folder">
