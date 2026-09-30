@@ -4,6 +4,25 @@
         xmlns:vm="clr-namespace:UnifiedDirectoryManager.ViewModels"
         xmlns:ctrl="clr-namespace:UnifiedDirectoryManager.Views.Controls"
         Title="Unified Directory Manager" Height="760" Width="1240" WindowStartupLocation="CenterScreen">
+    <!--
+      Keyboard shortcuts (audit P9). ADUC binds F5, Delete and Ctrl+F, and operators arrive with that
+      muscle memory; before this it failed silently, because the app had no InputBindings at all.
+
+      Only window-wide gestures live here. Delete and Alt+Enter are deliberately NOT here: a TextBox
+      always marks Delete handled, so text editing would be safe, but a TreeView does not, so a
+      window-level Delete would fire while the operator was browsing folders in the tree and silently
+      mean “delete what is selected over in the list”. Those two are scoped to the object lists.
+
+      Every gesture here is also a menu item carrying InputGestureText, so the menu teaches it. Ctrl+N
+      and Ctrl+F refuse in the cloud view through CanExecute rather than through Visibility, because a
+      keystroke has nothing to hide.
+    -->
+    <Window.InputBindings>
+        <KeyBinding Key="F5" Command="{Binding RefreshCommand}" />
+        <KeyBinding Key="F" Modifiers="Control" Command="{Binding AdvancedSearchCommand}" />
+        <KeyBinding Key="N" Modifiers="Control" Command="{Binding NewUserCommand}" />
+        <KeyBinding Key="F1" Command="{Binding ViewReadmeCommand}" />
+    </Window.InputBindings>
     <DockPanel>
         <!--
           Menu bar, laid out the way MMC lays one out: File / Action / View / Tools / Help, with New as a
@@ -46,14 +65,14 @@
             -->
             <MenuItem Header="_Action" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}">
                 <MenuItem Header="_New">
-                    <MenuItem Header="_User…" Command="{Binding NewUserCommand}" />
+                    <MenuItem Header="_User…" Command="{Binding NewUserCommand}" InputGestureText="Ctrl+N" />
                     <MenuItem Header="_Bulk Create Users…" Command="{Binding BulkCreateUsersCommand}" />
                     <MenuItem Header="_Group…" Command="{Binding NewGroupCommand}" />
                     <!-- Creates under the selected TREE node, like the tree's own right-click entry. -->
                     <MenuItem Header="_OU…" Command="{Binding CreateOuHereCommand}" />
                 </MenuItem>
                 <Separator />
-                <MenuItem Header="_Properties…" Command="{Binding OpenSelectedCommand}" />
+                <MenuItem Header="_Properties…" Command="{Binding OpenSelectedCommand}" InputGestureText="Alt+Enter" />
                 <Separator />
                 <MenuItem Header="_Enable Account(s)" Command="{Binding EnableSelectedCommand}" />
                 <MenuItem Header="_Disable Account(s)" Command="{Binding DisableSelectedCommand}" />
@@ -80,7 +99,7 @@
                     </MenuItem.ItemContainerStyle>
                 </MenuItem>
                 <Separator />
-                <MenuItem Header="Delete Selec_ted…" Command="{Binding DeleteSelectedCommand}" />
+                <MenuItem Header="Delete Selec_ted…" Command="{Binding DeleteSelectedCommand}" InputGestureText="Del" />
             </MenuItem>
 
             <!--
@@ -94,7 +113,7 @@
                     <MenuItem Header="_Cloud Group…" Command="{Binding NewCloudGroupCommand}" />
                 </MenuItem>
                 <Separator />
-                <MenuItem Header="_Properties…" Command="{Binding Cloud.OpenSelectedCommand}" />
+                <MenuItem Header="_Properties…" Command="{Binding Cloud.OpenSelectedCommand}" InputGestureText="Alt+Enter" />
                 <Separator />
                 <MenuItem Header="_Enable Account(s)" Command="{Binding Cloud.EnableSelectedCommand}" />
                 <MenuItem Header="_Disable Account(s)" Command="{Binding Cloud.DisableSelectedCommand}" />
@@ -103,7 +122,7 @@
             </MenuItem>
 
             <MenuItem Header="_View">
-                <MenuItem Header="_Refresh" Command="{Binding RefreshCommand}" />
+                <MenuItem Header="_Refresh" Command="{Binding RefreshCommand}" InputGestureText="F5" />
                 <MenuItem Header="Toggle Pane _Dock (Right / Bottom)" Command="{Binding ToggleDockCommand}" />
                 <Separator />
                 <!--
@@ -133,7 +152,7 @@
             <MenuItem Header="_Tools">
                 <!-- Finding things and managing the app's own machinery. Advanced Search is a find, not an
                      edit, which is what it was filed under before P8. -->
-                <MenuItem Header="_Advanced Search…" Command="{Binding AdvancedSearchCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
+                <MenuItem Header="_Advanced Search…" Command="{Binding AdvancedSearchCommand}" InputGestureText="Ctrl+F" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <Separator Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="_Entra Connect Delta Sync…" Command="{Binding EntraSyncCommand}" />
                 <MenuItem Header="_Manage Scenarios…" Command="{Binding ManageScenariosCommand}" />
@@ -141,7 +160,7 @@
             </MenuItem>
 
             <MenuItem Header="_Help">
-                <MenuItem Header="View _README…" Command="{Binding ViewReadmeCommand}" />
+                <MenuItem Header="View _README…" Command="{Binding ViewReadmeCommand}" InputGestureText="F1" />
                 <Separator />
                 <MenuItem Header="_View Log File…" Command="{Binding ViewLogCommand}" />
                 <MenuItem Header="Open Logs _Folder" Command="{Binding OpenLogsCommand}" />

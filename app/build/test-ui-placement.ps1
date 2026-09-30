@@ -788,5 +788,145 @@ $beforeWindow = $appSrc.IndexOf('ForceMenusToOpenRightwards') -lt $appSrc.IndexO
 Check '  before the main window'        $true $beforeWindow
 Check '  and after the logger'          $true ($appSrc.IndexOf('AppLog.Instance = logger') -lt $appSrc.IndexOf('ForceMenusToOpenRightwards'))
 
+Write-Host "`n== P9: keyboard shortcuts, and menus that teach them ==" -ForegroundColor Cyan
+# Before this the app had no InputBindings outside a few search boxes, so ADUC muscle memory -- F5,
+# Delete, Ctrl+F -- failed silently. Nothing announced them either, because there was nothing to announce.
+$winBindings = Region $mainXaml '<Window.InputBindings>' '</Window.InputBindings>'
+Check 'the window declares gestures'    $true ($winBindings.Length -gt 0)
+
+# Gesture -> the command it must invoke, and the menu item that must advertise it.
+$shortcuts = @(
+    @{ Gesture = 'F5';         Key = 'F5';  Mod = '';        Command = 'RefreshCommand';        Scope = 'window' }
+    @{ Gesture = 'Ctrl+F';     Key = 'F';   Mod = 'Control'; Command = 'AdvancedSearchCommand'; Scope = 'window' }
+    @{ Gesture = 'Ctrl+N';     Key = 'N';   Mod = 'Control'; Command = 'NewUserCommand';        Scope = 'window' }
+    @{ Gesture = 'F1';         Key = 'F1';  Mod = '';        Command = 'ViewReadmeCommand';     Scope = 'window' }
+    @{ Gesture = 'Del';        Key = '';    Mod = '';        Command = 'DeleteSelectedCommand'; Scope = 'list'   }
+    @{ Gesture = 'Alt+Enter';  Key = '';    Mod = '';        Command = 'OpenSelectedCommand';   Scope = 'list'   }
+)
+foreach ($s in $shortcuts) {
+    if ($s.Scope -eq 'window') {
+        $pattern = if ($s.Mod) { '<KeyBinding Key="' + $s.Key + '" Modifiers="' + $s.Mod + '" Command="\{Binding ' + $s.Command + '\}"' }
+                   else        { '<KeyBinding Key="' + $s.Key + '" Command="\{Binding ' + $s.Command + '\}"' }
+        Check "  $($s.Gesture) invokes $($s.Command)" $true ($winBindings -match $pattern)
+    }
+    # A menu that advertises a gesture it does not have is worse than one that advertises none: the
+    # operator learns it, it fails, and they stop trusting the others.
+    $item = [regex]::Match($menuOnly, '<MenuItem[^/>]*Command="\{Binding (?:Cloud\.)?' + $s.Command + '\}"[^/>]*/>').Value
+    Check "  and a menu item announces it"  $true ($item -match ('InputGestureText="' + [regex]::Escape($s.Gesture) + '"'))
+}
+
+# Nothing may claim a gesture that is not wired anywhere.
+$announced = @()
+foreach ($m in [regex]::Matches($menuOnly, 'InputGestureText="([^"]*)"')) { $announced += $m.Groups[1].Value }
+$unwired = @($announced | Sort-Object -Unique | Where-Object { $_ -notin $shortcuts.Gesture })
+foreach ($u in $unwired) { Write-Host "          the menu promises $u and nothing implements it" -ForegroundColor Yellow }
+Check 'no menu promises a dead gesture'  0 $unwired.Count
+
+Write-Host "`n== P9: Delete is scoped to the lists, not the window ==" -ForegroundColor Cyan
+# The hazard that decided the design. A focused TextBox always marks Delete handled -- verified, even
+# when it is empty and has nothing to delete -- so text editing would have been safe either way. A
+# TreeView does not. A window-level Delete would therefore fire while the operator was browsing folders
+# in the tree, and silently mean "delete whatever is selected over in the list".
+Check 'Delete is not a window gesture'  $false ($winBindings -match 'Key="Delete"')
+Check '  nor is Alt+Enter'              $false ($winBindings -match 'Key="Return"')
+Check 'the on-prem list handles keys'   $true  ($listXaml -match 'KeyDown="OnListKeyDown"')
+
+$listCb = Get-Content -Raw (Join-Path $src 'Views\Controls\ObjectListView.xaml.cs')
+$handler = [regex]::Match($listCb, '(?s)private void OnListKeyDown\(.*?\n    \}').Value
+Check '  the handler exists'            $true ($handler.Length -gt 0)
+Check '  Delete asks the host'          $true ($handler -match 'Key\.Delete' -and $handler -match 'RequestDelete\(\)')
+Check '  and only unmodified'           $true ($handler -match 'Key\.Delete[^;]*ModifierKeys\.None')
+Check '  Alt\+Enter opens the row'      $true ($handler -match 'Key\.Enter[^;]*ModifierKeys\.Alt' -and $handler -match 'RequestOpen\(row\)')
+# The list must not know how to delete: the host owns the confirmation, and the keyboard has to reach the
+# same command the menu does or it gets a different one.
+Check '  the list does not delete'      $false ($listCb -match 'DeleteAsync|_directory\.')
+$listVmSrc = Get-Content -Raw (Join-Path $src 'ViewModels\ObjectListViewModel.cs')
+Check '  it raises an event instead'    $true ($listVmSrc -match 'public event EventHandler\? DeleteRequested')
+Check 'the host runs the same command'  $true ($vmSrc2 -match 'List\.DeleteRequested \+= .*DeleteSelectedCommand\.Execute')
+Check '  and checks CanExecute first'   $true ($vmSrc2 -match 'List\.DeleteRequested \+= .*DeleteSelectedCommand\.CanExecute')
+
+# The cloud list gets Alt+Enter too, so the two Action menus do not disagree about it. Its commands are
+# its own, so there the binding resolves against the list's DataContext directly.
+Check 'the cloud list has Alt+Enter'    $true ($cloudXaml -match '(?s)<ListView\.InputBindings>.*Key="Return" Modifiers="Alt" Command="\{Binding OpenSelectedCommand\}"')
+Check '  and no cloud Delete'           $false ($cloudXaml -match '<KeyBinding Key="Delete"')
+
+Write-Host "`n== P9: a gesture has nothing to grey out, so the command must refuse ==" -ForegroundColor Cyan
+# Ctrl+N and Ctrl+F have no menu item to disable in the cloud view -- the whole AD Action menu is swapped
+# away -- so without a gate the shortcut would open an on-prem wizard over a cloud list.
+foreach ($pair in @(@('NewUser', 'IsAdView'), @('AdvancedSearch', 'IsAdView'), @('DeleteSelectedAsync', 'HasSelection'))) {
+    $decl = [regex]::Match($vmSrc2, '\[RelayCommand\(CanExecute = nameof\((\w+)\)\)\]\s*(?:private|public)[^\n]*\b' + [regex]::Escape($pair[0]) + '\(')
+    Check "  $($pair[0]) is gated on $($pair[1])" $pair[1] ($decl.Groups[1].Value)
+}
+$viewChanged = [regex]::Match($vmSrc2, '(?s)partial void OnIsCloudViewChanged\(bool value\).*?\n    \}').Value
+Check 'switching view re-evaluates them' $true (($viewChanged -match 'NewUserCommand\.NotifyCanExecuteChanged') -and ($viewChanged -match 'AdvancedSearchCommand\.NotifyCanExecuteChanged'))
+Check 'and selection re-evaluates Delete' $true ($sel -match 'DeleteSelectedCommand\.NotifyCanExecuteChanged')
+
+Write-Host "`n== P9: the two WPF behaviours the design rests on ==" -ForegroundColor Cyan
+# Neither of these is documented anywhere obvious, both were measured, and both would silently change the
+# meaning of the shortcuts if a future .NET changed them. So they are asserted rather than remembered.
+#
+# This does NOT construct MainWindow -- that needs the whole service graph, which no suite builds. It
+# proves the MECHANISM on this runtime; that the app spells the command names correctly is covered by
+# "every bound command is defined" above, which reads the InputBindings like any other binding.
+[System.Reflection.Assembly]::LoadFrom((Join-Path $repoRoot 'debug\CommunityToolkit.Mvvm.dll')) | Out-Null
+
+$probeXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Window.InputBindings>
+    <KeyBinding Key="F5" Command="{Binding Refresh}" />
+    <KeyBinding Key="Delete" Command="{Binding Kill}" />
+  </Window.InputBindings>
+  <StackPanel>
+    <TextBox x:Name="Box" />
+    <ListBox x:Name="Plain"><ListBoxItem>one</ListBoxItem></ListBox>
+  </StackPanel>
+</Window>
+'@
+
+$fired = @{ Refresh = 0; Kill = 0 }
+$probeVm = [pscustomobject]@{
+    Refresh = [CommunityToolkit.Mvvm.Input.RelayCommand]::new([System.Action]{ $fired.Refresh++ })
+    Kill    = [CommunityToolkit.Mvvm.Input.RelayCommand]::new([System.Action]{ $fired.Kill++ })
+}
+$pw = [System.Windows.Markup.XamlReader]::Parse($probeXaml)
+$pw.DataContext = $probeVm
+$pw.Show()
+[System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, 'Background') | Out-Null
+
+# 1. A Binding on KeyBinding.Command resolves from DataContext. InputBindings are not in the visual tree,
+#    so this is not obvious -- and it is null until the window is shown, which is why nothing reads it
+#    earlier.
+Check 'KeyBinding.Command resolves'     $true ([object]::ReferenceEquals($pw.InputBindings[0].Command, $probeVm.Refresh))
+
+function ProbeKey([string]$key) {
+    $src = [System.Windows.PresentationSource]::FromVisual($pw)
+    $e = [System.Windows.Input.KeyEventArgs]::new([System.Windows.Input.Keyboard]::PrimaryDevice, $src, 0, $key)
+    $e.RoutedEvent = [System.Windows.Input.Keyboard]::KeyDownEvent
+    [System.Windows.Input.InputManager]::Current.ProcessInput($e) | Out-Null
+    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, 'Background') | Out-Null
+}
+function ProbeFocus($el) { $el.Focus() | Out-Null; [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, 'Background') | Out-Null }
+
+$pbox = $pw.FindName('Box'); $plist = $pw.FindName('Plain')
+
+# 2. A focused TextBox marks Delete handled even when there is nothing to delete, so a window-level
+#    Delete could never interrupt typing. Checked with an EMPTY box, which is the case that would bite.
+$pbox.Text = ''; ProbeFocus $pbox
+$before = $fired.Kill; ProbeKey 'Delete'
+Check '  an empty TextBox still eats Delete' $before $fired.Kill
+
+# 3. A plain ListBox does not. THIS is why Delete is scoped to the object list instead of the window:
+#    the tree would have fired it too, meaning "delete what is selected somewhere else".
+ProbeFocus $plist
+$before = $fired.Kill; ProbeKey 'Delete'
+Check '  but a list does not'                ($before + 1) $fired.Kill
+
+# 4. F5 reaches the window binding from inside a TextBox, which is why it IS window-scoped.
+ProbeFocus $pbox
+$before = $fired.Refresh; ProbeKey 'F5'
+Check '  F5 gets through from a TextBox'     ($before + 1) $fired.Refresh
+$pw.Close()
+
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

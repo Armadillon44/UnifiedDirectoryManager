@@ -1,8 +1,7 @@
 # Where the app's functions live — a placement audit
 
-Status: **Work packages 1 and 2 are DONE (P1–P8). All three rules hold and are enforced by tests. P9
-(keyboard shortcuts) is left, plus T1 (customisable toolbar), whose open questions are all settled.
-Shipping as 2.3.3.**
+Status: **Every finding is DONE (P1–P9). All three rules hold and are enforced by tests. Only T1
+(customisable toolbar) is left, whose open questions are all settled. Shipping as 2.3.3.**
 
 Measured against `master` at **`8a2dc29`**. Everything below was derived from the XAML and
 `MainViewModel.cs` rather than from memory, and the method is in
@@ -28,7 +27,7 @@ The complaint that prompted it, in the maintainer's words:
 | **P6** | The same command carries different labels in different places | **Done** |
 | **P7** | Refresh and the log commands are duplicated *within* the menu bar | **Done** |
 | **P8** | The menu bar is organised by nothing in particular | **Done** — File/Action/View/Tools/Help |
-| **P9** | There are no keyboard shortcuts anywhere in the app | **Not started** |
+| **P9** | There are no keyboard shortcuts anywhere in the app | **Done** |
 | **T1** | *(feature)* Let the operator choose what is on the toolbar | **Designed, not started** |
 
 ---
@@ -452,15 +451,58 @@ selected — rather than looping over a multi-selection. Every reset produces a 
 a different person, and a bulk version would need the post-run report Bulk Create Users has. That is a
 feature, not a menu entry.
 
-### P9 — There are no keyboard shortcuts anywhere
+### P9 — There are no keyboard shortcuts anywhere — **DONE**
 
 No `InputBindings` outside a few search boxes (Enter to search), and no `InputGestureText` on any menu
 item — so the menus do not advertise shortcuts either, because there are none to advertise.
 
 ADUC binds F5, Delete and Ctrl+F. Operators arrive with that muscle memory and it fails silently.
 
-*Fix:* F5 Refresh, Delete on the selection, Ctrl+F Advanced Search, Ctrl+N New User, F1 README. Declare
-them with `InputGestureText` so the menu teaches them.
+*Fixed*, as listed, plus **Alt+Enter** for Properties — Windows' own gesture for it, and the natural
+companion to Delete since both act on the selected row. Every one is declared with `InputGestureText`,
+and the suite refuses to let a menu advertise a gesture nothing implements: **a promise that fails is
+worse than no promise, because the operator learns it, it does not work, and they stop trusting the
+others.**
+
+| Gesture | Does | Scope |
+|---|---|---|
+| `F5` | Refresh | window |
+| `Ctrl+F` | Advanced Search… | window, AD view only |
+| `Ctrl+N` | New User… | window, AD view only |
+| `F1` | View README… | window |
+| `Del` | Delete Selected… | the object lists |
+| `Alt+Enter` | Properties… | the object lists |
+
+**Delete is scoped to the lists, and the reason is not the one I expected.** The obvious worry with a
+window-wide Delete is that it would fire while somebody is editing a text field. Measured: it would
+not. A focused `TextBox` marks Delete handled **even when it is empty and has nothing to delete**, and
+WPF skips input bindings for a handled key. Typing was never at risk.
+
+The real hazard is the tree. A `TreeView` does **not** handle Delete, so a window-wide binding would
+fire while an operator was browsing folders — and silently mean *"delete whatever is selected over in
+the list"*, which they may not even be able to see. That is the kind of accident that ends with a
+restore from backup. Scoping it to the list is also what ADUC and Explorer do.
+
+Both of those behaviours are now **assertions**, not comments: the suite builds a small window, sends
+real key events, and checks that an empty `TextBox` swallows Delete, that a plain `ListBox` does not,
+and that `F5` gets through from inside a text box. If a future .NET changes any of it, the scoping
+decision gets re-examined instead of quietly becoming wrong.
+
+**A gesture has nothing to grey out.** `Ctrl+N` and `Ctrl+F` have no menu item to disable in the cloud
+view — the whole AD `Action` menu is swapped away — so without a gate the shortcut would open an
+on-prem wizard over a cloud list. `NewUserCommand` and `AdvancedSearchCommand` gained `CanExecute` on
+`IsAdView`, re-evaluated when the view changes. `DeleteSelectedCommand` gained one on `HasSelection`,
+which it should have had since P4.
+
+**The list raises an event; it does not delete anything.** `ObjectListViewModel.RequestDelete()` fires
+`DeleteRequested`, and `MainViewModel` runs the same `DeleteSelectedCommand` the menu and the context
+menu run — so the keyboard path gets the same confirmation. This follows the `OpenRequested` pattern
+the double-click already used.
+
+**One thing a binding can be and still do nothing:** an `InputBinding` is not in the visual tree, so
+`{Binding …}` on its `Command` has no obvious reason to resolve, and `RelativeSource` genuinely does
+not work there. It does resolve from `DataContext` — but only once the window is shown; it reads null
+before that. Measured before the code was written rather than after it failed.
 
 ---
 
@@ -608,6 +650,9 @@ P8 added four more, and widened the first one:
   honest; hiding by anything else is the lesson this audit undoes.
 - **Every dotted binding resolves** against its view's own root view model, by reflection on the built
   assembly rather than by pattern-matching the name.
+- **No menu advertises a gesture nothing implements**, and every gesture is advertised by a menu item
+  (P9). Plus the two WPF behaviours the Delete scoping rests on, asserted with real key events rather
+  than trusted.
 
 Mutation-checked, each failing and naming what it found: a selection command filed in `File`
 ("DeleteSelectedCommand appears 2 times in the menu bar"), an `Action` item gated by
@@ -649,7 +694,8 @@ already hidden in exactly the cases the gates now disable.
    bound to commands that already existed, plus the `CanExecute` gates those entries needed.
 2. **`ui/consistency` — P6, P7, P8.** ✅ **Done.** Labels, de-duplication, and the menu reorganisation.
    P8 was the only subjective item and was agreed before it was built — see *The agreed shape* above.
-3. **`ui/shortcuts` — P9.** Small and self-contained.
+3. **`ui/shortcuts` — P9.** ✅ **Done.** Small and self-contained, apart from one measurement that
+   changed the design — see the finding.
 4. **`ui/custom-toolbar` — T1.** After package 1, for the reason given above.
 
 ---

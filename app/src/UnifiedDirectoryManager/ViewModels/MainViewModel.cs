@@ -262,6 +262,11 @@ public partial class MainViewModel : ObservableObject
 
         // Double-click a cloud row → open its read-only properties window.
         Cloud.OpenRequested += (_, row) => _dialogs.ShowCloudObjectProperties(row);
+        // Delete from the keyboard goes through the same command as the menu and the context menu, so it
+        // gets the same confirmation. Scoped to the list rather than the window: a plain ListBox or
+        // TreeView does not handle Delete, so a window-level binding would also fire while the operator
+        // was browsing the tree. (Text boxes are safe either way -- they always mark Delete handled.)
+        List.DeleteRequested += (_, _) => { if (DeleteSelectedCommand.CanExecute(null)) DeleteSelectedCommand.Execute(null); };
 
         // …except a distribution group, whose membership is what the app can actually manage today. Exchange
         // addresses it by primary SMTP, and the row's Id may be the Entra object id, so pass the address.
@@ -402,7 +407,13 @@ public partial class MainViewModel : ObservableObject
         RootNodes.Add(_exchangeRoot);
     }
 
-    partial void OnIsCloudViewChanged(bool value) => OnPropertyChanged(nameof(IsAdView));
+    partial void OnIsCloudViewChanged(bool value)
+    {
+        OnPropertyChanged(nameof(IsAdView));
+        // Both have keyboard shortcuts and no menu item in the cloud view to grey out for them.
+        NewUserCommand.NotifyCanExecuteChanged();
+        AdvancedSearchCommand.NotifyCanExecuteChanged();
+    }
 
     partial void OnSelectedNodeChanged(TreeNodeViewModel? value)
     {
@@ -475,7 +486,7 @@ public partial class MainViewModel : ObservableObject
         await List.ReloadAsync();
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(IsAdView))]
     private void NewUser() =>
         // DirectoryDn, not DistinguishedName: with a cloud section or the Favourites row selected the latter
         // is a marker like "cloud:Users" or "fav:root", and the create would target "CN=x,fav:root".
@@ -589,7 +600,7 @@ public partial class MainViewModel : ObservableObject
         catch (Exception ex) { SetError(DirectoryService.Friendly(ex)); }
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(IsAdView))]
     private void AdvancedSearch()
     {
         var query = _dialogs.ShowAdvancedSearch(SelectedNode?.DirectoryDn ?? string.Empty, SearchPinning());
@@ -1359,6 +1370,7 @@ public partial class MainViewModel : ObservableObject
         ExportGroupMembersCommand.NotifyCanExecuteChanged();
         AppendGroupMembersCommand.NotifyCanExecuteChanged();
         ResetPasswordSelectedCommand.NotifyCanExecuteChanged();
+        DeleteSelectedCommand.NotifyCanExecuteChanged();
     }
 
     private List<AdObjectRow> SelectedRowsOrSingle() =>
@@ -1521,7 +1533,7 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(HasSelection))]
     private async Task DeleteSelectedAsync()
     {
         var rows = List.SelectedRows.Count > 0

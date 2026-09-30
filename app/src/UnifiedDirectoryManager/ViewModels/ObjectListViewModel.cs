@@ -53,7 +53,13 @@ public partial class ObjectListViewModel : ObservableObject
     /// <summary>Raised when a row is activated (double-clicked) so the host can open a separate editor.</summary>
     public event EventHandler<AdObjectRow>? OpenRequested;
 
+    /// <summary>Raised when Delete is pressed with the list focused, so the host can run its own
+    /// confirm-and-delete. The list deliberately does not know how to delete anything itself.</summary>
+    public event EventHandler? DeleteRequested;
+
     public void RequestOpen(AdObjectRow row) => OpenRequested?.Invoke(this, row);
+
+    public void RequestDelete() => DeleteRequested?.Invoke(this, EventArgs.Empty);
 
     public ObjectListViewModel(IDirectoryService directory, Action<string> onError,
         ISettingsStore? settingsStore = null, AppSettings? settings = null)

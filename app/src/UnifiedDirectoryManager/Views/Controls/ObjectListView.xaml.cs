@@ -111,6 +111,36 @@ public partial class ObjectListView : UserControl
             _vm.RequestOpen(row);
     }
 
+    /// <summary>
+    /// Delete and Alt+Enter, scoped to this list (audit P9).
+    /// </summary>
+    /// <remarks>
+    /// They are here rather than in the window's InputBindings on purpose. A focused TextBox always marks
+    /// Delete handled -- even when empty -- so text editing would survive a window-level binding; but a
+    /// TreeView does not, so browsing folders in the tree and pressing Delete would silently mean "delete
+    /// whatever is selected over in the list". Scoping it to the list is also what ADUC and Explorer do.
+    ///
+    /// The list raises an event rather than running the delete itself: the host owns the confirmation, and
+    /// the keyboard path has to be the same command as the menu so it gets the same one.
+    /// </remarks>
+    private void OnListKeyDown(object sender, KeyEventArgs e)
+    {
+        if (_vm is null) return;
+
+        if (e.Key == Key.Delete && Keyboard.Modifiers == ModifierKeys.None)
+        {
+            _vm.RequestDelete();
+            e.Handled = true;
+            return;
+        }
+
+        // Windows uses Alt+Enter for properties; plain Enter is left alone because a list may want it.
+        if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Alt && _vm.SelectedRow is { } row)
+        {
+            _vm.RequestOpen(row);
+            e.Handled = true;
+        }
+    }
     // --- Drag source: drag selected rows onto an OU in the navigation tree to move them ---
 
     private void OnListPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)

@@ -202,6 +202,25 @@ list of what the app can do.
   Finding things, and managing the app's own machinery.
 - **Help** — View README…, View Log File…, Open Logs Folder, About Unified Directory Manager….
 
+### Keyboard shortcuts
+
+*(2.3.3.)* The app had none before this, so the habits people arrive with from ADUC failed silently.
+The menus now show these beside the item, so you can learn them without being told:
+
+| Key | Does |
+|---|---|
+| **F5** | Refresh the list |
+| **Ctrl+F** | Advanced Search… |
+| **Ctrl+N** | New User… |
+| **F1** | This guide |
+| **Del** | Delete the selected objects (with the usual confirmation) |
+| **Alt+Enter** | Properties of the selected object |
+
+**Del** and **Alt+Enter** work when the object list has focus — click a row first — which is how
+Explorer and ADUC behave. Delete deliberately does nothing while you are in the tree or typing in a
+box, so it cannot act on something you are not looking at. **Ctrl+N** and **Ctrl+F** do nothing in the
+cloud view, because they are on-prem operations.
+
 **If you are upgrading from 2.3.2 or earlier, the Edit menu is gone.** Everything that was in it is in
 **Action**, along with the creates that used to be in File and the four things that were only ever on
 right-click. The rule to carry: **File** is about the list, **Action** is about the selection, **View**

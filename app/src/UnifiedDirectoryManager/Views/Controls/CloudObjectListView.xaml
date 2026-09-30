@@ -74,12 +74,16 @@
 
         <TextBlock DockPanel.Dock="Bottom" Text="{Binding Status}" Foreground="#666" Margin="6,3" TextWrapping="Wrap" />
 
+        <!-- Alt+Enter matches the on-prem list. No Delete: there is no cloud delete command. -->
         <ListView x:Name="List" ItemsSource="{Binding RowsView}" SelectionMode="Single"
                   SelectionChanged="OnSelectionChanged" MouseDoubleClick="OnRowDoubleClick"
                   PreviewMouseRightButtonDown="OnListPreviewMouseRightButtonDown"
                   GridViewColumnHeader.Click="OnHeaderClick"
                   ScrollViewer.IsDeferredScrollingEnabled="True"
                   VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
+            <ListView.InputBindings>
+                <KeyBinding Key="Return" Modifiers="Alt" Command="{Binding OpenSelectedCommand}" />
+            </ListView.InputBindings>
             <!--
               The cloud list had no context menu at all, so right-clicking an Entra user did nothing while
               the same gesture on the on-prem list acted on the row. One window, two lists, two unrelated

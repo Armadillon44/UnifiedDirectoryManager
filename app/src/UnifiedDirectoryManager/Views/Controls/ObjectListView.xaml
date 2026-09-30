@@ -43,6 +43,7 @@
         <ListView x:Name="List" ItemsSource="{Binding RowsView}" SelectionMode="Extended"
                   SelectionChanged="OnSelectionChanged"
                   MouseDoubleClick="OnRowDoubleClick"
+                  KeyDown="OnListKeyDown"
                   GridViewColumnHeader.Click="OnHeaderClick"
                   PreviewMouseLeftButtonDown="OnListPreviewMouseLeftButtonDown"
                   PreviewMouseRightButtonDown="OnListPreviewMouseRightButtonDown"
