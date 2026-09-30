@@ -82,6 +82,16 @@ public partial class CloudObjectListView : UserControl
             view.CustomSort = new RowComparer(key, _sortAscending);
     }
 
+    /// <summary>
+    /// Right-click selects the row under the cursor, so the context-menu actions target what was clicked
+    /// rather than whatever happened to be selected before. WPF does not do this on its own, and the
+    /// on-prem list has carried the same handler since it got its menu.
+    /// </summary>
+    private void OnListPreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (RowFrom(e.OriginalSource as DependencyObject) is { } row) List.SelectedItem = row;
+    }
+
     private void OnRowDoubleClick(object sender, MouseButtonEventArgs e)
     {
         // Only open when the double-click actually landed on a row — not the scrollbar / header / empty space.

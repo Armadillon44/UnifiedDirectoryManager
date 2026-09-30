@@ -76,9 +76,31 @@
 
         <ListView x:Name="List" ItemsSource="{Binding RowsView}" SelectionMode="Single"
                   SelectionChanged="OnSelectionChanged" MouseDoubleClick="OnRowDoubleClick"
+                  PreviewMouseRightButtonDown="OnListPreviewMouseRightButtonDown"
                   GridViewColumnHeader.Click="OnHeaderClick"
                   ScrollViewer.IsDeferredScrollingEnabled="True"
                   VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
+            <!--
+              The cloud list had no context menu at all, so right-clicking an Entra user did nothing while
+              the same gesture on the on-prem list acted on the row. One window, two lists, two unrelated
+              interaction models (audit finding P1).
+
+              These items act on the right-clicked row, or on the checked set when there is one — the same
+              rule the on-prem list follows. The buttons above the list keep acting strictly on what is
+              checked, which is what their count-and-grey-out affordance promises.
+            -->
+            <ListView.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="Properties…" Command="{Binding OpenSelectedCommand}" />
+                    <Separator Visibility="{Binding ShowUserActions, Converter={StaticResource BoolToVis}}" />
+                    <MenuItem Header="Enable account(s)" Command="{Binding EnableSelectedCommand}"
+                              Visibility="{Binding ShowUserActions, Converter={StaticResource BoolToVis}}" />
+                    <MenuItem Header="Disable account(s)" Command="{Binding DisableSelectedCommand}"
+                              Visibility="{Binding ShowUserActions, Converter={StaticResource BoolToVis}}" />
+                    <MenuItem Header="Revoke sign-in sessions…" Command="{Binding RevokeSelectedCommand}"
+                              Visibility="{Binding ShowUserActions, Converter={StaticResource BoolToVis}}" />
+                </ContextMenu>
+            </ListView.ContextMenu>
             <ListView.View>
                 <GridView x:Name="Grid" />
             </ListView.View>

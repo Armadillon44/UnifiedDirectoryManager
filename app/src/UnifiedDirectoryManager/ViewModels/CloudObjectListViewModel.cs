@@ -114,6 +114,8 @@ public partial class CloudObjectListViewModel : ObservableObject
         // row's Source. Activating a distribution group row still opens its membership editor, which is a
         // separate action rather than a substitute for this.
         Detail.SetTarget(value);
+        // The context-menu actions fall back to the selected row, so their availability moves with it.
+        NotifyBulkCanExec();
     }
 
     partial void OnIsBusyChanged(bool value)
@@ -438,20 +440,66 @@ public partial class CloudObjectListViewModel : ObservableObject
         EnableCheckedCommand.NotifyCanExecuteChanged();
         DisableCheckedCommand.NotifyCanExecuteChanged();
         RevokeCheckedCommand.NotifyCanExecuteChanged();
+        EnableSelectedCommand.NotifyCanExecuteChanged();
+        DisableSelectedCommand.NotifyCanExecuteChanged();
+        RevokeSelectedCommand.NotifyCanExecuteChanged();
+        OpenSelectedCommand.NotifyCanExecuteChanged();
     }
 
-    [RelayCommand(CanExecute = nameof(CanBulkAct))]
-    private Task EnableCheckedAsync() => RunBulkAsync("Enable", r => _graph.SetUserAccountEnabledAsync(r.Id, true));
+    // --- the two ways an action picks its targets -------------------------------------------------
+    //
+    // The BUTTONS above the list act on the checked set, and say so: the count sits beside them and they
+    // grey out with nothing ticked. That is a deliberate affordance for a bulk action and it is left alone.
+    //
+    // The CONTEXT MENU acts on what was right-clicked, falling back to the checked set when there is one —
+    // the same rule the on-prem list uses (MainViewModel.SelectedRowsOrSingle). Two ways in, two sensible
+    // targets, but ONE implementation underneath: the work lives in RunBulkAsync and only the row list
+    // differs. Copying the body per entry point is how the two would quietly drift apart.
 
     [RelayCommand(CanExecute = nameof(CanBulkAct))]
-    private Task DisableCheckedAsync() => RunBulkAsync("Disable", r => _graph.SetUserAccountEnabledAsync(r.Id, false));
+    private Task EnableCheckedAsync() => RunBulkAsync("Enable", r => _graph.SetUserAccountEnabledAsync(r.Id, true), CheckedRows);
 
     [RelayCommand(CanExecute = nameof(CanBulkAct))]
-    private Task RevokeCheckedAsync() => RunBulkAsync("Revoke sessions for", r => _graph.RevokeSignInSessionsAsync(r.Id));
+    private Task DisableCheckedAsync() => RunBulkAsync("Disable", r => _graph.SetUserAccountEnabledAsync(r.Id, false), CheckedRows);
 
-    private async Task RunBulkAsync(string verb, Func<CloudObjectRow, Task> action)
+    [RelayCommand(CanExecute = nameof(CanBulkAct))]
+    private Task RevokeCheckedAsync() => RunBulkAsync("Revoke sessions for", r => _graph.RevokeSignInSessionsAsync(r.Id), CheckedRows);
+
+    /// <summary>
+    /// What a context-menu action applies to: the checked set when the operator has ticked anything,
+    /// otherwise the row they right-clicked. Right-click selects the row first (see the view), so the
+    /// fallback is always the row under the cursor rather than whatever was selected beforehand.
+    /// </summary>
+    public IReadOnlyList<CloudObjectRow> ContextTargetRows =>
+        CheckedRows.Count > 0 ? CheckedRows
+        : SelectedRow is { } row ? new[] { row }
+        : Array.Empty<CloudObjectRow>();
+
+    private bool CanActOnContext() =>
+        Mode == CloudListMode.Users && !IsBusy
+        && ContextTargetRows.Any(r => r.Kind == CloudObjectKind.User);
+
+    [RelayCommand(CanExecute = nameof(CanActOnContext))]
+    private Task EnableSelectedAsync() => RunBulkAsync("Enable", r => _graph.SetUserAccountEnabledAsync(r.Id, true), ContextTargetRows);
+
+    [RelayCommand(CanExecute = nameof(CanActOnContext))]
+    private Task DisableSelectedAsync() => RunBulkAsync("Disable", r => _graph.SetUserAccountEnabledAsync(r.Id, false), ContextTargetRows);
+
+    [RelayCommand(CanExecute = nameof(CanActOnContext))]
+    private Task RevokeSelectedAsync() => RunBulkAsync("Revoke sessions for", r => _graph.RevokeSignInSessionsAsync(r.Id), ContextTargetRows);
+
+    /// <summary>Opens the right-clicked row's properties — the same thing double-clicking it does.</summary>
+    [RelayCommand(CanExecute = nameof(CanOpenSelected))]
+    private void OpenSelected()
     {
-        var rows = CheckedRows.Where(r => r.Kind == CloudObjectKind.User).ToList();
+        if (SelectedRow is { } row) RequestOpen(row);
+    }
+
+    private bool CanOpenSelected() => SelectedRow is not null;
+
+    private async Task RunBulkAsync(string verb, Func<CloudObjectRow, Task> action, IReadOnlyList<CloudObjectRow> targets)
+    {
+        var rows = targets.Where(r => r.Kind == CloudObjectKind.User).ToList();
         if (rows.Count == 0) return;
 
         var lines = rows.Select(r => "• " + r.DisplayName);

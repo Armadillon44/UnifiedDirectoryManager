@@ -672,6 +672,13 @@ Entra Connect before starting another one.
 
 ## Entra ID (cloud)
 
+*(2.3.3.)* **Right-click a row** in any cloud list for its actions: **Properties…**, and on the Users list
+**Enable**, **Disable** and **Revoke sign-in sessions…**. The menu acts on the row you right-clicked, or
+on every ticked row when you have ticked some — the same rule the on-prem list follows.
+
+The buttons above the list are unchanged and still act strictly on the **ticked** rows, which is what the
+count beside them refers to.
+
 Signing in adds an **Entra ID (cloud)** root to the tree with **Users**, **Groups** and **Devices**.
 Each list searches server-side from the **Search** box, filters client-side from **Show:** and
 **Filter:**, and pages with **Load more**.

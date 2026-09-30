@@ -1,0 +1,189 @@
+<#
+.SYNOPSIS
+  Tests the UI-placement work from docs/ui-placement-audit.md. Currently P1 (the cloud object list had no
+  context menu), plus an invariant that applies to every view in the app.
+
+.DESCRIPTION
+  P1. Right-clicking a row in the on-prem list acts on it; right-clicking a row in the cloud list did
+  nothing at all, because CloudObjectListView.xaml had no ContextMenu. One window, two object lists, two
+  unrelated interaction models -- and the gesture a Windows administrator reaches for first was the dead
+  one.
+
+  The menu acts on the right-clicked row, falling back to the checked set when there is one, matching the
+  on-prem list. The buttons above the list are deliberately NOT changed: they act strictly on what is
+  checked, which is what the count beside them and their greying-out promise.
+
+  The invariant is broader and is the reason this file is named for the audit rather than for P1. A
+  mistyped command name in XAML -- {Binding EnabelSelectedCommand} -- fails SILENTLY: WPF finds no such
+  property, the menu item greys out, and it looks exactly like a command that is legitimately unavailable.
+  Nothing else in the build catches it. Every command binding in every view is checked here against the
+  commands the view models actually expose.
+
+  Run with:  pwsh -NoProfile -STA -File ./app/build/test-ui-placement.ps1
+#>
+[CmdletBinding()]
+param()
+
+$ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$dll = Join-Path $repoRoot 'debug\UnifiedDirectoryManager.dll'
+$support = Join-Path $repoRoot 'debug\UnifiedDirectoryManager.TestSupport.dll'
+if (-not (Test-Path $dll)) { throw "Build first — could not find $dll" }
+if (-not (Test-Path $support)) { throw "Build the test-support project first — could not find $support" }
+[System.Reflection.Assembly]::LoadFrom($dll) | Out-Null
+[System.Reflection.Assembly]::LoadFrom($support) | Out-Null
+
+$pass = 0; $fail = 0
+function Check([string]$name, $expected, $actual) {
+    if ($expected -eq $actual) { $script:pass++; Write-Host "  PASS  $name" -ForegroundColor Green }
+    else {
+        $script:fail++
+        Write-Host "  FAIL  $name" -ForegroundColor Red
+        Write-Host "          expected: [$expected]"
+        Write-Host "          actual:   [$actual]"
+    }
+}
+
+$src = Join-Path $repoRoot 'app\src\UnifiedDirectoryManager'
+
+Write-Host "`n== every command a view binds to actually exists ==" -ForegroundColor Cyan
+# A mistyped binding greys the control out forever and looks identical to one that is simply unavailable.
+# Nothing in the compiler or the XAML build catches it.
+$defined = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+foreach ($vmFile in (Get-ChildItem (Join-Path $src 'ViewModels') -Filter '*.cs' -Recurse)) {
+    $text = Get-Content -Raw $vmFile.FullName
+    foreach ($m in [regex]::Matches($text, '\[RelayCommand[^\]]*\]\s*(?:private|public)\s+(?:static\s+)?(?:async\s+)?(?:Task|void)\s+(\w+?)(Async)?\s*\(')) {
+        [void]$defined.Add($m.Groups[1].Value + 'Command')
+    }
+    # A few commands are plain properties rather than generated, e.g. a row's own RunCommand.
+    foreach ($m in [regex]::Matches($text, 'public\s+(?:I?[A-Za-z]*Command|IRelayCommand[^\s]*)\s+(\w+Command)\s*(?:\{|=>)')) {
+        [void]$defined.Add($m.Groups[1].Value)
+    }
+}
+Check 'the view models define commands' $true ($defined.Count -gt 20)
+
+$bound = @{}
+foreach ($view in (Get-ChildItem (Join-Path $src 'Views') -Filter '*.xaml' -Recurse)) {
+    $text = Get-Content -Raw $view.FullName
+    foreach ($m in [regex]::Matches($text, '\{Binding\s+(\w+Command)\s*\}')) {
+        $name = $m.Groups[1].Value
+        if (-not $bound.ContainsKey($name)) { $bound[$name] = @() }
+        $bound[$name] += $view.Name
+    }
+}
+Check 'the views bind to commands'      $true ($bound.Count -gt 20)
+
+$unknown = @($bound.Keys | Where-Object { -not $defined.Contains($_) } | Sort-Object)
+if ($unknown.Count -gt 0) {
+    foreach ($u in $unknown) { Write-Host "          $u  (in $($bound[$u] -join ', '))" -ForegroundColor Yellow }
+}
+Check 'every bound command is defined'  0 $unknown.Count
+
+Write-Host "`n== P1: the cloud list has a context menu ==" -ForegroundColor Cyan
+$cloudXaml = Get-Content -Raw (Join-Path $src 'Views\Controls\CloudObjectListView.xaml')
+Check 'the menu exists'                 $true ($cloudXaml -match '<ListView\.ContextMenu>')
+foreach ($cmd in 'OpenSelectedCommand', 'EnableSelectedCommand', 'DisableSelectedCommand', 'RevokeSelectedCommand') {
+    Check "  it offers $cmd"            $true ($cloudXaml -match [regex]::Escape("{Binding $cmd}"))
+}
+# Right-click has to select the row first, or the menu acts on whatever was selected beforehand. WPF does
+# not do this on its own; the on-prem list has always carried the same handler.
+Check 'right-click selects the row'     $true ($cloudXaml -match 'PreviewMouseRightButtonDown="OnListPreviewMouseRightButtonDown"')
+$cloudCode = Get-Content -Raw (Join-Path $src 'Views\Controls\CloudObjectListView.xaml.cs')
+Check 'and the handler exists'          $true ($cloudCode -match 'private void OnListPreviewMouseRightButtonDown')
+# The user-only actions must not appear on the Groups or Devices lists.
+$userItems = [regex]::Matches($cloudXaml, '<MenuItem Header="(Enable|Disable|Revoke)[^>]*>')
+Check 'three user actions are offered'  3 $userItems.Count
+foreach ($item in $userItems) {
+    Check "  $(($item.Value -split '"')[1]) is users-only" $true ($item.Value -match 'ShowUserActions')
+}
+
+Write-Host "`n== P1: what a context action targets ==" -ForegroundColor Cyan
+$ListVm = [UnifiedDirectoryManager.ViewModels.CloudObjectListViewModel]
+$Row = [UnifiedDirectoryManager.Models.CloudObjectRow]
+$Kind = [UnifiedDirectoryManager.Models.CloudObjectKind]
+
+$sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ("udm-ui-" + [guid]::NewGuid().ToString('n'))
+New-Item -ItemType Directory -Path $sandbox | Out-Null
+
+function New-CloudRow([string]$id, [string]$name) {
+    $r = $Row::new()
+    $Row.GetProperty('Id').SetValue($r, $id)
+    $Row.GetProperty('DisplayName').SetValue($r, $name)
+    $Row.GetProperty('Kind').SetValue($r, $Kind::User)
+    return $r
+}
+
+try {
+    $graph    = [UnifiedDirectoryManager.TestSupport.InertGraphService]::new()
+    $exchange = [UnifiedDirectoryManager.TestSupport.InertExchangeService]::new()
+    $dialogs  = [UnifiedDirectoryManager.TestSupport.InertDialogService]::new()
+    $store    = [UnifiedDirectoryManager.Services.SettingsStore]::new($sandbox)
+    $settings = [UnifiedDirectoryManager.Services.AppSettings]::new()
+    $vm = $ListVm::new($graph, $exchange, $dialogs, $store, $settings)
+
+    $a = New-CloudRow 'u-a' 'Amy'
+    $b = New-CloudRow 'u-b' 'Bob'
+    $c = New-CloudRow 'u-c' 'Cal'
+    # The loader subscribes each row before adding it, which is what keeps CheckedCount in step with the
+    # tick boxes. Adding rows straight to the collection here would skip that and quietly test a list the
+    # app never builds, so the test attaches the very same handler.
+    $onRowChanged = $ListVm.GetMethod('OnRowPropertyChanged', [System.Reflection.BindingFlags]'NonPublic,Instance')
+    if ($null -eq $onRowChanged) { throw 'CloudObjectListViewModel has no OnRowPropertyChanged — has it been refactored?' }
+    $handler = $onRowChanged.CreateDelegate([System.ComponentModel.PropertyChangedEventHandler], $vm)
+    foreach ($r in $a, $b, $c) { $r.add_PropertyChanged($handler); $vm.Rows.Add($r) }
+
+    Check 'nothing selected targets nothing'  0 (@($vm.ContextTargetRows)).Count
+
+    # Right-clicking a row selects it, and the action follows the row rather than the checkboxes.
+    $vm.SelectedRow = $b
+    $target = @($vm.ContextTargetRows)
+    Check 'the selected row is the target'    1 $target.Count
+    Check 'and it is the right one'           'Bob' $target[0].DisplayName
+
+    # Once anything is ticked, the checked set wins -- otherwise right-clicking inside a deliberate
+    # multi-selection would quietly act on one row instead of all of them.
+    $a.IsChecked = $true
+    $c.IsChecked = $true
+    $target = @($vm.ContextTargetRows)
+    Check 'the checked set takes over'        2 $target.Count
+    Check 'and it is the checked ones'        'Amy Cal' (($target | ForEach-Object { $_.DisplayName } | Sort-Object) -join ' ')
+    Check 'not the merely selected row'       $false ($target.DisplayName -contains 'Bob')
+
+    $a.IsChecked = $false
+    $c.IsChecked = $false
+    Check 'unticking hands it back'           1 (@($vm.ContextTargetRows)).Count
+
+    Write-Host "`n== P1: the buttons are unchanged ==" -ForegroundColor Cyan
+    # They promise "the checked users" in their tooltips and grey out with nothing ticked. A selected row
+    # must not silently arm a bulk button.
+    $vm.SelectedRow = $b
+    Check 'a selected row does not arm Enable'  $false $vm.EnableCheckedCommand.CanExecute($null)
+    Check 'nor Disable'                         $false $vm.DisableCheckedCommand.CanExecute($null)
+    Check 'nor Revoke'                          $false $vm.RevokeCheckedCommand.CanExecute($null)
+    # ...but the context action IS available, because that is what was right-clicked.
+    Check 'while the context action is armed'   $true  $vm.EnableSelectedCommand.CanExecute($null)
+    Check 'and Properties is too'               $true  $vm.OpenSelectedCommand.CanExecute($null)
+
+    $b.IsChecked = $true
+    Check 'ticking arms the bulk buttons'       $true $vm.EnableCheckedCommand.CanExecute($null)
+
+    Write-Host "`n== P1: only users, and only in the Users list ==" -ForegroundColor Cyan
+    $vm.Mode = [UnifiedDirectoryManager.Services.CloudListMode]::Groups
+    Check 'the Groups list offers no account actions' $false $vm.EnableSelectedCommand.CanExecute($null)
+    Check 'but Properties still opens'                $true  $vm.OpenSelectedCommand.CanExecute($null)
+}
+finally { Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue }
+
+Write-Host "`n== P1: one implementation, two entry points (mutation check) ==" -ForegroundColor Cyan
+# The work must not be copied per entry point. That is how Copy User's token resolver drifted from New
+# User's (F26) and wrote a different UPN for the same template.
+$vmSrc = Get-Content -Raw (Join-Path $src 'ViewModels\CloudObjectListViewModel.cs')
+$runs = ([regex]::Matches($vmSrc, 'private async Task RunBulkAsync')).Count
+Check 'there is one RunBulkAsync'       1 $runs
+Check 'it takes its targets'            $true ($vmSrc -match 'RunBulkAsync\(string verb, Func<CloudObjectRow, Task> action, IReadOnlyList<CloudObjectRow> targets\)')
+$graphCalls = ([regex]::Matches($vmSrc, 'SetUserAccountEnabledAsync|RevokeSignInSessionsAsync')).Count
+Check 'the six commands are thin'       6 $graphCalls
+Check 'the context rule is one property' 1 ([regex]::Matches($vmSrc, 'public IReadOnlyList<CloudObjectRow> ContextTargetRows')).Count
+
+Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
+if ($fail -gt 0) { exit 1 }

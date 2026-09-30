@@ -1,6 +1,7 @@
 # Where the app's functions live — a placement audit
 
-Status: **Nothing done yet. 9 findings (P1–P9), plus a designed feature (T1, customisable toolbar).**
+Status: **P1 done. 8 findings left (P2–P9), plus T1 (customisable toolbar), whose three open questions
+are now decided — see [T1 decisions](#t1-decisions-settled).**
 
 Measured against `master` at **`8a2dc29`**. Everything below was derived from the XAML and
 `MainViewModel.cs` rather than from memory, and the method is in
@@ -18,7 +19,7 @@ The complaint that prompted it, in the maintainer's words:
 
 | # | Finding | State |
 |---|---|---|
-| **P1** | The cloud (Entra) object list has no context menu at all | **Not started** |
+| **P1** | The cloud (Entra) object list has no context menu at all | **Done** — `master`, see below |
 | **P2** | Favourites is reachable only by right-clicking a tree node | **Not started** |
 | **P3** | OU management is reachable only by right-clicking a tree node | **Not started** |
 | **P4** | Seven object actions are right-click-only | **Not started** |
@@ -99,7 +100,7 @@ Remove selected, Copy groups to user…, Look up in Entra ID.
 
 ## Findings
 
-### P1 — The cloud object list has no context menu at all
+### P1 — The cloud object list has no context menu at all — **DONE**
 
 `CloudObjectListView.xaml` contains no `ContextMenu`. Right-clicking an Entra user does nothing. The same
 actions exist, as buttons above the list: Enable, Disable, Revoke sessions, Export loaded, Export all.
@@ -108,8 +109,26 @@ This is the largest inconsistency in the app. One window, two object lists, two 
 models. An operator who has learned "right-click a row to act on it" from the AD side finds the gesture
 dead on the cloud side, with no indication why.
 
-*Fix:* give the cloud list a context menu mirroring the AD list's, carrying the actions that already exist
-as buttons. Keep the buttons — rule 2 makes duplication correct.
+*Fixed.* The cloud list has a context menu offering Properties…, Enable, Disable and Revoke sign-in
+sessions, the last three only in the Users list. The buttons are unchanged.
+
+Two things came out of doing it that were not obvious from the audit:
+
+- **Right-click did not select the row.** WPF does not do this on its own, and the on-prem list has carried
+  a `PreviewMouseRightButtonDown` handler for it all along. Without the same handler, a cloud context
+  action would have targeted whatever was selected *before* the right-click — acting on the wrong user
+  while looking correct.
+- **The two surfaces need different targets.** The buttons act on the CHECKED set and say so (the count
+  sits beside them; they grey out with nothing ticked). The context menu acts on the right-clicked row,
+  falling back to the checked set when there is one — the rule `MainViewModel.SelectedRowsOrSingle` already
+  uses on-prem. Two entry points, two targets, but ONE implementation: `RunBulkAsync` takes its row list as
+  a parameter, so the six commands are three lines each. Copying the body per entry point is how Copy
+  User's token resolver drifted from New User's (F26).
+
+Covered by `test-ui-placement.ps1`, which also carries an invariant worth having regardless of this audit:
+**every `{Binding …Command}` in every view resolves to a command a view model actually defines.** A typo
+there fails silently — WPF finds no such property, the control greys out, and it is indistinguishable from
+a command that is legitimately unavailable. Nothing else in the build catches it.
 
 ### P2 — Favourites is reachable only by right-clicking a tree node
 
@@ -280,16 +299,50 @@ opening that same page, because that is where a Windows user reaches for it firs
 **Rendering.** The toolbar becomes an `ItemsControl` over the chosen items with a `DataTemplate` per kind
 (button / separator), rather than hand-written `<Button>` elements.
 
-### Decisions worth confirming before it is built
+### T1 decisions (settled)
 
-1. **Scope.** Should the AD and cloud views have *separate* customisable toolbars, or one list whose
-   items declare which views they apply to? This design assumes the latter — simpler, and matches the
-   current `IsAdView` behaviour.
-2. **Per-user or per-machine.** `AppSettings` is per-user (`%APPDATA%`), so a customised toolbar follows
-   the operator, not the workstation. That is assumed correct here; it is the opposite of what a locked-
-   down shared-workstation deployment might want.
-3. **Icons.** The toolbar is text-only today. Customisation is easier to live with when items are icons +
-   text, but that is a separate piece of design work and this document does not assume it.
+1. **One toolbar**, whose items declare which views they apply to (`ToolbarScope`). Not separate AD and
+   cloud toolbars.
+2. **Per-user.** It lives in `AppSettings` under `%APPDATA%`, so a customised toolbar follows the operator
+   rather than the workstation.
+3. **Icons: yes, minimal.** Proposed set below.
+
+### Proposed icons
+
+Use **Segoe MDL2 Assets** — present on every Windows 10 and 11 install, so no image assets to ship, no
+scaling problems on a high-DPI display, and it recolours with the theme. Icon **beside** the text, not
+instead of it: an icon-only toolbar is its own memorisation problem, which is the thing this audit exists
+to remove.
+
+Glyphs are named rather than given as codepoints, because a wrong codepoint renders as a box and is worth
+checking against the font at the time rather than trusting a number written down here.
+
+| Toolbar item | Glyph | Why |
+|---|---|---|
+| New User… | `AddFriend` | The only "add a person" glyph in the set |
+| Bulk Create… | `AddFriend` + `…` / `People` | Same act at scale; `People` reads as plural |
+| Templates… | `Page` | A template is a document that gets copied |
+| Advanced Search… | `Search` | Universal |
+| Add to Groups… | `People` | Group membership |
+| Bulk Edit… | `Edit` (pencil) | Universal |
+| Refresh | `Refresh` | Universal |
+| Export CSV… | `Save` or `Download` | `Download` reads as "out of the app" better than a floppy |
+| Logs | `ShowResults` or `List` | A list of what happened |
+| Export Members… | `Download` + `People` is not available; use `Download` | Distinguished by its label |
+| Delete… | `Delete` | Universal, and the one item that should never be icon-only |
+
+Two rules for whoever implements it:
+
+- **No icon is better than a vague icon.** An item with no obvious glyph keeps its text alone rather than
+  borrowing one that means something else.
+- **Destructive items keep their words.** Delete never appears as a bare icon, whatever the operator has
+  customised.
+
+### Still open
+
+- **Whether a locked-down deployment needs to pin the toolbar.** Per-user storage was chosen deliberately,
+  but it means an operator can customise their way into a layout a support call then has to reason about.
+  A read-only override is not designed here and is not thought to be needed.
 
 ### Testing
 
