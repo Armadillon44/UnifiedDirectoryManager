@@ -22,8 +22,16 @@ public static class GroupMemberCsv
     /// <summary>Status text for a group whose membership came back incomplete.</summary>
     public const string IncompleteStatus = "INCOMPLETE - the member list was cut short; this group has more members";
 
-    /// <summary>Status text for a group whose membership could not be read at all.</summary>
-    public const string UnreadableStatus = "UNREADABLE - membership could not be read; this is NOT a confirmed empty group";
+    /// <summary>
+    /// Status text for a group whose membership could not be read at all.
+    ///
+    /// This now means what it says. It used to appear for every empty group, because Active Directory omits
+    /// the member attribute identically in both cases and the read took the cautious reading — so the
+    /// warning fired on the ordinary case and carried no information. The read settles it with the
+    /// memberOf back-link now, and this text is reserved for a group that genuinely HAS members that the
+    /// signed-in account may not see.
+    /// </summary>
+    public const string UnreadableStatus = "UNREADABLE - this group HAS members, but they are not readable with your permissions";
 
     /// <summary>Status text for a group confirmed to have no members.</summary>
     public const string EmptyStatus = "No members";

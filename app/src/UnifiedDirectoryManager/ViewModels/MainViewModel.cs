@@ -869,8 +869,8 @@ public partial class MainViewModel : ObservableObject
         if (!_pendingDeleteMembership.TryGetValue(row.DistinguishedName, out var m))
             return "  — membership could NOT be read";
         if (m.Truncated) return $"  — at least {m.Members.Count} member(s); the full list could NOT be read";
-        if (m.Unconfirmed) return "  — no members found (an empty group, or not readable with your permissions)";
-        return $"  — {m.Members.Count} member(s)";
+        if (m.Unconfirmed) return "  — membership NOT readable with your permissions (the group is not empty)";
+        return m.Members.Count == 0 ? "  — no members" : $"  — {m.Members.Count} member(s)";
     }
 
     /// <summary>Membership gathered for the delete currently being confirmed (keyed by DN).</summary>
@@ -1502,8 +1502,8 @@ public partial class MainViewModel : ObservableObject
                     // An unconfirmed (possibly unreadable) membership is still recorded, but stamped so nobody
                     // later reads "0 members" as fact.
                     var caveat = membership.Unconfirmed
-                        ? "No members were returned. This is either an empty group OR its membership was not readable "
-                          + "with the permissions used — the two are indistinguishable, so do NOT treat this as proof the group was empty."
+                        ? "No members were returned, and the group could NOT be confirmed empty — its membership was "
+                          + "not readable with the permissions used. Do NOT treat this record as proof the group was empty."
                         : null;
                     (lastRecordPath, _) = GroupDeletionRecord.Write(recordDirectory, info, typeLabel, attrs, membership.Members, stamp, caveat);
                 }

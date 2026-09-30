@@ -313,5 +313,44 @@ Check 'the picker user filter is narrowed'      $true ($dirSrc -match 'AdObjectT
 # managedBy, and both of those pickers open in this mode. Narrowing it would remove a real capability.
 Check 'the any filter still admits contacts'    $true ($dirSrc -match '_ => "\(\|\(objectCategory=person\)')
 
+Write-Host "`n== empty is told apart from unreadable ==" -ForegroundColor Cyan
+# Active Directory omits the member attribute identically for a group with no members and a group whose
+# membership you may not read. Taking the cautious reading meant EVERY empty group was reported as
+# possibly-unreadable -- a warning on the ordinary case, which is how the rare real one gets scrolled past.
+# It was reported from the dev build exactly that way: an empty group said it could not be read.
+#
+# The back-link settles it. memberOf is kept on each MEMBER object, under that object's own ACL rather
+# than the group's, so a group whose member attribute is hidden still has members pointing back at it.
+#
+# The probe itself needs a domain controller, so what is pinned here is the decision it encodes.
+$dirSrc = Get-Content -Raw (Join-Path $repoRoot 'app\src\UnifiedDirectoryManager\Services\DirectoryService.cs')
+$probe = [regex]::Match($dirSrc, '(?s)private bool ConfirmedEmpty\(string groupDn, CancellationToken cancellationToken\).*?\r?\n    \}').Value
+Check 'the probe exists'                     $true ($probe.Length -gt 0)
+Check 'it asks via the back-link'            $true ($probe -match 'memberOf=')
+Check 'and escapes the DN into the filter'   $true ($probe -match 'LdapFilter\.EscapeValue\(groupDn\)')
+# One result is all the question needs; loading the whole membership would cost what the guard is avoiding.
+Check 'one result answers it'                $true ($probe -match 'FindOne\(\)')
+
+# THE DIRECTION THAT MATTERS. If the probe cannot run, the answer must be "not confirmed" -- claiming a
+# group is empty on the strength of a failed check is the one answer that could get a group deleted on a
+# false premise, because the deletion record's caveat hangs off this same flag.
+$catch = [regex]::Match($probe, '(?s)catch \(Exception ex\).*?\r?\n        \}').Value
+Check 'a failed probe was found'             $true ($catch.Length -gt 0)
+Check 'and does NOT claim empty'             $false ($catch -match 'return true;')
+Check 'it says unconfirmed instead'          $true ($catch -match 'return false;')
+# Cancellation is not a failed probe and must not be swallowed into "unconfirmed" either.
+Check 'cancellation still propagates'        $true ($probe -match 'catch \(OperationCanceledException\) \{ throw; \}')
+
+# And the read only pays for the probe in the one case that is ambiguous.
+$read = [regex]::Match($dirSrc, '(?m)^\s*var unconfirmed = .*$').Value
+Check 'the probe gates on nothing read'      $true ($read -match '!sawMemberProperty && members\.Count == 0')
+Check 'and only then consults it'            $true ($read -match '&& !ConfirmedEmpty\(groupDn')
+
+# A distinguished name is full of characters an LDAP filter treats specially; a group really can be
+# called "Sales, West" or "R&D (EU)".
+$Filter = [UnifiedDirectoryManager.Models.LdapFilter]
+Check 'a backslash is escaped'  'CN=Sales\5c, West,DC=x' ($Filter::EscapeValue('CN=Sales\, West,DC=x'))
+Check 'parentheses are escaped' 'CN=R&D \28EU\29,DC=x'  ($Filter::EscapeValue('CN=R&D (EU),DC=x'))
+Check 'and an asterisk'         'CN=a\2ab,DC=x'          ($Filter::EscapeValue('CN=a*b,DC=x'))
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

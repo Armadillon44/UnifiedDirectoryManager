@@ -83,9 +83,13 @@ $confirmedEmpty = Rows 'Empty Group' 'CN=Empty,DC=contoso,DC=net' (Members @())
 Check 'a confirmed-empty group gets a row' 1 $confirmedEmpty.Count
 Check 'saying it has no members'           $true ($confirmedEmpty[0] -like "*$($Csv::EmptyStatus)*")
 Check 'and naming the group'               $true ($confirmedEmpty[0] -like 'Empty Group,*')
+# The reported bug: an ordinary empty group was being called unreadable, because AD omits the member
+# attribute for one exactly as it does for the other and the read took the cautious reading every time.
+Check 'and NOT that it is unreadable'      $false ($confirmedEmpty[0] -like "*UNREADABLE*")
 
-# THE DANGEROUS ONE. LDAP omits `member` identically for an empty group and an unreadable one, so this
-# must never be presented as "no members".
+# THE DANGEROUS ONE, and now a genuinely rare case. The read settles empty-vs-unreadable with the memberOf
+# back-link before setting this flag, so Unconfirmed reaching here means the group really HAS members the
+# signed-in account cannot see. It must never be presented as "no members".
 $cannotRead = Rows 'Locked Group' 'CN=Locked,DC=contoso,DC=net' (Members @() $false $true)
 Check 'an unreadable group gets a row'     1 $cannotRead.Count
 Check 'saying it could not be read'        $true ($cannotRead[0] -like "*$($Csv::UnreadableStatus)*")

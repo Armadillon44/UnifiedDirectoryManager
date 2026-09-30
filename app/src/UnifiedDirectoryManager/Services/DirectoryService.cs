@@ -876,8 +876,60 @@ public sealed class DirectoryService : IDirectoryService
             // Names come from each DN's RDN, NOT NameResolver.Resolve: resolving is a bind per member, which on a
             // large group meant thousands of synchronous round-trips before the caller could even show a prompt.
             var members = dns.Select(dn => new GroupMember(NameResolver.RdnFallback(dn), dn)).ToList();
-            return new GroupMembersResult(members, truncated, Unconfirmed: !sawMemberProperty && members.Count == 0);
+            // "No member attribute and nothing read" is the ambiguous case, and the ONLY one worth paying a
+            // second round trip to settle.
+            var unconfirmed = !sawMemberProperty && members.Count == 0 && !ConfirmedEmpty(groupDn, cancellationToken);
+            return new GroupMembersResult(members, truncated, unconfirmed);
         }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Whether a group with no readable <c>member</c> attribute is genuinely empty.
+    ///
+    /// Active Directory omits <c>member</c> identically for an empty group and for one whose membership the
+    /// caller may not read, so that attribute alone cannot tell them apart. Taking the cautious reading and
+    /// calling every such group "possibly unreadable" is no better: an empty group is ordinary, so the
+    /// warning fired constantly and meant nothing — which is how a real unreadable group would have been
+    /// scrolled past.
+    ///
+    /// The BACK-LINK settles it. <c>memberOf</c> is maintained on each MEMBER object and is read under that
+    /// object's own ACL, not the group's, so a group whose <c>member</c> is hidden still has members
+    /// pointing back at it. One indexed, single-result search: a hit means the membership really is
+    /// unreadable, nothing found means the group really is empty.
+    ///
+    /// Neither side counts primary-group membership (Domain Users and the like), which <c>member</c> does not
+    /// hold either — so the two agree. Cross-domain members appear in this domain as foreign security
+    /// principals, and those carry <c>memberOf</c> like anything else.
+    /// </summary>
+    /// <returns>True when the group is confirmed empty; false when it could not be confirmed.</returns>
+    private bool ConfirmedEmpty(string groupDn, CancellationToken cancellationToken)
+    {
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var root = Required.CreateEntry();
+            using var searcher = new DirectorySearcher(root)
+            {
+                SearchScope = SearchScope.Subtree,
+                Filter = $"(memberOf={LdapFilter.EscapeValue(groupDn)})",
+            };
+            searcher.PropertiesToLoad.Add("distinguishedName");
+
+            if (searcher.FindOne() is null) return true;
+
+            AppLog.Instance.Warn(
+                $"The member attribute of {groupDn} returned nothing, but the group HAS members (found via "
+                + "memberOf) — the membership is not readable with these permissions.");
+            return false;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            // Unsettled, so say unsettled. Claiming the group is empty on the strength of a failed check is
+            // the one answer that could get a group deleted on a false premise.
+            AppLog.Instance.Warn($"Could not confirm whether {groupDn} is empty: {ex.Message}");
+            return false;
+        }
     }
 
     public Task AddMembersAsync(string groupDn, IReadOnlyList<string> memberDns, CancellationToken cancellationToken = default) =>

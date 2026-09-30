@@ -371,9 +371,14 @@ old one.
 > - **INCOMPLETE** — the member list was cut short, and the group has more members than the file shows.
 >   Every row of that group carries this, because sorting the sheet would otherwise separate a single
 >   warning from the group it belongs to.
-> - **UNREADABLE** — the membership could not be read. LDAP answers identically for a group with no members
->   and a group whose membership you may not see, so this is **not** a confirmed empty group.
+> - **UNREADABLE** — the group **has** members, but they are not readable with your permissions. Rare, and
+>   it means what it says.
 > - **No members** — confirmed empty.
+>
+> Active Directory reports an empty group and an unreadable one identically: in both cases it simply omits
+> the member attribute. The app settles which it is by looking the other way down the link — `memberOf` is
+> kept on each member object, under that object own permissions rather than the group ones, so a group
+> whose members are hidden still has members pointing back at it.
 >
 > A group that produced no rows still gets one, saying which of those applies. Dropping it would leave you
 > unable to tell an empty group from one that was silently skipped.
