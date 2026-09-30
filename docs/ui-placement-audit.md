@@ -27,7 +27,7 @@ The complaint that prompted it, in the maintainer's words:
 | **P5** | Object actions that are menu-only never appear on right-click | **Done** |
 | **P6** | The same command carries different labels in different places | **Done** |
 | **P7** | Refresh and the log commands are duplicated *within* the menu bar | **Done** |
-| **P8** | The menu bar is organised by nothing in particular | **Not started** |
+| **P8** | The menu bar is organised by nothing in particular | **Agreed, in progress** |
 | **P9** | There are no keyboard shortcuts anywhere in the app | **Not started** |
 | **T1** | *(feature)* Let the operator choose what is on the toolbar | **Designed, not started** |
 
@@ -314,6 +314,10 @@ are split across File, Edit and Tools. This is the structural reason the other f
 
 *Fix (the one subjective recommendation in this document):* reorganise by noun.
 
+The proposal below is what this document argued for. **What was agreed is different in four places**
+and is recorded under [The agreed shape](#the-agreed-shape) after it. The original is kept because the
+reasoning for the changes only makes sense against it.
+
 ```
 File      Settings… · View Log File… · Open Logs Folder · Exit
 New       User… · Bulk Create Users… · Group… · Cloud Group… · Organizational Unit…
@@ -329,6 +333,66 @@ Help      View README… · About…
 
 The test to apply: an operator who wants to do something *to the thing they have selected* should have
 exactly one menu to open, and everything should be in it.
+
+### The agreed shape
+
+**`File` / `Action` / `View` / `Tools` / `Help`, with `New` as a submenu inside `Action`.** Not the
+`New` + `Selected` pair above. This is the MMC layout — ADUC, DNS, DHCP, Certificates, all of them — so
+it is the one shape these operators already have muscle memory for, and the only one where being told
+"it's under Action" means anything before they look.
+
+Four decisions behind it, each of which changed the work:
+
+**1. `Action` serves the cloud view too.** Today the Edit menu is disabled wholesale in the cloud view,
+and the cloud list's Properties / Enable / Disable / Revoke sessions are in *no* menu at all — rule 1's
+test only ever scanned `MainViewModel`, so it never noticed. The Action menu now swaps its contents
+with the view, and the test covers `CloudObjectListViewModel` as well. The cloud half gets a named
+exemption list rather than a lower standard: `LoadMore` and `Search` are pane furniture, and
+`EnableChecked` / `DisableChecked` / `RevokeChecked` are the button twins of the selection commands
+that *are* in the menu.
+
+**2. Creating an OU moves into `New`; the other two tree items stay in `View`.** `New ▸ OU…` joins the
+other creates. `Properties…` and `Delete OU…` stay under `View ▸ Selected Folder`, because they act on
+the tree node rather than on the list selection and putting them in `Action` would make that menu mean
+two different things depending on which pane you last touched.
+
+**3. `Reset Password…` is new, and deliberately single-target.** The proposal listed it under Selected,
+but it only ever existed as an edit-pane button — there was no selection-level command to move. It is
+now in `Action`, enabled only when exactly one user is selected. A bulk password reset is a different
+feature with its own confirmation and reporting problems, and does not belong in a reorganisation.
+
+**4. `File` keeps the exports, and gains the cloud ones.** `Export List to CSV…` writes out the list
+you are looking at, not the rows you picked, so it is not an `Action`. In the cloud view File now shows
+`Export Loaded to CSV…` and `Export All to CSV…` — the cloud list's own two commands, whose
+distinction (the loaded page versus everything behind it) is real and worth keeping visible. Exporting
+*group members* is the opposite case: it acts on the groups you selected, so it is in `Action`.
+
+```
+File    Export List to CSV…                        (AD view)
+        Export Loaded to CSV… · Export All to CSV…  (cloud view)
+        Settings… · Exit
+Action  New ▸ User… · Bulk Create Users… · Group… · OU…        (AD view)
+        New ▸ Cloud Group…                                    (cloud view)
+        Properties…
+        Enable / Disable / Unlock Account(s) · Reset Password…  (AD view)
+        Enable / Disable Account(s) · Revoke Sessions           (cloud view)
+        Copy User… · Copy Groups to User… · Save as Template…
+        Add to Groups… · Move to OU… · Bulk Edit…
+        Export Group Members to CSV… · Append Group Members to CSV…
+        Run Scenario ▸
+        Delete Selected…
+View    Refresh · Toggle Pane Dock
+        Favourites ▸ (Pin to Favourites / Unpin from Favourites / Move Up / Move Down)
+        Selected Folder ▸ (Properties… / Delete OU…)
+Tools   Advanced Search… · Entra Connect Delta Sync… · Manage Scenarios… · User Templates…
+Help    View README… · View Log File… · Open Logs Folder · About…
+```
+
+`Edit` disappears. That is the part worth being uneasy about: Alt+E has done something in this app
+since it shipped. Nothing replaces it, because a menu kept only to catch a habit is a menu that has to
+be a duplicate of something — which is what P7 just finished removing.
+
+Shipping with P4–P7 as **2.3.3**, so the menus are relearned once rather than twice.
 
 ### P9 — There are no keyboard shortcuts anywhere
 
