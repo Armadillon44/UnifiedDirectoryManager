@@ -27,6 +27,15 @@ public class InertDialogService : IDialogService
     /// <summary>Every confirmation asked for, as (title, heading), in order.</summary>
     public List<(string Title, string Heading)> Confirmations { get; } = new();
 
+    /// <summary>
+    /// What <see cref="PromptSaveFile"/> answers. Null — the default — is the operator cancelling the save
+    /// dialog, which is the case a caller most often gets wrong.
+    /// </summary>
+    public string? SaveFilePath { get; set; }
+
+    /// <summary>Every save prompt offered, so a test can assert the name and folder suggested.</summary>
+    public List<(string Filter, string DefaultFileName, string? InitialDirectory)> SaveFilePrompts { get; } = new();
+
     public virtual bool Confirm(string title, string heading, IEnumerable<string> lines)
     {
         Confirmations.Add((title, heading));
@@ -75,7 +84,11 @@ public class InertDialogService : IDialogService
     public virtual IReadOnlyList<string>? EditMultiValue(string friendlyName, IEnumerable<string> values) => throw Unused();
     public virtual void OpenObjectEditor(string distinguishedName, AdObjectType type, string title, Action onChanged) => throw Unused();
     public virtual PasswordResetRequest? PromptPasswordReset(string accountTitle) => throw Unused();
-    public virtual string? PromptSaveFile(string filter, string defaultFileName, string? initialDirectory = null) => throw Unused();
+    public virtual string? PromptSaveFile(string filter, string defaultFileName, string? initialDirectory = null)
+    {
+        SaveFilePrompts.Add((filter, defaultFileName, initialDirectory));
+        return SaveFilePath;
+    }
     public virtual string? PromptOpenFile(string filter) => throw Unused();
     public virtual (DelegateAccess Access, bool AutoMapping)? EditDelegateAccess(string delegateName, DelegateAccess current) => throw Unused();
     public virtual (string Id, string Name, bool FromExchange)? ShowNewCloudGroup(CloudGroupType? initialType) => throw Unused();

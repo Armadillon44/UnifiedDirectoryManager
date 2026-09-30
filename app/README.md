@@ -482,6 +482,23 @@ nothing ticked and returned nothing, so the search scope you already had was dis
 with your current OUs ticked and keeps them — including ones further down the tree than you have
 expanded, and ones the directory no longer has, which are handed back untouched rather than dropped.)*
 
+### Keeping a record of a creation
+
+*(2.3.3.)* The **Progress** pane on **New User** and **Copy user…** has **Copy log** and **Save log…**
+beside it. Both produce the same text: a header naming what was done, to which account, by which
+directory account and when, then every progress line exactly as it appeared, then the closing outcome.
+
+**Save log…** defaults to the same folder scenario logs and deleted-group records go to (**Settings ▸
+Logs**), named `new-user-<name>-<date>.log` or `copy-user-<name>-<date>.log`, so one ticket's paperwork
+ends up together. Cancelling the save changes nothing.
+
+**Copy log** exists because each progress line is its own read-only box — you can select one line, but a
+drag will not cross lines, so there is no way to select the whole pane by hand.
+
+> The record deliberately contains **no password and no Temporary Access Pass**. The password step says
+> only that it was set, and the TAP step only that one was issued; neither value is written. A test
+> enforces that, because this text now goes to a file on disk.
+
 ## Copy user
 
 **Edit ▸ Copy User…** (or **Copy user…** on the row right-click) creates a new user from an existing

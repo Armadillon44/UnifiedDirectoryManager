@@ -1,4 +1,5 @@
 using System.Windows;
+using UnifiedDirectoryManager.Services;
 using UnifiedDirectoryManager.ViewModels;
 
 namespace UnifiedDirectoryManager.Views.Dialogs;
@@ -60,6 +61,16 @@ public partial class NewUserWindow : Window
     }
 
     private void OnClose(object sender, RoutedEventArgs e) => Close();
+
+    private void OnCopyLog(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not NewUserViewModel vm) return;
+        // Plain Clipboard, not SensitiveClipboard: the progress lines carry no password and no Temporary
+        // Access Pass, and an operator copying this is pasting it into a ticket.
+        try { Clipboard.SetText(vm.LogText); }
+        catch (Exception ex) { AppLog.Instance.Warn("Could not copy the creation log: " + ex.Message); }
+    }
+
 
     private void OnCopyPassword(object sender, RoutedEventArgs e)
     {

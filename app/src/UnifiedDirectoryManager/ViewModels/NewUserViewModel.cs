@@ -526,6 +526,7 @@ public partial class NewUserViewModel : ObservableObject
             Created = true;
             CanCreate = false; // on-prem account now exists — never offer Create again for this window
             UserCreated?.Invoke();
+            _createdDn = result.DistinguishedName;
             Step($"✓ Created {result.DistinguishedName}");
 
             if (passwordRequested)
@@ -673,9 +674,83 @@ public partial class NewUserViewModel : ObservableObject
         finally { IsBusy = false; }
     }
 
+
+    /// <summary>
+    /// The progress lines as one block of text, with a header naming what was done, to whom, by whom and
+    /// when. Backs both **Copy log** and **Save log…**.
+    ///
+    /// The steps deliberately carry no secret: the password step says only that it was set, and the
+    /// Temporary Access Pass reporter says only that one was issued. Neither value is ever written here.
+    /// There is a test that keeps it that way.
+    /// </summary>
+    /// <summary>
+    /// The distinguished name of the account this window created, once it has one. Null before that, and
+    /// after a failure — which is exactly when the record has to fall back to what the operator typed.
+    /// </summary>
+    private string? _createdDn;
+
+    /// <summary>Who the record is about: the real DN once it exists, else the best name available.</summary>
+    private string LogSubject => string.IsNullOrWhiteSpace(_createdDn) ? LogFileSubject : _createdDn!;
+
+    /// <summary>
+    /// The short name a log FILE is named after. Deliberately not the DN: a distinguished name is full of
+    /// commas and equals signs, and sanitising one produces an unreadable file name.
+    /// </summary>
+    private string LogFileSubject
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(SamOverride)) return SamOverride.Trim();
+            var typed = $"{FirstName} {LastName}".Trim();
+            return string.IsNullOrWhiteSpace(typed) ? "user" : typed;
+        }
+    }
+
+    public string LogText => OperationLog.BuildCreationRecord(
+        "New user", LogSubject, _directory.Current?.Username, DateTime.Now, ProgressSteps, Status);
+
+    /// <summary>There is nothing to copy or save until something has actually been attempted.</summary>
+    public bool HasLog => ProgressSteps.Count > 0;
+
+    /// <summary>
+    /// Writes the record to a file the operator chooses, defaulting to the operation-log folder — the same
+    /// one scenario logs and deleted-group records go to, so a ticket's paperwork ends up together.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(HasLog))]
+    private void SaveLog()
+    {
+        if (!HasLog) return; // belt and braces: the command is gated on the same thing
+
+        var suggested = OperationLog.SuggestFileName("new-user", LogFileSubject, DateTime.Now);
+        var folder = OperationLog.ResolveDirectory(_settings);
+
+        var path = _dialogs.PromptSaveFile(
+            "Log files (*.log)|*.log|Text files (*.txt)|*.txt|All files (*.*)|*.*", suggested, folder);
+        // Empty counts as cancelled too: File.WriteAllText throws on an empty path, which would read
+        // to the operator as the SAVE having failed when they had simply closed the dialog.
+        if (string.IsNullOrWhiteSpace(path)) return;
+
+        try
+        {
+            var dir = System.IO.Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir)) System.IO.Directory.CreateDirectory(dir);
+            System.IO.File.WriteAllText(path, LogText);
+            Status = $"Log saved to {path}.";
+            AppLog.Instance.Info($"New user record saved to {path}.");
+        }
+        catch (Exception ex)
+        {
+            // The account was still created; a failed log write must not read as a failed creation.
+            Status = "The user was created, but the log could not be saved: " + ex.Message;
+            AppLog.Instance.Warn("Could not save the creation record: " + ex.Message);
+        }
+    }
+
     private void Step(string text)
     {
         ProgressSteps.Add(text);
+        OnPropertyChanged(nameof(HasLog));
+        SaveLogCommand.NotifyCanExecuteChanged();
         Status = text;
     }
 

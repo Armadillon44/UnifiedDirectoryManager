@@ -213,6 +213,13 @@
             <DockPanel Grid.Row="2" Margin="0,8,0,0"
                        Visibility="{Binding ShowProgress, Converter={StaticResource BoolToVis}}">
                 <TextBlock DockPanel.Dock="Top" Text="Progress" FontWeight="SemiBold" Margin="0,0,0,4" />
+                <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,4,0,0">
+                    <Button Content="Copy log" Click="OnCopyLog" MinWidth="84" Margin="0,0,6,0"
+                            IsEnabled="{Binding HasLog}"
+                            ToolTip="Copy every progress line, with a header, to the clipboard." />
+                    <Button Content="Save log…" Command="{Binding SaveLogCommand}" MinWidth="84"
+                            ToolTip="Write these steps to a file, alongside scenario logs and deleted-group records." />
+                </StackPanel>
                 <Border BorderBrush="#DDD" BorderThickness="1" MaxHeight="220">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <ItemsControl ItemsSource="{Binding ProgressSteps}" Margin="4"
