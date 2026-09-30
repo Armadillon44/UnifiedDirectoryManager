@@ -94,8 +94,8 @@
                                         <!-- Groups (Add/Remove from groups) -->
                                         <DockPanel Margin="0,6,0,0" Visibility="{Binding ShowGroups, Converter={StaticResource BoolToVis}}">
                                             <StackPanel DockPanel.Dock="Right" VerticalAlignment="Top" Margin="6,0,0,0">
-                                                <Button Content="Pick groups…" Command="{Binding PickGroupsCommand}" Margin="0,0,0,4" />
-                                                <Button Content="Remove" Command="{Binding RemoveGroupCommand}"
+                                                <Button Content="Add groups…" Command="{Binding PickGroupsCommand}" Margin="0,0,0,4" />
+                                                <Button Content="Remove selected" Command="{Binding RemoveGroupCommand}"
                                                         CommandParameter="{Binding SelectedItem, ElementName=StepGroups}" />
                                             </StackPanel>
                                             <ListBox x:Name="StepGroups" ItemsSource="{Binding Groups}" DisplayMemberPath="Name" Height="72" />
@@ -104,8 +104,8 @@
                                         <!-- Cloud groups (Cloud add/remove from groups) -->
                                         <DockPanel Margin="0,6,0,0" Visibility="{Binding ShowCloudGroups, Converter={StaticResource BoolToVis}}">
                                             <StackPanel DockPanel.Dock="Right" VerticalAlignment="Top" Margin="6,0,0,0">
-                                                <Button Content="Pick groups…" Command="{Binding PickCloudGroupsCommand}" Margin="0,0,0,4" />
-                                                <Button Content="Remove" Command="{Binding RemoveCloudGroupCommand}"
+                                                <Button Content="Add groups…" Command="{Binding PickCloudGroupsCommand}" Margin="0,0,0,4" />
+                                                <Button Content="Remove selected" Command="{Binding RemoveCloudGroupCommand}"
                                                         CommandParameter="{Binding SelectedItem, ElementName=StepCloudGroups}" />
                                             </StackPanel>
                                             <ListBox x:Name="StepCloudGroups" ItemsSource="{Binding CloudGroups}" DisplayMemberPath="Name" Height="72" />

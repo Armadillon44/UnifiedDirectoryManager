@@ -12,15 +12,11 @@
                 <MenuItem Header="_Bulk Create Users…" Command="{Binding BulkCreateUsersCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="New _Group…" Command="{Binding NewGroupCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="New _Cloud Group…" Command="{Binding NewCloudGroupCommand}" Visibility="{Binding IsCloudView, Converter={StaticResource BoolToVis}}" />
-                <MenuItem Header="_Open Selected…" Command="{Binding OpenSelectedCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <MenuItem Header="_Refresh" Command="{Binding RefreshCommand}" />
+                <MenuItem Header="_Properties…" Command="{Binding OpenSelectedCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <Separator Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="_Export List to CSV…" Command="{Binding ExportCsvCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="Export Group _Members to CSV…" Command="{Binding ExportGroupMembersCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="_Append Group Members to CSV…" Command="{Binding AppendGroupMembersCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <Separator />
-                <MenuItem Header="_View Log File…" Command="{Binding ViewLogCommand}" />
-                <MenuItem Header="Open Logs _Folder" Command="{Binding OpenLogsCommand}" />
                 <Separator />
                 <MenuItem Header="_Settings…" Command="{Binding OpenSettingsCommand}" />
                 <Separator />
@@ -45,13 +41,13 @@
                 <MenuItem Header="Copy _Groups to User…" Command="{Binding CopyGroupsToUserCommand}" />
                 <MenuItem Header="Save as Te_mplate…" Command="{Binding SaveSelectedAsTemplateCommand}" />
                 <Separator />
-                <MenuItem Header="Add Selected to _Groups…" Command="{Binding AddSelectedToGroupsCommand}" />
-                <MenuItem Header="_Move to OU…" Command="{Binding MoveSelectedToOuCommand}" />
+                <MenuItem Header="Add to Gr_oups…" Command="{Binding AddSelectedToGroupsCommand}" />
+                <MenuItem Header="Mo_ve to OU…" Command="{Binding MoveSelectedToOuCommand}" />
                 <MenuItem Header="_Bulk Edit…" Command="{Binding BulkEditCommand}" />
                 <Separator />
-                <MenuItem Header="_Delete Selected…" Command="{Binding DeleteSelectedCommand}" />
+                <MenuItem Header="Delete _Selected…" Command="{Binding DeleteSelectedCommand}" />
                 <Separator />
-                <MenuItem Header="User Creation _Templates…" Command="{Binding ManageTemplatesCommand}" />
+                <MenuItem Header="User _Templates…" Command="{Binding ManageTemplatesCommand}" />
             </MenuItem>
             <MenuItem Header="_View">
                 <MenuItem Header="Toggle Pane _Dock (Right / Bottom)" Command="{Binding ToggleDockCommand}" />
@@ -67,8 +63,8 @@
                   exist — which is the very lesson this audit is undoing.
                 -->
                 <MenuItem Header="_Favourites">
-                    <MenuItem Header="_Pin Selected Folder" Command="{Binding PinSelectedNodeCommand}" />
-                    <MenuItem Header="_Unpin Selected Folder" Command="{Binding UnpinSelectedNodeCommand}" />
+                    <MenuItem Header="_Pin to Favourites" Command="{Binding PinSelectedNodeCommand}" />
+                    <MenuItem Header="U_npin from Favourites" Command="{Binding UnpinSelectedNodeCommand}" />
                     <Separator />
                     <MenuItem Header="Move _Up" Command="{Binding MoveSelectedFavoriteUpCommand}" />
                     <MenuItem Header="Move _Down" Command="{Binding MoveSelectedFavoriteDownCommand}" />
@@ -115,17 +111,17 @@
                     </Style>
                 </ToolBar.Resources>
                 <Button Content="New User…" Command="{Binding NewUserCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <Button Content="Bulk Create…" Command="{Binding BulkCreateUsersCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <Button Content="Templates…" Command="{Binding ManageTemplatesCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
+                <Button Content="Bulk Create Users…" Command="{Binding BulkCreateUsersCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
+                <Button Content="User Templates…" Command="{Binding ManageTemplatesCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <Separator Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <Button Content="Advanced Search…" Command="{Binding AdvancedSearchCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <Button Content="Add to Groups…" Command="{Binding AddSelectedToGroupsCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <Button Content="Bulk Edit…" Command="{Binding BulkEditCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <Separator Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <Button Content="Refresh" Command="{Binding RefreshCommand}" />
-                <Button Content="Export CSV…" Command="{Binding ExportCsvCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
+                <Button Content="Export List to CSV…" Command="{Binding ExportCsvCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <Separator />
-                <Button Content="Logs" Command="{Binding OpenLogsCommand}" />
+                <Button Content="Open Logs Folder" Command="{Binding OpenLogsCommand}" />
             </ToolBar>
         </ToolBarTray>
 
@@ -201,14 +197,14 @@
                                                   Visibility="{Binding IsFavorite, Converter={StaticResource BoolToVis}}" />
                                         <MenuItem Header="Move down" Click="OnNodeMoveFavoriteDownClick"
                                                   Visibility="{Binding IsFavorite, Converter={StaticResource BoolToVis}}" />
-                                        <MenuItem Header="Unpin" Click="OnNodeUnpinClick"
+                                        <MenuItem Header="Unpin from Favourites" Click="OnNodeUnpinClick"
                                                   Visibility="{Binding IsFavorite, Converter={StaticResource BoolToVis}}" />
-                                        <MenuItem Header="Properties" Click="OnNodePropertiesClick"
+                                        <MenuItem Header="Properties…" Click="OnNodePropertiesClick"
                                                   Visibility="{Binding IsContainerNode, Converter={StaticResource BoolToVis}}" />
                                         <Separator Visibility="{Binding IsOrganizationalUnit, Converter={StaticResource BoolToVis}}" />
                                         <!-- Two-level guard: Delete only reveals "Yes, I'm sure…", which then requires
                                              typing a random confirmation string. OUs only. -->
-                                        <MenuItem Header="Delete" Visibility="{Binding IsOrganizationalUnit, Converter={StaticResource BoolToVis}}">
+                                        <MenuItem Header="Delete OU" Visibility="{Binding IsOrganizationalUnit, Converter={StaticResource BoolToVis}}">
                                             <MenuItem Header="Yes, I'm sure…" Click="OnNodeDeleteClick" />
                                         </MenuItem>
                                     </ContextMenu>

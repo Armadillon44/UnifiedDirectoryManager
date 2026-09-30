@@ -320,9 +320,9 @@ Write-Host "`n== rule 1: the menu bar is complete ==" -ForegroundColor Cyan
 #
 # A handful of commands are genuinely not menu-bar material and are named here rather than silently
 # skipped, so that the exception list is something a reader can argue with.
-$notInMenuBar = @(
-    'OpenSelectedCommand'   # double-click and the context menu; File also carries it
-)
+# As of P6 this list is EMPTY -- every command really is there. Keep the mechanism: the next command
+# that genuinely does not belong in a menu goes here with its reason, not into a silent skip.
+$notInMenuBar = @()
 $mainCommands = @()
 foreach ($m in [regex]::Matches($vmSrc2, '\[RelayCommand[^\]]*\]\s*(?:private|public)\s+(?:async\s+)?(?:Task|void)\s+(\w+?)(Async)?\s*\(')) {
     $mainCommands += ($m.Groups[1].Value + 'Command')
@@ -337,5 +337,175 @@ foreach ($cmd in $mainCommands) {
 }
 if ($missing.Count -gt 0) { foreach ($m in $missing) { Write-Host "          $m" -ForegroundColor Yellow } }
 Check 'every command is in the menu bar' 0 $missing.Count
+Write-Host "`n== P6: one command, one label ==" -ForegroundColor Cyan
+# The audit's complaint, in one sentence: an operator who saw "Templates…" on the toolbar went looking
+# for it in the menus and found "User Creation Templates…", because you cannot scan a menu for a word
+# that is not the one the item starts with.
+#
+# Labels are compared with the accelerator underscore removed -- "_Refresh" and "Refresh" are one label.
+function LabelText([string]$s) { ($s -replace '_', '') -replace '…', '...' }
+# The leading comma is load-bearing. Without it PowerShell unrolls a one-word label to a bare string,
+# and $words[0] then indexes that string by CHARACTER: 'delete' compares as 'd', so every label with a
+# single word silently fails the comparison below.
+function LabelWords([string]$s) { return ,@(($s.ToLowerInvariant() -split '[^a-z0-9()]+') | Where-Object { $_ }) }
+
+# Pull (label, command) out of a region of XAML. Attribute order varies, so both orders are handled.
+function Region([string]$xml, [string]$openTag, [string]$closeTag) {
+    $a = $xml.IndexOf($openTag); $b = $xml.IndexOf($closeTag)
+    if ($a -lt 0 -or $b -le $a) { return '' }
+    return $xml.Substring($a, $b - $a)
+}
+
+function BoundLabels([string]$xml) {
+    $out = @{}
+    foreach ($m in [regex]::Matches($xml, '<(?:MenuItem|Button)[\s][^>]*?/?>')) {
+        $lab = [regex]::Match($m.Value, '(?:Header|Content)="([^"]*)"')
+        $cmd = [regex]::Match($m.Value, 'Command="\{Binding ([A-Za-z0-9_]+)\}"')
+        if (-not $lab.Success -or -not $cmd.Success) { continue }
+        if (-not $out.ContainsKey($cmd.Groups[1].Value)) { $out[$cmd.Groups[1].Value] = @() }
+        $out[$cmd.Groups[1].Value] += (LabelText $lab.Groups[1].Value)
+    }
+    return $out
+}
+
+$toolbarXml = Region $mainXaml '<ToolBarTray' '</ToolBarTray>'
+$menuLabels    = BoundLabels $menuOnly
+$toolbarLabels = BoundLabels $toolbarXml
+$listCtxXml    = Region $listXaml '<ContextMenu' '</ContextMenu>'
+$listLabels    = BoundLabels $listCtxXml
+
+Check 'the toolbar was found'           $true ($toolbarLabels.Count -ge 8)
+Check 'the list context menu was found' $true ($listLabels.Count -ge 8)
+
+# --- the toolbar is not allowed its own vocabulary --------------------------------------------------
+# It is a shortcut to a menu item, so it says what that menu item says. Where a label is too long for a
+# button, the fix is to shorten the canonical label, not to invent a second one (audit P6).
+$toolbarDrift = @()
+foreach ($cmd in ($toolbarLabels.Keys | Sort-Object)) {
+    if (-not $menuLabels.ContainsKey($cmd)) { continue }
+    $t = $toolbarLabels[$cmd][0]
+    if ($menuLabels[$cmd] -notcontains $t) {
+        $toolbarDrift += ($cmd + ": toolbar '" + $t + "' vs menu '" + $menuLabels[$cmd][0] + "'")
+    }
+}
+foreach ($d in $toolbarDrift) { Write-Host "          $d" -ForegroundColor Yellow }
+Check 'every toolbar label matches its menu label' 0 $toolbarDrift.Count
+
+# --- the context menu may drop words, never change them ---------------------------------------------
+# "Delete…" for "Delete Selected…" is fine: you right-clicked the selection, so the menu need not say
+# what the gesture already said. "Modify…" for "Open Selected…" was not fine -- it is a different word,
+# so nothing connects the two surfaces. The rule: the context label's words appear in the menu label, in
+# order, and the first word is the same, so both sort to the same place in an operator's head.
+function IsShorteningOf([string]$short, [string]$long) {
+    $s = LabelWords $short; $l = LabelWords $long
+    if ($s.Count -eq 0 -or $l.Count -eq 0) { return $false }
+    if ($s[0] -ne $l[0]) { return $false }
+    $i = 0
+    foreach ($w in $l) { if ($i -lt $s.Count -and $w -eq $s[$i]) { $i++ } }
+    return ($i -eq $s.Count)
+}
+Check '  a shortening is accepted'      $true  (IsShorteningOf 'Delete...' 'Delete Selected...')
+Check '  dropped interior words too'    $true  (IsShorteningOf 'Export members to CSV...' 'Export Group Members to CSV...')
+Check '  a different word is not'       $false (IsShorteningOf 'Modify...' 'Open Selected...')
+Check '  nor a different first word'    $false (IsShorteningOf 'Selected Delete...' 'Delete Selected...')
+Check '  nor reordered words'           $false (IsShorteningOf 'CSV to members export' 'Export members to CSV')
+
+$ctxDrift = @()
+foreach ($cmd in ($listLabels.Keys | Sort-Object)) {
+    if (-not $menuLabels.ContainsKey($cmd)) { continue }
+    $c = $listLabels[$cmd][0]
+    $ok = $false
+    foreach ($m in $menuLabels[$cmd]) { if (IsShorteningOf $c $m) { $ok = $true } }
+    if (-not $ok) { $ctxDrift += ($cmd + ": context '" + $c + "' vs menu '" + $menuLabels[$cmd][0] + "'") }
+}
+foreach ($d in $ctxDrift) { Write-Host "          $d" -ForegroundColor Yellow }
+Check 'every context label shortens its menu label' 0 $ctxDrift.Count
+
+# --- the three the audit named, and the two P4 added ------------------------------------------------
+Check '  no "Export CSV" button survives'  $false ($mainXaml -match 'Content="Export CSV…"')
+Check '  no "Bulk Create" button survives' $false ($mainXaml -match 'Content="Bulk Create…"')
+Check '  no bare "Templates" label'        $false ($mainXaml -match '(?:Content|Header)="_?Templates…"')
+Check '  no bare "Logs" button'            $false ($mainXaml -match 'Content="Logs"')
+Check '  no "Modify" anywhere'             $false ($listXaml -match 'Header="Modify…"')
+Check '  no "a CSV"'                       $false ($listXaml -match 'to a CSV')
+
+# --- the tree context menu and the View menu are the same feature -----------------------------------
+$treeCtx = Region $mainXaml '<ContextMenu' '</ContextMenu>'
+Check 'the tree context menu was found' $true ($treeCtx.Length -gt 200)
+foreach ($pair in @(@('Pin to Favourites', 'PinSelectedNodeCommand'),
+                    @('Unpin from Favourites', 'UnpinSelectedNodeCommand'))) {
+    Check ("  the tree says " + $pair[0]) $true ($treeCtx -match [regex]::Escape('Header="' + $pair[0] + '"'))
+    Check  "  and so does the View menu"  $true ((LabelText ($menuLabels[$pair[1]][0])) -eq $pair[0])
+}
+# It opens a window, so it takes an ellipsis, like every other item in the app that opens one.
+Check '  the tree Properties has an ellipsis' $true ($treeCtx -match 'Header="Properties…"')
+
+Write-Host "`n== P6: no menu offers one letter twice ==" -ForegroundColor Cyan
+# A duplicate accelerator still works -- WPF cycles through the matches -- but Alt+D landing on Disable
+# or on Delete depending on how many times you press it is not a keyboard shortcut, it is a coin toss.
+# Siblings are found by tracking nesting, not indentation: two different submenus sit at the same depth
+# and their letters are allowed to collide.
+function SiblingGroups([string]$xml) {
+    $groups = New-Object System.Collections.ArrayList
+    $root = New-Object System.Collections.ArrayList
+    $stack = New-Object System.Collections.Stack
+    $stack.Push($root); [void]$groups.Add($root)
+    foreach ($m in [regex]::Matches($xml, '<MenuItem[\s][^>]*?(/?)>|</MenuItem>')) {
+        if ($m.Value -eq '</MenuItem>') { if ($stack.Count -gt 1) { [void]$stack.Pop() }; continue }
+        $h = [regex]::Match($m.Value, 'Header="([^"]*)"')
+        if ($h.Success) { [void]($stack.Peek()).Add($h.Groups[1].Value) }
+        if ($m.Groups[1].Value -ne '/') {
+            $kids = New-Object System.Collections.ArrayList
+            [void]$groups.Add($kids); $stack.Push($kids)
+        }
+    }
+    return ,$groups   # same reason as LabelWords: do not let the outer list unroll
+}
+$groups = SiblingGroups $menuOnly
+Check 'the menu tree was walked'        $true ($groups.Count -ge 7)
+$dupes = @()
+foreach ($g in $groups) {
+    $letters = @()
+    foreach ($h in $g) {
+        $k = [regex]::Match($h, '_(.)')
+        if ($k.Success) { $letters += $k.Groups[1].Value.ToUpperInvariant() }
+    }
+    foreach ($grp in ($letters | Group-Object | Where-Object { $_.Count -gt 1 })) {
+        $dupes += ("Alt+" + $grp.Name + " x" + $grp.Count + " among: " + ($g -join ' | '))
+    }
+}
+foreach ($d in $dupes) { Write-Host "          $d" -ForegroundColor Yellow }
+Check 'no menu repeats an accelerator'  0 $dupes.Count
+# Prove the walker separates siblings from cousins, rather than passing because it found nothing.
+$probe = SiblingGroups '<MenuItem Header="_A"><MenuItem Header="_X" /><MenuItem Header="_Y" /></MenuItem><MenuItem Header="_B"><MenuItem Header="_X" /></MenuItem>'
+Check '  it groups by nesting'          3 $probe.Count
+Check '  cousins may share a letter'    2 (@($probe | Where-Object { $_ -contains '_X' }).Count)
+
+Write-Host "`n== P7: nothing is in the menu bar twice ==" -ForegroundColor Cyan
+# Refresh was in File, in View and on the toolbar; the two log commands were in File and in Help, word
+# for word. A command in two menus does not make it easier to find -- it makes the menu bar look like it
+# holds more than it does, and it means neither menu is the answer to "where does this live?".
+foreach ($cmd in 'RefreshCommand', 'ViewLogCommand', 'OpenLogsCommand') {
+    Check ("  " + $cmd + " is in the menu bar once") 1 ([regex]::Matches($menuOnly, [regex]::Escape("{Binding $cmd}")).Count)
+}
+$fileMenu = [regex]::Match($menuOnly, '(?s)<MenuItem Header="_File">.*?\n            </MenuItem>').Value
+$viewMenu = [regex]::Match($menuOnly, '(?s)<MenuItem Header="_View">.*?\n            </MenuItem>').Value
+$helpMenu = [regex]::Match($menuOnly, '(?s)<MenuItem Header="_Help">.*?\n            </MenuItem>').Value
+Check 'the File menu was found'         $true ($fileMenu.Length -gt 0)
+Check 'the View menu was found'         $true ($viewMenu.Length -gt 0)
+Check 'the Help menu was found'         $true ($helpMenu.Length -gt 0)
+# Refresh belongs with the view it refreshes; the logs belong with the other "what did it do" items.
+Check '  Refresh is in View'            $true  ($viewMenu -match 'RefreshCommand')
+Check '  and not in File'               $false ($fileMenu -match 'RefreshCommand')
+Check '  the logs are in Help'          $true  (($helpMenu -match 'ViewLogCommand') -and ($helpMenu -match 'OpenLogsCommand'))
+Check '  the logs are not in File'      $false (($fileMenu -match 'ViewLogCommand') -or ($fileMenu -match 'OpenLogsCommand'))
+# Removing them must not leave two separators touching, which draws a line across an empty gap.
+Check '  File has no doubled separator' $false ($fileMenu -match '<Separator[^>]*/>\s*<Separator')
+Check '  File does not end on one'      $false ($fileMenu -match '<Separator[^>]*/>\s*</MenuItem>')
+
+# The toolbar is allowed to duplicate -- that is what rule 3 says it is for -- so this is not a
+# regression of P7, and saying so here stops someone "fixing" it later.
+Check '  the toolbar may still offer Refresh' $true ($toolbarXml -match 'RefreshCommand')
+
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

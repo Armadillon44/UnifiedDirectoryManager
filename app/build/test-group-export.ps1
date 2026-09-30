@@ -188,8 +188,9 @@ Write-Host "`n== the menu offers both, only for groups (mutation check) ==" -For
 $menu = Get-Content -Raw (Join-Path $repoRoot 'app\src\UnifiedDirectoryManager\Views\Controls\ObjectListView.xaml')
 Check 'export is offered'            $true ($menu -match 'ExportGroupMembersCommand')
 Check 'append is offered'            $true ($menu -match 'AppendGroupMembersCommand')
-$exportItem = [regex]::Match($menu, '(?s)<MenuItem Header="Export members to CSV[^/]*/>').Value
-$appendItem = [regex]::Match($menu, '(?s)<MenuItem Header="Append members to a CSV[^/]*/>').Value
+$exportItem = [regex]::Match($menu, '(?s)<MenuItem[^/]*ExportGroupMembersCommand[^/]*/>').Value
+$appendItem = [regex]::Match($menu, '(?s)<MenuItem[^/]*AppendGroupMembersCommand[^/]*/>').Value
+Check 'both menu items were found'   $true (($exportItem.Length -gt 0) -and ($appendItem.Length -gt 0))
 Check 'export is group-only'         $true ($exportItem -match 'SelectionHasGroups')
 Check 'append is group-only'         $true ($appendItem -match 'SelectionHasGroups')
 

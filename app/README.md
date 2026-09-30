@@ -143,13 +143,13 @@ it has to reach you verbatim to be diagnosable.
 - A yellow bar appears across the top when on-prem AD is not bound, with a **Connect…** button. The
   app stays usable for cloud work while it is showing.
 
-**Double-click any row** (or **File ▸ Open Selected…**) to edit that object in its own window;
+**Double-click any row** (or **File ▸ Properties…**) to edit that object in its own window;
 multiple editor windows can be open at once. The list refreshes automatically after edits, so
 disabling a user immediately greys it.
 
-Right-clicking the on-prem list offers **Modify…**, **Enable / Disable / Unlock account(s)**,
+Right-clicking the on-prem list offers **Properties…**, **Enable / Disable / Unlock account(s)**,
 **Add to groups…**, **Copy user…**, **Copy groups to user…** *(2.3.3.)*, **Save as template…**,
-**Move to OU…**, **Bulk edit…**, **Export members to CSV…**, **Append members to a CSV…**,
+**Move to OU…**, **Bulk edit…**, **Export members to CSV…**, **Append members to CSV…**,
 **Run scenario**, and **Delete…**.
 
 ### The edit pane (on-prem objects)
@@ -183,23 +183,37 @@ the faster way to do it. An entry that does not apply to what you have selected 
 than hidden**, so the menus stay a complete list of what the app can do.
 
 - **File** — New User…, Bulk Create Users…, New Group…, **New Cloud Group…** (in the cloud view),
-  Open Selected…, Refresh, Export List to CSV…, **Export Group Members to CSV…**, **Append Group
-  Members to CSV…**, View Log File…, Open Logs Folder, Settings…, Exit.
+  Properties…, Export List to CSV…, **Export Group Members to CSV…**, **Append Group Members to
+  CSV…**, Settings…, Exit.
 - **Edit** — grouped by what each item acts on: Advanced Search… | **Enable / Disable / Unlock
-  Account(s)** | Copy User…, Copy Groups to User…, **Save as Template…** | Add Selected to Groups…,
-  **Move to OU…**, Bulk Edit… | Delete Selected… | User Creation Templates…. The whole menu is disabled
+  Account(s)** | Copy User…, Copy Groups to User…, **Save as Template…** | Add to Groups…,
+  **Move to OU…**, Bulk Edit… | Delete Selected… | User Templates…. The whole menu is disabled
   in the cloud view, because every item on it acts on on-prem objects.
-- **View** — Toggle Pane Dock (Right / Bottom), Refresh, **Favourites** (Pin / Unpin / Move Up / Move
-  Down) and **Selected Folder** (Create OU Here… / Properties… / Delete OU…), both acting on whichever
-  folder is selected in the tree.
+- **View** — Toggle Pane Dock (Right / Bottom), **Refresh**, **Favourites** (Pin to Favourites / Unpin
+  from Favourites / Move Up / Move Down) and **Selected Folder** (Create OU Here… / Properties… /
+  Delete OU…), the last two acting on whichever folder is selected in the tree.
 - **Tools** — Entra Connect Delta Sync…, **Run Scenario on Selected** (a submenu of your saved
   scenarios), Manage Scenarios….
-- **Help** — View README…, View Log File…, Open Logs Folder, About Unified Directory Manager….
+- **Help** — View README…, **View Log File…**, **Open Logs Folder**, About Unified Directory
+  Manager….
+
+*(2.3.3.)* Two things moved. **Refresh** was in File, in View and on the toolbar; it is now in View and
+on the toolbar, where you are already looking at the thing being refreshed. **View Log File…** and
+**Open Logs Folder** were in File *and* in Help, word for word; Help keeps them. A command that appears
+in two menus does not become easier to find — it just means neither menu is the answer to "where does
+this live?".
+
+*(2.3.3.)* Labels no longer change between surfaces. The toolbar button, the menu item and the
+right-click entry for one command now use one wording: what was **Templates…** on the toolbar and
+**User Creation Templates…** in the menu is **User Templates…** in both. A right-click entry may drop
+words the gesture already supplied — **Delete…** rather than **Delete Selected…** — but never swaps in a
+different word, which is what **Modify…** (menu: *Open Selected…*, cloud list: *Properties…*) was
+doing. All three now say **Properties…**.
 
 ## Favourites
 
-*(2.3.3.)* Everything here is also on the menu bar under **View ▸ Favourites** (Pin / Unpin / Move up /
-Move down) and **View ▸ Selected Folder** (Create OU Here… / Properties… / Delete OU…), acting on whichever
+*(2.3.3.)* Everything here is also on the menu bar under **View ▸ Favourites** (Pin to Favourites /
+Unpin from Favourites / Move Up / Move Down) and **View ▸ Selected Folder** (Create OU Here… / Properties… / Delete OU…), acting on whichever
 folder is selected in the tree. Before that these were reachable only by right-clicking a tree node, so an
 operator who never tried that gesture had no way of knowing favourites existed at all.
 
@@ -302,7 +316,7 @@ Right-click an OU or the domain root in the tree:
 
 ## Groups: create, modify, delete
 
-**Create** — right-click an OU (or the domain root) in the tree and choose **New Group here…**, or
+**Create** — right-click an OU (or the domain root) in the tree and choose **New Group Here…**, or
 use **File ▸ New Group…** and pick the OU with the **Browse…** button. The dialog takes the **group
 name**, a **logon name** derived from it (editable; group names keep their case, spaces, and hyphens
 rather than being flattened the way user logon names are), **Group scope** (Global / Domain local /
@@ -372,7 +386,7 @@ still be told apart — sort or filter by **Group** to separate them again.
 
 Columns: `Group`, `Group DN`, `Member`, `Member DN`, `Status`.
 
-**Append members to a CSV…** adds to a file you already have instead of replacing it. It asks for an
+**Append members to CSV…** adds to a file you already have instead of replacing it. It asks for an
 existing file, checks that the file really is one of these exports, and refuses if it is not — appending
 these columns to an unrelated spreadsheet would leave a file that reads as neither. It also fixes up a
 missing line break at the end of the old file, which would otherwise join the first new row onto the last
@@ -465,7 +479,7 @@ on empty space below the last row does nothing. It is not wired to the **Member 
 
 ## Add selected users to groups
 
-Select one or more objects in the list and use **Edit ▸ Add Selected to Groups…** (or the toolbar
+Select one or more objects in the list and use **Edit ▸ Add to Groups…** (or the toolbar
 button) to pick multiple groups and add every selected object to all of them in one confirmed batch,
 with a per-object result report.
 
@@ -489,7 +503,7 @@ Every object's outcome is reported individually and one failure never aborts the
 
 ## New-user templates
 
-Create / save / recall / edit / delete templates (**Templates…** button, **Edit ▸ User Creation
+Create / save / recall / edit / delete templates (**User Templates…** button, **Edit ▸ User
 Templates…**, or from the New User wizard). A template stores a target OU, a UPN suffix, a country
 (pick by friendly name; it stores `co`, `c`, and `countryCode` together), attribute defaults with
 **tokens**, and groups to add. Supported tokens:
@@ -561,7 +575,7 @@ made from that template.
 
 ## Bulk create users
 
-**File ▸ Bulk Create Users…** (or the **Bulk Create…** toolbar button) provisions many users in one
+**File ▸ Bulk Create Users…** (or the **Bulk Create Users…** toolbar button) provisions many users in one
 pass. Pick a batch **template** (it supplies the defaults — target OU, UPN suffix, attribute/token
 defaults, on-prem and cloud groups), then build the batch list two ways:
 
@@ -686,7 +700,7 @@ Entra Connect before starting another one.
 ## Entra ID (cloud)
 
 *(2.3.3.)* **Right-click a row** in any cloud list for its actions: **Properties…**, and on the Users list
-**Enable**, **Disable** and **Revoke sign-in sessions…**. The menu acts on the row you right-clicked, or
+**Enable**, **Disable** and **Revoke sessions**. The menu acts on the row you right-clicked, or
 on every ticked row when you have ticked some — the same rule the on-prem list follows.
 
 The buttons above the list are unchanged and still act strictly on the **ticked** rows, which is what the
@@ -705,7 +719,7 @@ Selecting a row fills the detail pane. Its property sections are:
 
 - **User** — Identity, Account, On-premises sync, Organization, Contact. Plus **Licenses**
   (*Assign license…* / *Remove selected*) and **Member Of** (*Add to groups…* / *Remove selected*),
-  and **Disable account** / **Enable account** / **Revoke sessions** in the header.
+  and **Disable** / **Enable** / **Revoke sessions** in the header.
 - **Group** — Identity, Type, Mail, On-premises, Dates, plus a **Members** tab.
 - **Device** — Identity, Operating system, Join / management, State, Hardware. Every device row is
   read-only; there is nothing cloud-editable on a device in this SDK.
@@ -940,7 +954,7 @@ cloud pane only; the on-premises AD edit pane does not have it.
 
 ### Creating cloud groups
 
-*(New in 2.3.0.)* **File ▸ New Cloud Group…** in the cloud view, or **New cloud group…** on the
+*(New in 2.3.0.)* **File ▸ New Cloud Group…** in the cloud view, or **New Cloud Group…** on the
 right-click menu of the **Entra ID ▸ Groups** or **Exchange Online ▸ Distribution groups** node
 (which preselects the matching type). The **Group type** drop-down names its own backend:
 *Security (Entra ID)*, *Microsoft 365 (Entra ID)*, *Distribution list (Exchange Online)* and
@@ -1042,8 +1056,8 @@ sign-in to a DPAPI-encrypted token cache.
 The app writes a rolling daily log to
 `%APPDATA%\UnifiedDirectoryManager\Logs\UnifiedDirectoryManager-YYYYMMDD.log` (Info level: connection
 attempts and outcomes, every attribute/group/create/enable-disable/bulk write, warnings and
-exceptions; files older than 30 days are pruned). Open it from **File ▸ View Log File…** (in-app
-viewer with Refresh) or **File ▸ Open Logs Folder**. Unhandled errors are written here too.
+exceptions; files older than 30 days are pruned). Open it from **Help ▸ View Log File…** (in-app
+viewer with Refresh), **Help ▸ Open Logs Folder**, or the **Open Logs Folder** toolbar button. Unhandled errors are written here too.
 
 Passwords, passphrases and Temporary Access Passes are **never** written to it.
 

@@ -54,7 +54,7 @@
                  so items can bind to its selection-aware commands. -->
             <ListView.ContextMenu>
                 <ContextMenu DataContext="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource Self}}">
-                    <MenuItem Header="Modify…" Command="{Binding OpenSelectedCommand}" />
+                    <MenuItem Header="Properties…" Command="{Binding OpenSelectedCommand}" />
                     <MenuItem Header="Enable account(s)" Command="{Binding EnableSelectedCommand}"
                               Visibility="{Binding SelectionHasDisabled, Converter={StaticResource BoolToVis}}" />
                     <MenuItem Header="Disable account(s)" Command="{Binding DisableSelectedCommand}"
@@ -75,7 +75,7 @@
                     <MenuItem Header="Bulk edit…" Command="{Binding BulkEditCommand}" />
                     <MenuItem Header="Export members to CSV…" Command="{Binding ExportGroupMembersCommand}"
                               Visibility="{Binding SelectionHasGroups, Converter={StaticResource BoolToVis}}" />
-                    <MenuItem Header="Append members to a CSV…" Command="{Binding AppendGroupMembersCommand}"
+                    <MenuItem Header="Append members to CSV…" Command="{Binding AppendGroupMembersCommand}"
                               Visibility="{Binding SelectionHasGroups, Converter={StaticResource BoolToVis}}" />
                     <MenuItem Header="Run scenario" ItemsSource="{Binding ScenarioMenuItems}" IsEnabled="{Binding HasScenarios}">
                         <MenuItem.ItemContainerStyle>

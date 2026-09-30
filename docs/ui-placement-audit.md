@@ -1,7 +1,8 @@
 # Where the app's functions live — a placement audit
 
-Status: **Work package 1 is DONE (P1–P5). Rule 1 now holds and is enforced by a test. P6–P9 left, plus
-T1 (customisable toolbar), whose open questions are all settled.**
+Status: **Work packages 1 and most of 2 are DONE (P1–P7). Rules 1 and 3 now hold and are enforced by
+tests. P8 and P9 left, plus T1 (customisable toolbar), whose open questions are all settled. P8 is the
+one subjective item and is worth agreeing before it is built.**
 
 Measured against `master` at **`8a2dc29`**. Everything below was derived from the XAML and
 `MainViewModel.cs` rather than from memory, and the method is in
@@ -24,8 +25,8 @@ The complaint that prompted it, in the maintainer's words:
 | **P3** | OU management is reachable only by right-clicking a tree node | **Done** — View ▸ Selected Folder |
 | **P4** | Seven object actions are right-click-only | **Done** — Edit and File |
 | **P5** | Object actions that are menu-only never appear on right-click | **Done** |
-| **P6** | The same command carries different labels in different places | **Not started** |
-| **P7** | Refresh and the log commands are duplicated *within* the menu bar | **Not started** |
+| **P6** | The same command carries different labels in different places | **Done** |
+| **P7** | Refresh and the log commands are duplicated *within* the menu bar | **Done** |
 | **P8** | The menu bar is organised by nothing in particular | **Not started** |
 | **P9** | There are no keyboard shortcuts anywhere in the app | **Not started** |
 | **T1** | *(feature)* Let the operator choose what is on the toolbar | **Designed, not started** |
@@ -188,7 +189,7 @@ deliberately keeps no "Here": a cloud group has no container to be created in, a
 already targets the selected container anyway, so the menu-bar and tree entries were always the same
 feature.
 
-### P6 — The same command carries different labels in different places
+### P6 — The same command carries different labels in different places — **DONE**
 
 | Command | Menu bar | Toolbar |
 |---|---|---|
@@ -212,18 +213,81 @@ The menu-bar wording needs the word "Group" — nothing else on File says what i
 context menu does not, because it was opened on a group. That makes these defensible, unlike the toolbar
 three. The indefinite article in "a CSV" is not defensible either way.
 
-*Fix:* one label per command, used everywhere. Where the toolbar genuinely needs to be shorter, shorten
-the canonical label rather than inventing a second one.
+*Fixed*, and the count was worse than the three above: sixteen commands carried more than one label once
+every view was read rather than just the menu bar and the toolbar.
 
-### P7 — Refresh and the log commands are duplicated inside the menu bar
+**Toolbar = menu, exactly.** `Bulk Create…` → `Bulk Create Users…`, `Export CSV…` → `Export List to
+CSV…`, `Logs` → `Open Logs Folder`. `Templates…` and `User Creation Templates…` both became **`User
+Templates…`** — the only one where the canonical label was shortened rather than the button widened,
+because "User Creation Templates…" is the reason nobody could find "Templates…" by scanning.
+
+**Three names for opening an object became one.** The menu bar said `Open Selected…`, the on-prem list
+said `Modify…`, the cloud list said `Properties…`, and the tree said `Properties` with no ellipsis. All
+four now say **`Properties…`** — which is also what ADUC says, and this app's operators come from ADUC.
+
+**The context menu may drop words, never change them.** `Delete…` for `Delete Selected…` is fine: you
+right-clicked the selection, so the menu need not repeat what the gesture said. `Modify…` for `Open
+Selected…` was not, because no word connects the two. The test states this as: the context label's words
+appear in the menu label, in order, starting with the same first word.
+
+**`Selected` left the Edit menu** where it was decoration. Every Edit item acts on the selection and only
+two said so; `Add Selected to Groups…` is now `Add to Groups…`. `Delete Selected…` keeps it, because
+naming the target of the destructive item is worth one inconsistency — the same instinct as T1's rule that
+destructive items never go icon-only.
+
+**Beyond the menu bar**, where the same *job* had different words in different windows: the tree's
+`Pin to Favourites` / `Unpin` now match the View menu (which had said `Pin Selected Folder`); the cloud
+detail pane's `Enable account` / `Disable account` became `Enable` / `Disable`, matching the cloud list's
+own buttons two panes away, in a bar that is already only shown for users; `Revoke sign-in sessions…`
+became `Revoke sessions`, matching the two buttons that do the same thing; and the scenario editor's
+`Pick groups…` / `Remove` became `Add groups…` / `Remove selected`, matching the template editor, which
+is the same control doing the same job one dialog away.
+
+**Accelerators were checked while the labels moved**, since renaming an item moves its `_`. Edit had
+offered Alt+G twice and Alt+D twice. Every menu now has unique letters, and the suite walks the menu tree
+by nesting — not by indentation — so two different submenus may still reuse a letter, which is correct.
+
+### What was deliberately NOT unified
+
+- **`Connect…`** on the not-connected warning bar opens Settings, and the menu item says `Settings…`.
+  That is a different noun for one command, which is exactly what this finding is about — but the button
+  is a remedy inside a warning, not an index entry, and "Settings…" there would make the remedy less
+  obvious. Windows' own warning bars do the same thing.
+- **`Save changes` vs `Save`.** The cloud pane's save bar only appears when there are unsaved edits and
+  sits beside `Revert`; the on-prem edit pane's is always there beside `Reload`. Different affordance,
+  different sentence.
+- **`Export CSV…` in the bulk-create report window**, which is a `Click=` handler in its own window and
+  exports plaintext passwords — not the list export at all. Worth noting because it is invisible to any
+  analysis that matches on `{Binding …Command}`, which is the same blind spot that hid P2 and P3.
+- **Three same-named commands on *different* view models**, which a name-based sweep reports as
+  conflicts and which are not: the cloud list's `Export loaded…` / `Export all…` pair (a genuine
+  distinction — the loaded page versus everything behind it), `Manage…` beside the template combo in
+  the New User wizard (the adjacent label supplies the noun), and Bulk Edit's `Add to groups…`, which
+  is an *operation to apply to the selection*, not the "add rows to this list" button it shares a name
+  with in the template and scenario editors.
+
+After P6, a sweep of every `(label, command)` pair in every view is down from **16 commands with more
+than one label to 8**, and each of those 8 is either a context-menu shortening the test accepts or one
+of the cases listed here. That number is worth re-measuring after P8.
+
+### P7 — Refresh and the log commands are duplicated inside the menu bar — **DONE**
 
 - **Refresh** appears in File, in View, and on the toolbar.
 - **View Log File…** and **Open Logs Folder** appear in both File and Help.
 
-Meanwhile the **View** menu has only two items in total (Toggle Pane Dock, Refresh), so it reads as a
-leftover rather than a category.
+When this was written the **View** menu had only two items in total (Toggle Pane Dock, Refresh) and read
+as a leftover rather than a category. P2 and P3 have since given it the Favourites and Selected Folder
+submenus, so it is now a real menu and the obvious home for Refresh.
 
-*Fix:* Refresh in View and on the toolbar, not File. Logs in Help only (or File only) — not both.
+*Fixed.* Refresh is in View and on the toolbar. The logs are in Help — the menu you open when you want to
+know what the app did — and on the toolbar. Neither is in File any more.
+
+The toolbar still duplicates both, which is not a regression: rule 3 says duplication is what the toolbar
+is *for*. The suite says so out loud, so that nobody "finishes" P7 by deleting the buttons.
+
+Removing items from the middle of a menu leaves separators behind, so the suite also checks File for two
+separators in a row and for a separator immediately before `</MenuItem>` — a line drawn across an empty
+gap is the visible half of this kind of edit going wrong.
 
 ### P8 — The menu bar is organised by nothing in particular
 
@@ -253,13 +317,13 @@ are split across File, Edit and Tools. This is the structural reason the other f
 ```
 File      Settings… · View Log File… · Open Logs Folder · Exit
 New       User… · Bulk Create Users… · Group… · Cloud Group… · Organizational Unit…
-Selected  Open… · Enable · Disable · Unlock · Reset Password…
+Selected  Properties… · Enable · Disable · Unlock · Reset Password…
           Add to Groups… · Copy User… · Copy Groups to User… · Save as Template…
-          Move to OU… · Bulk Edit… · Export Members to CSV… · Append Members to CSV…
-          Run Scenario ▸ · Delete…
-View      Refresh · Toggle Pane Dock · Favourites ▸ (Pin / Unpin / Move up / Move down)
-          Export List to CSV…
-Tools     Advanced Search… · Entra Connect Delta Sync… · Manage Scenarios… · User Creation Templates…
+          Move to OU… · Export Group Members to CSV… · Append Group Members to CSV…
+          Bulk Edit… · Run Scenario ▸ · Delete Selected…
+View      Refresh · Toggle Pane Dock · Favourites ▸ (Pin to Favourites / Unpin from Favourites /
+          Move Up / Move Down) · Export List to CSV…
+Tools     Advanced Search… · Entra Connect Delta Sync… · Manage Scenarios… · User Templates…
 Help      View README… · About…
 ```
 
@@ -313,8 +377,12 @@ Unknown ids are dropped on load, not treated as an error — a settings file wri
 knew about more buttons must still open.
 
 **The default set** is exactly today's toolbar, so nobody's layout changes on upgrade:
-New User… · Bulk Create… · Templates… · | · Advanced Search… · Add to Groups… · Bulk Edit… · | ·
-Refresh · Export CSV… · | · Logs
+New User… · Bulk Create Users… · User Templates… · | · Advanced Search… · Add to Groups… · Bulk Edit…
+· | · Refresh · Export List to CSV… · | · Open Logs Folder
+
+(These are P6's labels, and they are longer than the ones this section was first written against. With
+icons beside the text the row is wider than it is today, which is the practical argument for letting
+width be the operator's problem to solve by removing buttons — which is what T1 is for.)
 
 **Separators** are items too (`Id = "separator"`, repeatable), or the operator cannot group anything.
 
@@ -346,15 +414,15 @@ checking against the font at the time rather than trusting a number written down
 | Toolbar item | Glyph | Why |
 |---|---|---|
 | New User… | `AddFriend` | The only "add a person" glyph in the set |
-| Bulk Create… | `AddFriend` + `…` / `People` | Same act at scale; `People` reads as plural |
-| Templates… | `Page` | A template is a document that gets copied |
+| Bulk Create Users… | `AddFriend` + `…` / `People` | Same act at scale; `People` reads as plural |
+| User Templates… | `Page` | A template is a document that gets copied |
 | Advanced Search… | `Search` | Universal |
 | Add to Groups… | `People` | Group membership |
 | Bulk Edit… | `Edit` (pencil) | Universal |
 | Refresh | `Refresh` | Universal |
-| Export CSV… | `Save` or `Download` | `Download` reads as "out of the app" better than a floppy |
-| Logs | `ShowResults` or `List` | A list of what happened |
-| Export Members… | `Download` + `People` is not available; use `Download` | Distinguished by its label |
+| Export List to CSV… | `Save` or `Download` | `Download` reads as "out of the app" better than a floppy |
+| Open Logs Folder | `ShowResults` or `List` | A list of what happened |
+| Export Group Members to CSV… | `Download` (`People` is not available) | Distinguished by its label |
 | Delete… | `Delete` | Universal, and the one item that should never be icon-only |
 
 Two rules for whoever implements it:
@@ -382,7 +450,7 @@ Two assertions matter more than the rest:
 
 ---
 
-## Rule 1 is now enforced, not just stated
+## Rules 1 and 3 are now enforced, not just stated
 
 With P1–P5 done, **every command `MainViewModel` exposes is reachable from the menu bar**, and
 `test-ui-placement.ps1` asserts it. A command that slips back out fails the suite by name.
@@ -393,6 +461,19 @@ There is exactly one exception, listed in the test rather than skipped silently 
 
 This is the assertion the whole first work package existed to make possible. It is worth keeping even
 after P8 moves everything around: the menus can be reorganised freely as long as the total stays complete.
+
+P6 and P7 added three more that hold across the whole app rather than over one finding:
+
+- **Every toolbar label equals its menu label.** No exemptions. This is rule 3 ("the toolbar owns
+  nothing") made checkable — a button that needs its own vocabulary is a button that has become a
+  feature's only home.
+- **Every context-menu label is a shortening of its menu label**, defined as: same first word, remaining
+  words present and in order. It permits the abbreviation a context menu earns and forbids the synonym.
+- **No menu offers one accelerator letter twice**, with siblings found by walking the nesting rather than
+  by indentation, so two different submenus may reuse a letter.
+
+Each was mutation-checked by putting the old label back: every one fails and names the command, the
+surface and both labels.
 
 ## What the first work package changed, beyond the menu entries
 
@@ -426,8 +507,8 @@ already hidden in exactly the cases the gates now disable.
 1. **`ui/menu-completeness` — P1, P2, P3, P4, P5.** ✅ **Done.** The findings that change whether a feature
    is findable at all. Largest was P1 (a new context menu for the cloud list); P2–P5 were menu entries
    bound to commands that already existed, plus the `CanExecute` gates those entries needed.
-2. **`ui/consistency` — P6, P7, P8.** Labels, de-duplication, and the menu reorganisation. P8 is the only
-   subjective item here and is worth agreeing before it is built.
+2. **`ui/consistency` — P6, P7, P8.** Labels, de-duplication, and the menu reorganisation. **P6 and P7
+   are done**; P8 is the only subjective item here and is worth agreeing before it is built.
 3. **`ui/shortcuts` — P9.** Small and self-contained.
 4. **`ui/custom-toolbar` — T1.** After package 1, for the reason given above.
 

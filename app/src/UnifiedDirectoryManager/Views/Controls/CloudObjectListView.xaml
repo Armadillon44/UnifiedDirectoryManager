@@ -97,7 +97,7 @@
                               Visibility="{Binding ShowUserActions, Converter={StaticResource BoolToVis}}" />
                     <MenuItem Header="Disable account(s)" Command="{Binding DisableSelectedCommand}"
                               Visibility="{Binding ShowUserActions, Converter={StaticResource BoolToVis}}" />
-                    <MenuItem Header="Revoke sign-in sessions…" Command="{Binding RevokeSelectedCommand}"
+                    <MenuItem Header="Revoke sessions" Command="{Binding RevokeSelectedCommand}"
                               Visibility="{Binding ShowUserActions, Converter={StaticResource BoolToVis}}" />
                 </ContextMenu>
             </ListView.ContextMenu>
