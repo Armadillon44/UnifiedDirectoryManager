@@ -725,5 +725,68 @@ foreach ($cmd in ($cloudLabels.Keys | Sort-Object)) {
 foreach ($d in $cloudDrift) { Write-Host "          $d" -ForegroundColor Yellow }
 Check 'every cloud context label shortens its menu label' 0 $cloudDrift.Count
 
+Write-Host "`n== menus open rightwards, whatever the machine says ==" -ForegroundColor Cyan
+# Reported from a dev build: Action opened right-aligned under its header and Action > New flew out to
+# the LEFT. Not the XAML -- Windows has a per-user setting (SM_MENUDROPALIGNMENT) that mirrors menus for
+# left-handed pen use, switched on by Tablet PC handedness, and WPF obeys it process-wide. It turns up on
+# any machine with a digitizer, usually without the operator choosing it, and there is no public API to
+# override it. App.OnStartup overwrites the cached value by reflection instead.
+$align = [System.Type]::GetType('UnifiedDirectoryManager.Services.MenuDropAlignment, UnifiedDirectoryManager')
+Check 'the helper is present'           $true ($null -ne $align)
+$bindStatic = [System.Reflection.BindingFlags]'NonPublic,Static'
+
+# The fragile part is the framework field, not the logic. If .NET renames it, this is the assertion that
+# says so -- rather than the override silently doing nothing and menus quietly mirroring again.
+$field = [System.Windows.SystemParameters].GetField('_menuDropAlignment', $bindStatic)
+Check '  SystemParameters still has the field' $true ($null -ne $field)
+Check '  and it is a bool'                     'Boolean' $(if ($field) { $field.FieldType.Name } else { '' })
+
+$hostSetting = [System.Windows.SystemParameters]::MenuDropAlignment
+Write-Host "          this machine opens menus $(if ($hostSetting) { 'LEFTwards (the mirrored setting)' } else { 'rightwards (normal)' })" -ForegroundColor DarkGray
+
+# Simulate the mirrored machine, so this proves something on a normal one too rather than passing by
+# luck of the host's configuration.
+$simulate = $align.GetMethod('SimulateLeftwardMenus', $bindStatic)
+$force    = $align.GetMethod('ForceMenusToOpenRightwards', $bindStatic)
+Check '  both entry points exist'       $true (($null -ne $simulate) -and ($null -ne $force))
+Check '  simulation takes effect'       $true ($simulate.Invoke($null, @()))
+Check '  and menus are mirrored'        $false ($align.GetProperty('MenusOpenRightwards', $bindStatic).GetValue($null))
+$force.Invoke($null, @()) | Out-Null
+Check 'the override turns them back'    $true ($align.GetProperty('MenusOpenRightwards', $bindStatic).GetValue($null))
+# Calling it twice must not double-subscribe to the settings-change event, and must still be true after.
+$force.Invoke($null, @()) | Out-Null
+Check '  and is safe to call twice'     $true ($align.GetProperty('MenusOpenRightwards', $bindStatic).GetValue($null))
+
+# The ORDER inside Apply is the whole trick and is invisible in the code: SystemParameters caches the
+# value on first read, so writing the field before anything has read it is undone by that first read.
+# Proving it needs a cold cache, which means a fresh process. It only demonstrates anything on a machine
+# that is actually configured to mirror menus, so on any other machine this says so rather than passing.
+if (-not $hostSetting) {
+    Write-Host "          NOT EXERCISED: the ordering proof needs a machine with mirrored menus" -ForegroundColor Yellow
+} else {
+    $naive = pwsh -NoProfile -STA -Command @'
+Add-Type -AssemblyName PresentationFramework
+$f = [System.Windows.SystemParameters].GetField('_menuDropAlignment', [System.Reflection.BindingFlags]'NonPublic,Static')
+$f.SetValue($null, $false)                       # write FIRST, before any read -- the naive version
+[System.Windows.SystemParameters]::MenuDropAlignment
+'@
+    Check '  writing before reading does nothing' 'True' ("$naive".Trim())
+    $correct = pwsh -NoProfile -STA -Command @"
+Add-Type -AssemblyName PresentationFramework
+[void][System.Reflection.Assembly]::LoadFrom('$dll')
+`$t = [System.Type]::GetType('UnifiedDirectoryManager.Services.MenuDropAlignment, UnifiedDirectoryManager')
+`$t.GetMethod('ForceMenusToOpenRightwards', [System.Reflection.BindingFlags]'NonPublic,Static').Invoke(`$null, @()) | Out-Null
+[System.Windows.SystemParameters]::MenuDropAlignment
+"@
+    Check '  reading first is what makes it stick' 'False' ("$correct".Trim())
+}
+
+# It has to run before any window exists, and after the logger, so a failure is recorded rather than lost.
+$appSrc = Get-Content -Raw (Join-Path $src 'App.xaml.cs')
+Check 'startup calls it'                $true ($appSrc -match 'MenuDropAlignment\.ForceMenusToOpenRightwards\(\)')
+$beforeWindow = $appSrc.IndexOf('ForceMenusToOpenRightwards') -lt $appSrc.IndexOf('new MainWindow')
+Check '  before the main window'        $true $beforeWindow
+Check '  and after the logger'          $true ($appSrc.IndexOf('AppLog.Instance = logger') -lt $appSrc.IndexOf('ForceMenusToOpenRightwards'))
+
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

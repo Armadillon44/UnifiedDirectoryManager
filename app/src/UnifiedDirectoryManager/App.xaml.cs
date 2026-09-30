@@ -27,6 +27,10 @@ public partial class App : Application
         AppLog.Instance.Info($"Unified Directory Manager started (v{System.Reflection.Assembly.GetExecutingAssembly().GetName().Version}, " +
                              $"{System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}).");
 
+        // Some machines right-align menus, so every submenu flies out to the LEFT. Undo that before
+        // any window exists, and after the logger, so a failure to do so is recorded rather than lost.
+        MenuDropAlignment.ForceMenusToOpenRightwards();
+
         // Never let an unhandled exception silently terminate the app — surface it instead.
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         // Catch faults that never reach the dispatcher: exceptions on background/non-UI threads, and

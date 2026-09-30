@@ -431,6 +431,22 @@ identically-labelled mutually-exclusive menus cannot.
 by name instead, and the suite now counts them, so an eleventh cannot slide in unexamined. This is the
 third time that blind spot has mattered in this document.
 
+**Menus opened in mirror image on the machine it was first tried on.** Reported from a dev build with
+a screenshot: `Action` aligned its right edge to its header, and `Action ▸ New` flew out to the LEFT.
+Not the XAML. Windows has a per-user setting, `SM_MENUDROPALIGNMENT`, that mirrors menus for left-handed
+pen use; the Tablet PC handedness setting turns it on, so it appears on Surfaces, touchscreen laptops and
+anything with a digitizer, usually without the operator choosing it. WPF reads it once per process and
+obeys it everywhere, and there is no public API to override it — the setting is deliberately global.
+
+`MenuDropAlignment.ForceMenusToOpenRightwards()` overwrites the cached value by reflection at startup.
+The **order** inside it is the whole trick and is invisible in the code: `SystemParameters` caches the
+value on first read, so writing the field before anything has read it is silently undone by that first
+read — the override looks right and does nothing. The suite proves this by doing it both ways in child
+processes, and says so out loud when it is running on a machine that cannot exercise the proof.
+
+This is the only place in the app that reaches into private framework state. Every step is optional and
+failure is logged rather than thrown: the worst case is the behaviour we had.
+
 **`Reset Password…` is the one new command.** Gated on `SelectionIsOneUser` — exactly one user
 selected — rather than looping over a multi-selection. Every reset produces a secret that has to reach
 a different person, and a bulk version would need the post-run report Bulk Create Users has. That is a
