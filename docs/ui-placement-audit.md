@@ -1,7 +1,7 @@
 # Where the app's functions live — a placement audit
 
-Status: **P1 done. 8 findings left (P2–P9), plus T1 (customisable toolbar), whose three open questions
-are now decided — see [T1 decisions](#t1-decisions-settled).**
+Status: **P1, P2 and P3 done — work package 1 is half finished. P4–P9 left, plus T1 (customisable
+toolbar), whose open questions are all settled.**
 
 Measured against `master` at **`8a2dc29`**. Everything below was derived from the XAML and
 `MainViewModel.cs` rather than from memory, and the method is in
@@ -20,8 +20,8 @@ The complaint that prompted it, in the maintainer's words:
 | # | Finding | State |
 |---|---|---|
 | **P1** | The cloud (Entra) object list has no context menu at all | **Done** — `master`, see below |
-| **P2** | Favourites is reachable only by right-clicking a tree node | **Not started** |
-| **P3** | OU management is reachable only by right-clicking a tree node | **Not started** |
+| **P2** | Favourites is reachable only by right-clicking a tree node | **Done** — View ▸ Favourites |
+| **P3** | OU management is reachable only by right-clicking a tree node | **Done** — View ▸ Selected Folder |
 | **P4** | Seven object actions are right-click-only | **Not started** |
 | **P5** | Object actions that are menu-only never appear on right-click | **Not started** |
 | **P6** | The same command carries different labels in different places | **Not started** |
@@ -130,7 +130,7 @@ Covered by `test-ui-placement.ps1`, which also carries an invariant worth having
 there fails silently — WPF finds no such property, the control greys out, and it is indistinguishable from
 a command that is legitimately unavailable. Nothing else in the build catches it.
 
-### P2 — Favourites is reachable only by right-clicking a tree node
+### P2 — Favourites is reachable only by right-clicking a tree node — **DONE**
 
 Pin to Favourites, Unpin, Move up and Move down exist only in the tree's context menu. Nothing in the menu
 bar mentions favourites. An operator who does not happen to right-click a tree node will not discover that
@@ -139,16 +139,19 @@ the feature exists.
 This is a whole feature, shipped in 2.3.0 and extended since, that is invisible unless you guess the
 gesture.
 
-*Fix:* a **View ▸ Favourites** submenu acting on the selected tree node (Pin / Unpin / Move up / Move
-down), with the items enabled per the same flags the context menu uses (`CanPin`, `IsFavorite`).
+*Fixed.* **View ▸ Favourites** — Pin Selected Folder, Unpin Selected Folder, Move Up, Move Down — acting
+on the tree selection.
 
-### P3 — OU management is reachable only by right-clicking a tree node
+### P3 — OU management is reachable only by right-clicking a tree node — **DONE**
 
 Create OU here, Properties and Delete are tree-context-only, with the same discoverability problem as P2.
 Creating an OU is not an obscure operation.
 
-*Fix:* Create OU belongs with the other create commands (see P8's **New** menu). OU Properties and Delete
-belong wherever the selected-node actions end up, alongside the Favourites items from P2.
+*Fixed.* **View ▸ Selected Folder** — Create OU Here…, Properties…, Delete OU…
+
+Placement here is **provisional**: P8 proposes moving Create OU into a **New** menu and the rest into a
+selected-object menu. Grouping them under View now keeps them with the Favourites items, since every one
+acts on the tree selection, and leaves one thing for P8 to move rather than seven.
 
 ### P4 — Seven object actions are right-click-only
 
@@ -340,9 +343,9 @@ Two rules for whoever implements it:
 
 ### Still open
 
-- **Whether a locked-down deployment needs to pin the toolbar.** Per-user storage was chosen deliberately,
-  but it means an operator can customise their way into a layout a support call then has to reason about.
-  A read-only override is not designed here and is not thought to be needed.
+
+Nothing. The maintainer has confirmed the toolbar never needs to be pinned read-only, so per-user storage
+with a Reset to defaults button is the whole of it.
 
 ### Testing
 
@@ -355,6 +358,27 @@ Two assertions matter more than the rest:
   discarded back to defaults.
 
 ---
+
+## What P2 and P3 changed, beyond the menu entries
+
+Three things worth knowing before P4–P9.
+
+**The logic was already in the view model.** `PinNode`, `UnpinNode`, `MoveFavorite`, `CreateOuUnderAsync`,
+`ShowNodeProperties` and `DeleteOuAsync` were all public methods that the tree's click handlers called.
+What was missing was a COMMAND surface over the *selected* node, which is what a menu-bar item needs. The
+new commands are one line each and the context menu still calls the same methods with the node it was
+opened on. One implementation, two targets — the same shape P1 used for the cloud list.
+
+**Right-click now selects the tree node.** Both object lists already did this; the tree did not. Without
+it, right-clicking one folder while another was selected left the two surfaces disagreeing about which
+folder they meant — the context menu acting on the clicked one, the View menu on the selected one, with
+nothing on screen to say so. That only became reachable once the View menu existed, so P2/P3 created the
+hazard and closed it in the same change.
+
+**Menu-bar items are disabled, never hidden.** The context menu hides what does not apply, which is right
+for a menu about one object. A menu bar is an index, and an item that vanishes teaches that the feature
+does not exist — the exact lesson this audit is undoing. The test suite asserts the two submenus contain
+no `Visibility` binding at all, so this does not quietly drift.
 
 ## Work packages
 

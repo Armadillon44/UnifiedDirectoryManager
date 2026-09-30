@@ -190,6 +190,11 @@ A standard **File / Edit / View / Tools / Help** menu bar exposes every action.
 
 ## Favourites
 
+*(2.3.3.)* Everything here is also on the menu bar under **View ▸ Favourites** (Pin / Unpin / Move up /
+Move down) and **View ▸ Selected Folder** (Create OU Here… / Properties… / Delete OU…), acting on whichever
+folder is selected in the tree. Before that these were reachable only by right-clicking a tree node, so an
+operator who never tried that gesture had no way of knowing favourites existed at all.
+
 *(New in 2.3.0.)* Pin the containers and searches you use constantly to a **Favourites** row at the
 top of the tree, so they are one click away instead of a drill-down.
 

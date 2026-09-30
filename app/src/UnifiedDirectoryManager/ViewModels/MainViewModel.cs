@@ -402,6 +402,10 @@ public partial class MainViewModel : ObservableObject
 
     partial void OnSelectedNodeChanged(TreeNodeViewModel? value)
     {
+        // FIRST, and before every early return below: the menu-bar items that act on the tree selection have
+        // to follow it even when the selection is cleared, or to a cloud node that offers none of them.
+        NotifyNodeCommands();
+
         if (value is null) return;
 
         if (value.CloudKind is { } kind)
@@ -833,6 +837,65 @@ public partial class MainViewModel : ObservableObject
     }
 
     /// <summary>Opens the basic-properties dialog for an OU/container tree node (right-click ▸ Properties).</summary>
+    // --- The selected tree node, as commands ------------------------------------------------------
+    //
+    // These wrap methods the tree's context menu has always called through click handlers. Click handlers
+    // are why audit findings P2 and P3 went unnoticed for so long: a surface wired that way is invisible to
+    // anything that searches for commands, so Favourites and OU management looked — to any audit, and to
+    // any operator who did not happen to right-click the tree — as though they did not exist.
+    //
+    // The context menu keeps calling the same methods with the node it was opened on. These act on the
+    // SELECTED node, which is what a menu-bar item means. Both routes, one implementation.
+
+    /// <summary>True when the tree selection can be pinned to Favourites.</summary>
+    public bool CanPinSelectedNode => SelectedNode?.CanPin == true;
+
+    /// <summary>True when the tree selection is itself a pinned favourite.</summary>
+    public bool SelectedNodeIsFavorite => SelectedNode?.IsFavorite == true;
+
+    /// <summary>True when an OU can be created beneath the tree selection.</summary>
+    public bool CanCreateOuHere => SelectedNode?.CanCreateChildOu == true;
+
+    /// <summary>True when the tree selection is an OU — the only node kind with properties or a delete.</summary>
+    public bool SelectedNodeIsOu => SelectedNode?.IsOrganizationalUnit == true;
+
+    [RelayCommand(CanExecute = nameof(CanPinSelectedNode))]
+    private void PinSelectedNode() => PinNode(SelectedNode);
+
+    [RelayCommand(CanExecute = nameof(SelectedNodeIsFavorite))]
+    private void UnpinSelectedNode() => UnpinNode(SelectedNode);
+
+    [RelayCommand(CanExecute = nameof(SelectedNodeIsFavorite))]
+    private void MoveSelectedFavoriteUp() => MoveFavorite(SelectedNode, -1);
+
+    [RelayCommand(CanExecute = nameof(SelectedNodeIsFavorite))]
+    private void MoveSelectedFavoriteDown() => MoveFavorite(SelectedNode, +1);
+
+    [RelayCommand(CanExecute = nameof(CanCreateOuHere))]
+    private Task CreateOuHereAsync() => CreateOuUnderAsync(SelectedNode);
+
+    [RelayCommand(CanExecute = nameof(SelectedNodeIsOu))]
+    private void SelectedNodeProperties() => ShowNodeProperties(SelectedNode);
+
+    [RelayCommand(CanExecute = nameof(SelectedNodeIsOu))]
+    private Task DeleteSelectedOuAsync() => DeleteOuAsync(SelectedNode);
+
+    /// <summary>Re-evaluates everything that depends on which tree node is selected.</summary>
+    private void NotifyNodeCommands()
+    {
+        OnPropertyChanged(nameof(CanPinSelectedNode));
+        OnPropertyChanged(nameof(SelectedNodeIsFavorite));
+        OnPropertyChanged(nameof(CanCreateOuHere));
+        OnPropertyChanged(nameof(SelectedNodeIsOu));
+        PinSelectedNodeCommand.NotifyCanExecuteChanged();
+        UnpinSelectedNodeCommand.NotifyCanExecuteChanged();
+        MoveSelectedFavoriteUpCommand.NotifyCanExecuteChanged();
+        MoveSelectedFavoriteDownCommand.NotifyCanExecuteChanged();
+        CreateOuHereCommand.NotifyCanExecuteChanged();
+        SelectedNodePropertiesCommand.NotifyCanExecuteChanged();
+        DeleteSelectedOuCommand.NotifyCanExecuteChanged();
+    }
+
     public void ShowNodeProperties(TreeNodeViewModel? node)
     {
         if (node is null || !node.IsContainerNode || string.IsNullOrWhiteSpace(node.DistinguishedName)) return;

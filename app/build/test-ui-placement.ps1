@@ -185,5 +185,73 @@ $graphCalls = ([regex]::Matches($vmSrc, 'SetUserAccountEnabledAsync|RevokeSignIn
 Check 'the six commands are thin'       6 $graphCalls
 Check 'the context rule is one property' 1 ([regex]::Matches($vmSrc, 'public IReadOnlyList<CloudObjectRow> ContextTargetRows')).Count
 
+Write-Host "`n== P2/P3: the tree's actions exist in the menu bar ==" -ForegroundColor Cyan
+# Favourites and OU management were reachable ONLY by right-clicking a tree node. Pinning is a whole
+# feature that an operator who never tried that gesture had no way of discovering.
+$mainXaml = Get-Content -Raw (Join-Path $src 'Views\MainWindow.xaml')
+$menuOnly = $mainXaml.Substring($mainXaml.IndexOf('<Menu'), $mainXaml.IndexOf('</Menu>') - $mainXaml.IndexOf('<Menu'))
+
+foreach ($cmd in 'PinSelectedNodeCommand', 'UnpinSelectedNodeCommand',
+                 'MoveSelectedFavoriteUpCommand', 'MoveSelectedFavoriteDownCommand') {
+    Check "  the menu bar offers $cmd" $true ($menuOnly -match [regex]::Escape("{Binding $cmd}"))
+}
+foreach ($cmd in 'CreateOuHereCommand', 'SelectedNodePropertiesCommand', 'DeleteSelectedOuCommand') {
+    Check "  the menu bar offers $cmd" $true ($menuOnly -match [regex]::Escape("{Binding $cmd}"))
+}
+
+# A menu bar is an index. An item that DISAPPEARS when unavailable teaches that the feature does not
+# exist, which is the lesson this whole audit is undoing -- so these must be enabled/disabled, never
+# shown/hidden. The context menu is the opposite and correctly hides what does not apply.
+$favMenu = [regex]::Match($menuOnly, '(?s)<MenuItem Header="_Favourites">.*?</MenuItem>\s*<MenuItem Header="Selected F_older">').Value
+Check 'the Favourites submenu was found'  $true ($favMenu.Length -gt 0)
+Check 'and hides nothing'                 $false ($favMenu -match 'Visibility=')
+$folderMenu = [regex]::Match($menuOnly, '(?s)<MenuItem Header="Selected F_older">.*?</MenuItem>\s*</MenuItem>').Value
+Check 'the Folder submenu was found'      $true ($folderMenu.Length -gt 0)
+Check 'and hides nothing either'          $false ($folderMenu -match 'Visibility=')
+
+# Right-click must select the tree node, or the context menu and the View menu disagree about which
+# folder they mean with nothing on screen to say so. Both object lists already did this; the tree did not.
+Check 'right-click selects a tree node'   $true ($mainXaml -match 'PreviewMouseRightButtonDown="OnNodePreviewMouseRightButtonDown"')
+$mainCode = Get-Content -Raw (Join-Path $src 'Views\MainWindow.xaml.cs')
+Check 'and the handler exists'            $true ($mainCode -match 'private void OnNodePreviewMouseRightButtonDown')
+
+Write-Host "`n== P2/P3: the commands follow the tree selection ==" -ForegroundColor Cyan
+# The methods behind these have always existed; what was missing was a command surface over the
+# SELECTED node, so a menu-bar item could act on it.
+$MainVm = [UnifiedDirectoryManager.ViewModels.MainViewModel]
+foreach ($cmd in 'PinSelectedNodeCommand', 'UnpinSelectedNodeCommand', 'MoveSelectedFavoriteUpCommand',
+                 'MoveSelectedFavoriteDownCommand', 'CreateOuHereCommand', 'SelectedNodePropertiesCommand',
+                 'DeleteSelectedOuCommand') {
+    Check "  $cmd exists" $true ($null -ne $MainVm.GetProperty($cmd))
+}
+
+# The gates are public so the menu can bind them, and they all read through SelectedNode -- which is
+# null until something is selected, and must not throw then.
+foreach ($gate in 'CanPinSelectedNode', 'SelectedNodeIsFavorite', 'CanCreateOuHere', 'SelectedNodeIsOu') {
+    $prop = $MainVm.GetProperty($gate)
+    Check "  $gate exists" $true ($null -ne $prop)
+}
+
+$vmSrc = Get-Content -Raw (Join-Path $src 'ViewModels\MainViewModel.cs')
+# Every gate reads the selection through ?. so nothing selected is false rather than an exception.
+foreach ($gate in 'CanPinSelectedNode', 'SelectedNodeIsFavorite', 'CanCreateOuHere', 'SelectedNodeIsOu') {
+    $line = [regex]::Match($vmSrc, '(?m)^\s*public bool ' + $gate + ' =>.*$').Value
+    Check "  $gate tolerates no selection" $true ($line -match 'SelectedNode\?\.')
+}
+
+# And the availability has to move WITH the selection, including when it is cleared or moves to a cloud
+# node -- so the notify has to run before the early returns in the selection hook, not after them.
+$hook = [regex]::Match($vmSrc, '(?s)partial void OnSelectedNodeChanged\(TreeNodeViewModel\? value\)\s*\{.*?\r?\n    \}').Value
+Check 'the selection hook was found'      $true ($hook.Length -gt 0)
+Check 'it re-evaluates the commands'      $true ($hook -match 'NotifyNodeCommands\(\)')
+Check 'before any early return'           $true ($hook.IndexOf('NotifyNodeCommands()') -lt $hook.IndexOf('if (value is null) return;'))
+
+# One implementation: the commands delegate to the methods the context menu already calls.
+foreach ($pair in @(@('PinSelectedNode', 'PinNode'), @('UnpinSelectedNode', 'UnpinNode'),
+                    @('CreateOuHereAsync', 'CreateOuUnderAsync'), @('SelectedNodeProperties', 'ShowNodeProperties'),
+                    @('DeleteSelectedOuAsync', 'DeleteOuAsync'))) {
+    $body = [regex]::Match($vmSrc, '(?m)^\s*private (?:void|Task) ' + $pair[0] + '\(\).*$').Value
+    Check "  $($pair[0]) delegates to $($pair[1])" $true ($body -match ([regex]::Escape($pair[1]) + '\(SelectedNode'))
+}
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

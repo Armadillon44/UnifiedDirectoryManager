@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using UnifiedDirectoryManager.Services;
 using UnifiedDirectoryManager.ViewModels;
@@ -78,6 +79,25 @@ public partial class MainWindow : Window
     {
         if ((sender as FrameworkElement)?.DataContext is TreeNodeViewModel { HasContextMenu: true }) return;
         e.Handled = true;
+    }
+
+    /// <summary>
+    /// Right-click selects the node under the cursor. Both object lists already do this; the tree did not,
+    /// so right-clicking one folder while another was selected left the two surfaces disagreeing about
+    /// which folder they meant — the context menu acting on the clicked one and the View menu on the
+    /// selected one, with nothing on screen to say so.
+    /// </summary>
+    private void OnNodePreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        var item = (e.OriginalSource as DependencyObject) is { } source ? FindTreeItem(source) : null;
+        if (item is not null) item.IsSelected = true;
+    }
+
+    private static TreeViewItem? FindTreeItem(DependencyObject? source)
+    {
+        while (source is not null and not TreeViewItem)
+            source = VisualTreeHelper.GetParent(source);
+        return source as TreeViewItem;
     }
 
     private void OnNodePropertiesClick(object sender, RoutedEventArgs e)

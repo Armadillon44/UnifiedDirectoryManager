@@ -38,6 +38,29 @@
             <MenuItem Header="_View">
                 <MenuItem Header="Toggle Pane _Dock (Right / Bottom)" Command="{Binding ToggleDockCommand}" />
                 <MenuItem Header="_Refresh" Command="{Binding RefreshCommand}" />
+                <Separator />
+                <!--
+                  Both submenus act on the SELECTED tree node, and both exist because audit findings P2 and
+                  P3 found them reachable only by right-clicking the tree. Favourites is a whole feature
+                  that was invisible unless an operator happened to guess the gesture.
+
+                  Items stay ENABLED-or-disabled rather than shown-or-hidden here, unlike the context menu:
+                  a menu bar is an index, and an item that vanishes teaches that the feature does not
+                  exist — which is the very lesson this audit is undoing.
+                -->
+                <MenuItem Header="_Favourites">
+                    <MenuItem Header="_Pin Selected Folder" Command="{Binding PinSelectedNodeCommand}" />
+                    <MenuItem Header="_Unpin Selected Folder" Command="{Binding UnpinSelectedNodeCommand}" />
+                    <Separator />
+                    <MenuItem Header="Move _Up" Command="{Binding MoveSelectedFavoriteUpCommand}" />
+                    <MenuItem Header="Move _Down" Command="{Binding MoveSelectedFavoriteDownCommand}" />
+                </MenuItem>
+                <MenuItem Header="Selected F_older">
+                    <MenuItem Header="_Create OU Here…" Command="{Binding CreateOuHereCommand}" />
+                    <MenuItem Header="_Properties…" Command="{Binding SelectedNodePropertiesCommand}" />
+                    <Separator />
+                    <MenuItem Header="_Delete OU…" Command="{Binding DeleteSelectedOuCommand}" />
+                </MenuItem>
             </MenuItem>
             <MenuItem Header="_Tools">
                 <MenuItem Header="_Entra Connect Delta Sync…" Command="{Binding EntraSyncCommand}" />
@@ -141,7 +164,8 @@
                             <!-- ContextMenuOpening suppresses the menu on nodes with no actions at all
                                  ("Loading…", the tenant roots); each item below gates itself from there. -->
                             <StackPanel Orientation="Horizontal" Background="Transparent"
-                                        ContextMenuOpening="OnNodeContextMenuOpening">
+                                        ContextMenuOpening="OnNodeContextMenuOpening"
+                              PreviewMouseRightButtonDown="OnNodePreviewMouseRightButtonDown">
                                 <StackPanel.ContextMenu>
                                     <ContextMenu>
                                         <MenuItem Header="Create OU here…" Click="OnNodeCreateOuClick"
