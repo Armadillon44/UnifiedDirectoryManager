@@ -148,7 +148,8 @@ multiple editor windows can be open at once. The list refreshes automatically af
 disabling a user immediately greys it.
 
 Right-clicking the on-prem list offers **Modify…**, **Enable / Disable / Unlock account(s)**,
-**Add to groups…**, **Copy user…**, **Save as template…**, **Move to OU…**, **Bulk edit…**,
+**Add to groups…**, **Copy user…**, **Copy groups to user…** *(2.3.3.)*, **Save as template…**,
+**Move to OU…**, **Bulk edit…**, **Export members to CSV…**, **Append members to a CSV…**,
 **Run scenario**, and **Delete…**.
 
 ### The edit pane (on-prem objects)
@@ -176,14 +177,21 @@ tells you whether there is a counterpart at all.
 
 ## Menus
 
-A standard **File / Edit / View / Tools / Help** menu bar exposes every action.
+A standard **File / Edit / View / Tools / Help** menu bar exposes every action. *(2.3.3.)* **Every
+command in the app is on it** — if something can be done, it has an entry here, even where right-click is
+the faster way to do it. An entry that does not apply to what you have selected is **greyed out rather
+than hidden**, so the menus stay a complete list of what the app can do.
 
 - **File** — New User…, Bulk Create Users…, New Group…, **New Cloud Group…** (in the cloud view),
-  Open Selected…, Refresh, Export List to CSV…, View Log File…, Open Logs Folder, Settings…, Exit.
-- **Edit** — Advanced Search…, Copy User…, Copy Groups to User…, Add Selected to Groups…,
-  Bulk Edit…, Delete Selected…, User Creation Templates…. The whole menu is disabled in the cloud
-  view, because every item on it acts on on-prem objects.
-- **View** — Toggle Pane Dock (Right / Bottom), Refresh.
+  Open Selected…, Refresh, Export List to CSV…, **Export Group Members to CSV…**, **Append Group
+  Members to CSV…**, View Log File…, Open Logs Folder, Settings…, Exit.
+- **Edit** — grouped by what each item acts on: Advanced Search… | **Enable / Disable / Unlock
+  Account(s)** | Copy User…, Copy Groups to User…, **Save as Template…** | Add Selected to Groups…,
+  **Move to OU…**, Bulk Edit… | Delete Selected… | User Creation Templates…. The whole menu is disabled
+  in the cloud view, because every item on it acts on on-prem objects.
+- **View** — Toggle Pane Dock (Right / Bottom), Refresh, **Favourites** (Pin / Unpin / Move Up / Move
+  Down) and **Selected Folder** (Create OU Here… / Properties… / Delete OU…), both acting on whichever
+  folder is selected in the tree.
 - **Tools** — Entra Connect Delta Sync…, **Run Scenario on Selected** (a submenu of your saved
   scenarios), Manage Scenarios….
 - **Help** — View README…, View Log File…, Open Logs Folder, About Unified Directory Manager….

@@ -762,8 +762,11 @@ public partial class MainViewModel : ObservableObject
 
     // --- Right-click / context actions (operate on the current selection) ---
 
-    [RelayCommand] private Task EnableSelectedAsync() => SetEnabledSelectedAsync(true);
-    [RelayCommand] private Task DisableSelectedAsync() => SetEnabledSelectedAsync(false);
+    // These are gated so a MENU-BAR item can be disabled rather than silently doing nothing. The context
+    // menu hides them instead, which is right there — it is a menu about one object — but a menu bar has to
+    // show the whole vocabulary and grey out what does not apply right now (audit rule 1).
+    [RelayCommand(CanExecute = nameof(SelectionHasDisabled))] private Task EnableSelectedAsync() => SetEnabledSelectedAsync(true);
+    [RelayCommand(CanExecute = nameof(SelectionHasEnabled))] private Task DisableSelectedAsync() => SetEnabledSelectedAsync(false);
 
     private async Task SetEnabledSelectedAsync(bool enable)
     {
@@ -781,7 +784,7 @@ public partial class MainViewModel : ObservableObject
         ReportBulk(result, enable ? "Enabled" : "Disabled");
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(SelectionHasUsers))]
     private async Task UnlockSelectedAsync()
     {
         var rows = SelectedRowsOrSingle().Where(r => r.Type == AdObjectType.User).ToList();
@@ -800,7 +803,7 @@ public partial class MainViewModel : ObservableObject
         else StatusMessage = $"Unlocked {ok} account(s).";
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(HasSelection))]
     private async Task MoveSelectedToOuAsync()
     {
         var rows = SelectedRowsOrSingle();
@@ -1269,7 +1272,7 @@ public partial class MainViewModel : ObservableObject
         _ => step.Action.ToString(),
     };
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(SelectionHasUsers))]
     private void SaveSelectedAsTemplate()
     {
         var user = SelectedRowsOrSingle().FirstOrDefault(r => r.Type == AdObjectType.User);
@@ -1277,7 +1280,7 @@ public partial class MainViewModel : ObservableObject
         _dialogs.ShowCopyUserToTemplate(user.DistinguishedName);
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(SelectionHasUsers))]
     private void CopyUser()
     {
         var user = SelectedRowsOrSingle().FirstOrDefault(r => r.Type == AdObjectType.User);
@@ -1285,7 +1288,7 @@ public partial class MainViewModel : ObservableObject
         _dialogs.ShowCopyUser(user.DistinguishedName, onCreated: () => _ = List.ReloadAsync());
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(SelectionHasUsers))]
     private void CopyGroupsToUser()
     {
         var user = SelectedRowsOrSingle().FirstOrDefault(r => r.Type == AdObjectType.User);
@@ -1301,6 +1304,17 @@ public partial class MainViewModel : ObservableObject
         SelectionHasEnabled = rows.Any(r => r.Type is AdObjectType.User or AdObjectType.Computer && !r.IsDisabled);
         SelectionHasUsers = rows.Any(r => r.Type == AdObjectType.User);
         SelectionHasGroups = rows.Any(r => r.Type == AdObjectType.Group);
+
+        // The menu-bar entries for these actions disable with the selection; the context menu hides them.
+        EnableSelectedCommand.NotifyCanExecuteChanged();
+        DisableSelectedCommand.NotifyCanExecuteChanged();
+        UnlockSelectedCommand.NotifyCanExecuteChanged();
+        MoveSelectedToOuCommand.NotifyCanExecuteChanged();
+        SaveSelectedAsTemplateCommand.NotifyCanExecuteChanged();
+        CopyUserCommand.NotifyCanExecuteChanged();
+        CopyGroupsToUserCommand.NotifyCanExecuteChanged();
+        ExportGroupMembersCommand.NotifyCanExecuteChanged();
+        AppendGroupMembersCommand.NotifyCanExecuteChanged();
     }
 
     private List<AdObjectRow> SelectedRowsOrSingle() =>
@@ -1357,7 +1371,7 @@ public partial class MainViewModel : ObservableObject
     }
 
     /// <summary>Writes the selected groups' members to a new CSV, replacing anything already at that path.</summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(SelectionHasGroups))]
     private Task ExportGroupMembersAsync() => ExportGroupMembersAsync(append: false);
 
     /// <summary>
@@ -1367,7 +1381,7 @@ public partial class MainViewModel : ObservableObject
     /// this file?" already means replace — answering it and then being asked a second, opposite question
     /// is how somebody overwrites a file they meant to add to.
     /// </summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(SelectionHasGroups))]
     private Task AppendGroupMembersAsync() => ExportGroupMembersAsync(append: true);
 
     private async Task ExportGroupMembersAsync(bool append)

@@ -1,7 +1,7 @@
 # Where the app's functions live — a placement audit
 
-Status: **P1, P2 and P3 done — work package 1 is half finished. P4–P9 left, plus T1 (customisable
-toolbar), whose open questions are all settled.**
+Status: **Work package 1 is DONE (P1–P5). Rule 1 now holds and is enforced by a test. P6–P9 left, plus
+T1 (customisable toolbar), whose open questions are all settled.**
 
 Measured against `master` at **`8a2dc29`**. Everything below was derived from the XAML and
 `MainViewModel.cs` rather than from memory, and the method is in
@@ -22,8 +22,8 @@ The complaint that prompted it, in the maintainer's words:
 | **P1** | The cloud (Entra) object list has no context menu at all | **Done** — `master`, see below |
 | **P2** | Favourites is reachable only by right-clicking a tree node | **Done** — View ▸ Favourites |
 | **P3** | OU management is reachable only by right-clicking a tree node | **Done** — View ▸ Selected Folder |
-| **P4** | Seven object actions are right-click-only | **Not started** |
-| **P5** | Object actions that are menu-only never appear on right-click | **Not started** |
+| **P4** | Seven object actions are right-click-only | **Done** — Edit and File |
+| **P5** | Object actions that are menu-only never appear on right-click | **Done** |
 | **P6** | The same command carries different labels in different places | **Not started** |
 | **P7** | Refresh and the log commands are duplicated *within* the menu bar | **Not started** |
 | **P8** | The menu bar is organised by nothing in particular | **Not started** |
@@ -153,7 +153,7 @@ Placement here is **provisional**: P8 proposes moving Create OU into a **New** m
 selected-object menu. Grouping them under View now keeps them with the Favourites items, since every one
 acts on the tree selection, and leaves one thing for P8 to move rather than seven.
 
-### P4 — Seven object actions are right-click-only
+### P4 — Seven object actions are right-click-only — **DONE**
 
 Enable Selected, Disable Selected, Unlock Selected, Move Selected to OU, Save Selected as Template, Export
 Group Members, Append Group Members.
@@ -162,10 +162,15 @@ Enable/Disable/Unlock are among the most-used actions in a directory tool and ap
 bar. (Enable/Disable/Unlock *also* exist as edit-pane buttons for a single object, which is a third
 location, and a different one again.)
 
-*Fix:* all seven into the menu bar, under whatever the selected-object menu becomes in P8. The two export
-commands sit naturally beside Export List to CSV.
+*Fixed.* Enable / Disable / Unlock / Save as Template / Move to OU into **Edit**, grouped by what they act
+on; the two group-member exports into **File** beside Export List to CSV.
 
-### P5 — Object actions that are menu-only never appear on right-click
+Doing it required giving every one a `CanExecute`, which they had never had — the context menu gated them
+by `Visibility` instead. Without that a menu-bar item would have been permanently enabled and silently
+done nothing, or shown an alert telling the operator to go and select something. They are re-evaluated in
+`UpdateSelectionState`, and the suite asserts each one is.
+
+### P5 — Object actions that are menu-only never appear on right-click — **DONE**
 
 Copy Groups to User is the clearest case: it is a per-user action, it lives in the **Edit** menu, it also
 exists as an edit-pane button — and it is absent from the object list's right-click menu, which is the
@@ -175,8 +180,13 @@ New Group and New Cloud Group are menu-only, while the tree's right-click offers
 "New cloud group…" — so the same two operations have menu entries and tree entries that look like
 different features.
 
-*Fix:* add Copy Groups to User to the object-list context menu. Reconcile the create-group entries so the
-menu-bar and tree wordings describe one feature (see P6).
+*Fixed.* Copy Groups to User is on the object list's right-click menu, for a user selection.
+
+The tree's three create entries described one feature three ways — "Create OU here…", "New Group here…",
+"New cloud group…". They are now "Create OU Here…", "New Group Here…" and "New Cloud Group…". The last
+deliberately keeps no "Here": a cloud group has no container to be created in, and `NewGroupCommand`
+already targets the selected container anyway, so the menu-bar and tree entries were always the same
+feature.
 
 ### P6 — The same command carries different labels in different places
 
@@ -188,6 +198,19 @@ menu-bar and tree wordings describe one feature (see P6).
 
 An operator who saw "Templates…" on the toolbar and goes looking for it in the menus finds "User Creation
 Templates…" under Edit. Abbreviating for toolbar width is reasonable; using a *different noun* is not.
+
+P4 added two more of the same kind, because it gave menu-bar labels to commands that until then had only a
+context-menu one. They are listed here rather than fixed in P4, since choosing the canonical wording is
+exactly the judgement P6 is for:
+
+| Command | Menu bar (new in P4) | Context menu |
+|---|---|---|
+| `ExportGroupMembersCommand` | "Export Group Members to CSV…" | "Export members to CSV…" |
+| `AppendGroupMembersCommand` | "Append Group Members to CSV…" | "Append members to a CSV…" |
+
+The menu-bar wording needs the word "Group" — nothing else on File says what is being exported — and the
+context menu does not, because it was opened on a group. That makes these defensible, unlike the toolbar
+three. The indefinite article in "a CSV" is not defensible either way.
 
 *Fix:* one label per command, used everywhere. Where the toolbar genuinely needs to be shorter, shorten
 the canonical label rather than inventing a second one.
@@ -359,9 +382,21 @@ Two assertions matter more than the rest:
 
 ---
 
-## What P2 and P3 changed, beyond the menu entries
+## Rule 1 is now enforced, not just stated
 
-Three things worth knowing before P4–P9.
+With P1–P5 done, **every command `MainViewModel` exposes is reachable from the menu bar**, and
+`test-ui-placement.ps1` asserts it. A command that slips back out fails the suite by name.
+
+There is exactly one exception, listed in the test rather than skipped silently so it can be argued with:
+
+- `OpenSelectedCommand` — double-click and the context menu, and File carries it too.
+
+This is the assertion the whole first work package existed to make possible. It is worth keeping even
+after P8 moves everything around: the menus can be reorganised freely as long as the total stays complete.
+
+## What the first work package changed, beyond the menu entries
+
+Four things worth knowing before P6–P9.
 
 **The logic was already in the view model.** `PinNode`, `UnpinNode`, `MoveFavorite`, `CreateOuUnderAsync`,
 `ShowNodeProperties` and `DeleteOuAsync` were all public methods that the tree's click handlers called.
@@ -377,14 +412,20 @@ hazard and closed it in the same change.
 
 **Menu-bar items are disabled, never hidden.** The context menu hides what does not apply, which is right
 for a menu about one object. A menu bar is an index, and an item that vanishes teaches that the feature
-does not exist — the exact lesson this audit is undoing. The test suite asserts the two submenus contain
-no `Visibility` binding at all, so this does not quietly drift.
+does not exist — the exact lesson this audit is undoing. The test suite asserts the two submenus and the five new
+Edit entries contain no `Visibility` binding at all, so this does not quietly drift.
+
+**Nine commands gained a `CanExecute` they never had.** The context menu had always gated them by
+`Visibility`, so nothing in the view model knew whether they applied. That is why P4 was more than five
+menu entries: without the gates, Edit ▸ Unlock Account(s) would have been permanently enabled and done
+nothing on an empty selection. The gates also reach the context-menu items, which is harmless — those are
+already hidden in exactly the cases the gates now disable.
 
 ## Work packages
 
-1. **`ui/menu-completeness` — P1, P2, P3, P4, P5.** The findings that change whether a feature is findable
-   at all. Largest is P1 (a new context menu for the cloud list); P2–P5 are menu entries bound to commands
-   that already exist.
+1. **`ui/menu-completeness` — P1, P2, P3, P4, P5.** ✅ **Done.** The findings that change whether a feature
+   is findable at all. Largest was P1 (a new context menu for the cloud list); P2–P5 were menu entries
+   bound to commands that already existed, plus the `CanExecute` gates those entries needed.
 2. **`ui/consistency` — P6, P7, P8.** Labels, de-duplication, and the menu reorganisation. P8 is the only
    subjective item here and is worth agreeing before it is built.
 3. **`ui/shortcuts` — P9.** Small and self-contained.

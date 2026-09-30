@@ -253,5 +253,89 @@ foreach ($pair in @(@('PinSelectedNode', 'PinNode'), @('UnpinSelectedNode', 'Unp
     $body = [regex]::Match($vmSrc, '(?m)^\s*private (?:void|Task) ' + $pair[0] + '\(\).*$').Value
     Check "  $($pair[0]) delegates to $($pair[1])" $true ($body -match ([regex]::Escape($pair[1]) + '\(SelectedNode'))
 }
+Write-Host "`n== P4: the right-click-only actions are in the menu bar ==" -ForegroundColor Cyan
+# Enable, Disable and Unlock are among the most-used actions in a directory tool and appeared nowhere in
+# the menu bar at all.
+foreach ($cmd in 'EnableSelectedCommand', 'DisableSelectedCommand', 'UnlockSelectedCommand',
+                 'MoveSelectedToOuCommand', 'SaveSelectedAsTemplateCommand',
+                 'ExportGroupMembersCommand', 'AppendGroupMembersCommand') {
+    Check "  the menu bar offers $cmd" $true ($menuOnly -match [regex]::Escape("{Binding $cmd}"))
+}
+
+Write-Host "`n== P5: the menu-only actions are on right-click ==" -ForegroundColor Cyan
+$listXaml = Get-Content -Raw (Join-Path $src 'Views\Controls\ObjectListView.xaml')
+# A per-user action whose first natural home is the user's own right-click menu.
+Check 'Copy groups to user is offered'  $true ($listXaml -match [regex]::Escape('{Binding CopyGroupsToUserCommand}'))
+Check 'and only for users'              $true ([regex]::Match($listXaml, '<MenuItem Header="Copy groups to user[^/]*/>').Value -match 'SelectionHasUsers')
+
+# The tree's three create entries described one feature three ways. "Here" belongs on the two that
+# create INSIDE the selected container and not on the cloud one, which has no container to create in.
+Check 'Create OU Here is title case'    $true ($mainXaml -match 'Header="Create OU Here…"')
+Check 'New Group Here matches it'       $true ($mainXaml -match 'Header="New Group Here…"')
+Check 'New Cloud Group has no "Here"'   $true ($mainXaml -match 'Header="New Cloud Group…"')
+
+Write-Host "`n== P4: menu items disable rather than vanish ==" -ForegroundColor Cyan
+# The whole point of rule 1. An item that disappears when it does not apply teaches that the feature does
+# not exist, so every one of these has to be gated by CanExecute rather than by Visibility.
+$vmSrc2 = Get-Content -Raw (Join-Path $src 'ViewModels\MainViewModel.cs')
+$gates = @{
+    'EnableSelectedAsync'       = 'SelectionHasDisabled'
+    'DisableSelectedAsync'      = 'SelectionHasEnabled'
+    'UnlockSelectedAsync'       = 'SelectionHasUsers'
+    'MoveSelectedToOuAsync'     = 'HasSelection'
+    'SaveSelectedAsTemplate'    = 'SelectionHasUsers'
+    'CopyUser'                  = 'SelectionHasUsers'
+    'CopyGroupsToUser'          = 'SelectionHasUsers'
+    'ExportGroupMembersAsync'   = 'SelectionHasGroups'
+    'AppendGroupMembersAsync'   = 'SelectionHasGroups'
+}
+foreach ($method in ($gates.Keys | Sort-Object)) {
+    $want = $gates[$method]
+    $decl = [regex]::Match($vmSrc2, '\[RelayCommand\(CanExecute = nameof\((\w+)\)\)\]\s*(?:private|public)[^\n]*\b' + [regex]::Escape($method) + '\(')
+    Check "  $method is gated on $want" $want ($decl.Groups[1].Value)
+}
+
+# None of the new Edit entries may hide themselves.
+$editMenu = [regex]::Match($menuOnly, '(?s)<MenuItem Header="_Edit"[^>]*>.*?\n            </MenuItem>').Value
+Check 'the Edit menu was found'         $true ($editMenu.Length -gt 0)
+foreach ($cmd in 'EnableSelectedCommand', 'DisableSelectedCommand', 'UnlockSelectedCommand',
+                 'MoveSelectedToOuCommand', 'SaveSelectedAsTemplateCommand') {
+    $item = [regex]::Match($editMenu, '<MenuItem[^/]*' + $cmd + '[^/]*/>').Value
+    Check "  $cmd is never hidden" $false ($item -match 'Visibility=')
+}
+
+# The gates only mean anything if they are re-evaluated when the selection changes.
+$sel = [regex]::Match($vmSrc2, '(?s)private void UpdateSelectionState\(\).*?\r?\n    \}').Value
+Check 'UpdateSelectionState was found'  $true ($sel.Length -gt 0)
+foreach ($cmd in 'EnableSelectedCommand', 'DisableSelectedCommand', 'UnlockSelectedCommand',
+                 'MoveSelectedToOuCommand', 'SaveSelectedAsTemplateCommand', 'CopyUserCommand',
+                 'CopyGroupsToUserCommand', 'ExportGroupMembersCommand', 'AppendGroupMembersCommand') {
+    Check "  it re-evaluates $cmd" $true ($sel -match ([regex]::Escape($cmd) + '\.NotifyCanExecuteChanged\(\)'))
+}
+
+Write-Host "`n== rule 1: the menu bar is complete ==" -ForegroundColor Cyan
+# The invariant the whole first work package exists to establish. Every command MainViewModel exposes
+# must be reachable from the menu bar -- otherwise the menu bar is a subset, and a subset teaches "if it
+# is not here it does not exist", which is false and is what sent this audit off in the first place.
+#
+# A handful of commands are genuinely not menu-bar material and are named here rather than silently
+# skipped, so that the exception list is something a reader can argue with.
+$notInMenuBar = @(
+    'OpenSelectedCommand'   # double-click and the context menu; File also carries it
+)
+$mainCommands = @()
+foreach ($m in [regex]::Matches($vmSrc2, '\[RelayCommand[^\]]*\]\s*(?:private|public)\s+(?:async\s+)?(?:Task|void)\s+(\w+?)(Async)?\s*\(')) {
+    $mainCommands += ($m.Groups[1].Value + 'Command')
+}
+$mainCommands = @($mainCommands | Sort-Object -Unique)
+Check 'MainViewModel exposes commands'  $true ($mainCommands.Count -ge 30)
+
+$missing = @()
+foreach ($cmd in $mainCommands) {
+    if ($notInMenuBar -contains $cmd) { continue }
+    if (-not ($menuOnly -match [regex]::Escape("{Binding $cmd}"))) { $missing += $cmd }
+}
+if ($missing.Count -gt 0) { foreach ($m in $missing) { Write-Host "          $m" -ForegroundColor Yellow } }
+Check 'every command is in the menu bar' 0 $missing.Count
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

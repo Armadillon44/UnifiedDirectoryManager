@@ -65,6 +65,10 @@
                     <MenuItem Header="Add to groups…" Command="{Binding AddSelectedToGroupsCommand}" />
                     <MenuItem Header="Copy user…" Command="{Binding CopyUserCommand}"
                               Visibility="{Binding SelectionHasUsers, Converter={StaticResource BoolToVis}}" />
+                    <!-- Menu-bar-only until audit finding P5: a per-user action whose first natural home is
+                         the user's own right-click menu. It is also an edit-pane button. -->
+                    <MenuItem Header="Copy groups to user…" Command="{Binding CopyGroupsToUserCommand}"
+                              Visibility="{Binding SelectionHasUsers, Converter={StaticResource BoolToVis}}" />
                     <MenuItem Header="Save as template…" Command="{Binding SaveSelectedAsTemplateCommand}"
                               Visibility="{Binding SelectionHasUsers, Converter={StaticResource BoolToVis}}" />
                     <MenuItem Header="Move to OU…" Command="{Binding MoveSelectedToOuCommand}" />

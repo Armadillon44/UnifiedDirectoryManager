@@ -16,6 +16,8 @@
                 <MenuItem Header="_Refresh" Command="{Binding RefreshCommand}" />
                 <Separator Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="_Export List to CSV…" Command="{Binding ExportCsvCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
+                <MenuItem Header="Export Group _Members to CSV…" Command="{Binding ExportGroupMembersCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
+                <MenuItem Header="_Append Group Members to CSV…" Command="{Binding AppendGroupMembersCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <Separator />
                 <MenuItem Header="_View Log File…" Command="{Binding ViewLogCommand}" />
                 <MenuItem Header="Open Logs _Folder" Command="{Binding OpenLogsCommand}" />
@@ -24,11 +26,27 @@
                 <Separator />
                 <MenuItem Header="E_xit" Command="{Binding ExitCommand}" />
             </MenuItem>
+            <!--
+              Grouped by what each item acts on: account state, then the copy/derive actions, then the ones
+              that move or change the selection wholesale, then the destructive one on its own.
+
+              Enable / Disable / Unlock / Move to OU / Save as Template were right-click-only (audit P4).
+              Every one is disabled rather than hidden when it does not apply — a menu bar is the index of
+              what the app can do, and an item that vanishes teaches that the feature does not exist.
+            -->
             <MenuItem Header="_Edit" IsEnabled="{Binding IsAdView}">
                 <MenuItem Header="_Advanced Search…" Command="{Binding AdvancedSearchCommand}" />
+                <Separator />
+                <MenuItem Header="_Enable Account(s)" Command="{Binding EnableSelectedCommand}" />
+                <MenuItem Header="_Disable Account(s)" Command="{Binding DisableSelectedCommand}" />
+                <MenuItem Header="_Unlock Account(s)" Command="{Binding UnlockSelectedCommand}" />
+                <Separator />
                 <MenuItem Header="Cop_y User…" Command="{Binding CopyUserCommand}" />
                 <MenuItem Header="Copy _Groups to User…" Command="{Binding CopyGroupsToUserCommand}" />
+                <MenuItem Header="Save as Te_mplate…" Command="{Binding SaveSelectedAsTemplateCommand}" />
+                <Separator />
                 <MenuItem Header="Add Selected to _Groups…" Command="{Binding AddSelectedToGroupsCommand}" />
+                <MenuItem Header="_Move to OU…" Command="{Binding MoveSelectedToOuCommand}" />
                 <MenuItem Header="_Bulk Edit…" Command="{Binding BulkEditCommand}" />
                 <Separator />
                 <MenuItem Header="_Delete Selected…" Command="{Binding DeleteSelectedCommand}" />
@@ -168,14 +186,14 @@
                               PreviewMouseRightButtonDown="OnNodePreviewMouseRightButtonDown">
                                 <StackPanel.ContextMenu>
                                     <ContextMenu>
-                                        <MenuItem Header="Create OU here…" Click="OnNodeCreateOuClick"
+                                        <MenuItem Header="Create OU Here…" Click="OnNodeCreateOuClick"
                                                   Visibility="{Binding CanCreateChildOu, Converter={StaticResource BoolToVis}}" />
                                         <!-- Groups are legal in plain containers (CN=Users) as well as OUs, so this
                                              is gated on IsContainerNode rather than the OU-only CanCreateChildOu. -->
-                                        <MenuItem Header="New Group here…" Click="OnNodeNewGroupClick"
+                                        <MenuItem Header="New Group Here…" Click="OnNodeNewGroupClick"
                                                   Visibility="{Binding IsContainerNode, Converter={StaticResource BoolToVis}}" />
                                         <!-- Cloud groups have no container, so this hangs off the group LISTS. -->
-                                        <MenuItem Header="New cloud group…" Click="OnNodeNewCloudGroupClick"
+                                        <MenuItem Header="New Cloud Group…" Click="OnNodeNewCloudGroupClick"
                                                   Visibility="{Binding CanCreateCloudGroup, Converter={StaticResource BoolToVis}}" />
                                         <MenuItem Header="Pin to Favourites" Click="OnNodePinClick"
                                                   Visibility="{Binding CanPin, Converter={StaticResource BoolToVis}}" />
