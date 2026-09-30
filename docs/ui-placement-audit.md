@@ -1,8 +1,8 @@
 # Where the app's functions live — a placement audit
 
-Status: **Work packages 1 and most of 2 are DONE (P1–P7). Rules 1 and 3 now hold and are enforced by
-tests. P8 and P9 left, plus T1 (customisable toolbar), whose open questions are all settled. P8 is the
-one subjective item and is worth agreeing before it is built.**
+Status: **Work packages 1 and 2 are DONE (P1–P8). All three rules hold and are enforced by tests. P9
+(keyboard shortcuts) is left, plus T1 (customisable toolbar), whose open questions are all settled.
+Shipping as 2.3.3.**
 
 Measured against `master` at **`8a2dc29`**. Everything below was derived from the XAML and
 `MainViewModel.cs` rather than from memory, and the method is in
@@ -27,7 +27,7 @@ The complaint that prompted it, in the maintainer's words:
 | **P5** | Object actions that are menu-only never appear on right-click | **Done** |
 | **P6** | The same command carries different labels in different places | **Done** |
 | **P7** | Refresh and the log commands are duplicated *within* the menu bar | **Done** |
-| **P8** | The menu bar is organised by nothing in particular | **Agreed, in progress** |
+| **P8** | The menu bar is organised by nothing in particular | **Done** — File/Action/View/Tools/Help |
 | **P9** | There are no keyboard shortcuts anywhere in the app | **Not started** |
 | **T1** | *(feature)* Let the operator choose what is on the toolbar | **Designed, not started** |
 
@@ -289,7 +289,7 @@ Removing items from the middle of a menu leaves separators behind, so the suite 
 separators in a row and for a separator immediately before `</MenuItem>` — a line drawn across an empty
 gap is the visible half of this kind of edit going wrong.
 
-### P8 — The menu bar is organised by nothing in particular
+### P8 — The menu bar is organised by nothing in particular — **DONE**
 
 Current shape, with the odd placements marked:
 
@@ -393,6 +393,48 @@ since it shipped. Nothing replaces it, because a menu kept only to catch a habit
 be a duplicate of something — which is what P7 just finished removing.
 
 Shipping with P4–P7 as **2.3.3**, so the menus are relearned once rather than twice.
+
+### What building it turned up
+
+**The cloud half of the app was never covered by rule 1, and the suite reported green anyway.** The
+test walked `MainViewModel` and stopped. `CloudObjectListViewModel`'s Properties, Enable, Disable and
+Revoke sessions were in no menu at all — P1 gave them a context menu and that was the end of it. The
+same invariant that found the on-prem gaps had been sitting next to this one for three findings
+without seeing it, because it was pointed at one view model. **Half an invariant is worse than none:
+it is the half that reports green.** It now walks both, with the cloud exemptions named the same way
+the on-prem ones are.
+
+**Dotted bindings were invisible to the typo check too.** `{Binding Cloud.ExportAllCsvCommand}` did not
+match `\w+Command`, so the four new ones P8 introduced would have failed exactly as silently as any
+other mistyped binding — greyed out forever, indistinguishable from unavailable. They are now resolved
+for real, by walking the property path on the built type. Each view that uses one names its root view
+model in a small table, so a view that starts using dotted bindings without being listed fails rather
+than being checked against the wrong type. The check found a fifth on its first run
+(`Connection.ConnectCommand` in `SettingsWindow.xaml`), which is how I learnt the roots have to be
+per-view.
+
+**Hiding by VIEW is not the same as hiding by selection**, and the distinction had to be written down
+before the Action menu could exist. P4 established "menu items disable, never hide" — but an Action
+menu serving both views has to hide Unlock in the cloud view, because there is no lockout in Entra to
+clear and the command is not part of that vocabulary at all. The rule, now asserted: **`Visibility` in
+the menu bar may bind only to `IsAdView` or `IsCloudView`. Everything else gates with `CanExecute`.**
+Any other binding fails the suite by name.
+
+**Two `Action` menus, not one with per-item visibility.** `IsAdView => !IsCloudView` is a strict
+complement, so exactly one is ever on screen. It keeps each menu readable, and it saves giving every
+separator visibility logic of its own. It does mean two siblings share `Alt+A`, so the accelerator
+check was refined: a letter is a clash only when it could mean two **different** things, which two
+identically-labelled mutually-exclusive menus cannot.
+
+**The tree's context menu still cannot be checked by the label machinery**, because it is wired with
+`Click=` handlers and `BoundLabels` matches on `{Binding …Command}`. Its ten items are each asserted
+by name instead, and the suite now counts them, so an eleventh cannot slide in unexamined. This is the
+third time that blind spot has mattered in this document.
+
+**`Reset Password…` is the one new command.** Gated on `SelectionIsOneUser` — exactly one user
+selected — rather than looping over a multi-selection. Every reset produces a secret that has to reach
+a different person, and a bulk version would need the post-run report Bulk Create Users has. That is a
+feature, not a menu entry.
 
 ### P9 — There are no keyboard shortcuts anywhere
 
@@ -514,7 +556,7 @@ Two assertions matter more than the rest:
 
 ---
 
-## Rules 1 and 3 are now enforced, not just stated
+## All three rules are now enforced, not just stated
 
 With P1–P5 done, **every command `MainViewModel` exposes is reachable from the menu bar**, and
 `test-ui-placement.ps1` asserts it. A command that slips back out fails the suite by name.
@@ -538,6 +580,24 @@ P6 and P7 added three more that hold across the whole app rather than over one f
 
 Each was mutation-checked by putting the old label back: every one fails and names the command, the
 surface and both labels.
+
+P8 added four more, and widened the first one:
+
+- **Rule 1 now walks `CloudObjectListViewModel` as well as `MainViewModel`**, with a named exemption
+  list for the cloud list's pane furniture and button twins.
+- **Every selection action is in `Action`, and appears exactly once in the whole menu bar.** This is
+  the test the finding asked for, stated directly: one menu to open, everything in it, nothing
+  anywhere else.
+- **`Visibility` in the menu bar binds only to `IsAdView` or `IsCloudView`.** Hiding by view is
+  honest; hiding by anything else is the lesson this audit undoes.
+- **Every dotted binding resolves** against its view's own root view model, by reflection on the built
+  assembly rather than by pattern-matching the name.
+
+Mutation-checked, each failing and naming what it found: a selection command filed in `File`
+("DeleteSelectedCommand appears 2 times in the menu bar"), an `Action` item gated by
+`SelectionHasUsers` ("Visibility bound to SelectionHasUsers"), a cloud command deleted from the menu
+bar, `Cloud.ExportAllCsvCommand` misspelt, two different items given `Alt+U` ("Alt+U means _Unpin from
+Favourites AND Move _Up"), and the tree drifting back to "Create OU Here…".
 
 ## What the first work package changed, beyond the menu entries
 
@@ -571,8 +631,8 @@ already hidden in exactly the cases the gates now disable.
 1. **`ui/menu-completeness` — P1, P2, P3, P4, P5.** ✅ **Done.** The findings that change whether a feature
    is findable at all. Largest was P1 (a new context menu for the cloud list); P2–P5 were menu entries
    bound to commands that already existed, plus the `CanExecute` gates those entries needed.
-2. **`ui/consistency` — P6, P7, P8.** Labels, de-duplication, and the menu reorganisation. **P6 and P7
-   are done**; P8 is the only subjective item here and is worth agreeing before it is built.
+2. **`ui/consistency` — P6, P7, P8.** ✅ **Done.** Labels, de-duplication, and the menu reorganisation.
+   P8 was the only subjective item and was agreed before it was built — see *The agreed shape* above.
 3. **`ui/shortcuts` — P9.** Small and self-contained.
 4. **`ui/custom-toolbar` — T1.** After package 1, for the reason given above.
 

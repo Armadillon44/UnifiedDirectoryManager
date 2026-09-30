@@ -218,6 +218,10 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private bool _selectionHasDisabled;
     [ObservableProperty] private bool _selectionHasEnabled;
     [ObservableProperty] private bool _selectionHasUsers;
+    // Reset Password is the one selection action that is single-target by design. Resetting several
+    // passwords at once needs its own confirmation and its own report of which secrets went where,
+    // and that is a feature, not a menu entry (audit P8).
+    [ObservableProperty] private bool _selectionIsOneUser;
     [ObservableProperty] private bool _selectionHasGroups;
     [ObservableProperty] private bool _hasScenarios;
 
@@ -803,6 +807,44 @@ public partial class MainViewModel : ObservableObject
         else StatusMessage = $"Unlocked {ok} account(s).";
     }
 
+    /// <summary>
+    /// Resets the password of the one selected user. Deliberately refuses a multi-selection rather than
+    /// looping: every reset produces a secret that has to reach a different person, and a bulk version
+    /// would need the post-run report that Bulk Create Users has. Until that exists, one at a time.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(SelectionIsOneUser))]
+    private async Task ResetPasswordSelectedAsync()
+    {
+        var rows = SelectedRowsOrSingle();
+        if (rows.Count != 1 || rows[0].Type != AdObjectType.User)
+        {
+            _dialogs.Alert("Reset password", "Select exactly one user account first.");
+            return;
+        }
+
+        var row = rows[0];
+        var request = _dialogs.PromptPasswordReset(row.Name);
+        if (request is null) return; // cancelled
+
+        // The password itself is never echoed back, here or in the log.
+        var lines = new List<string> { "Set a new password" };
+        if (request.MustChangeAtNextLogon) lines.Add("Require a password change at next logon");
+        if (request.Unlock) lines.Add("Unlock the account");
+        if (!_dialogs.Confirm("Reset password", $"Reset the password for \u201c{row.Name}\u201d?", lines)) return;
+
+        try
+        {
+            await _directory.ResetPasswordAsync(
+                row.DistinguishedName, request.Password, request.MustChangeAtNextLogon, request.Unlock);
+            await List.ReloadAsync();
+            StatusMessage = $"Reset the password for {row.Name}.";
+        }
+        catch (Exception ex)
+        {
+            _dialogs.Alert("Reset password", $"{row.Name}: {DirectoryService.Friendly(ex)}");
+        }
+    }
+
     [RelayCommand(CanExecute = nameof(HasSelection))]
     private async Task MoveSelectedToOuAsync()
     {
@@ -1303,6 +1345,7 @@ public partial class MainViewModel : ObservableObject
         SelectionHasDisabled = rows.Any(r => r.Type is AdObjectType.User or AdObjectType.Computer && r.IsDisabled);
         SelectionHasEnabled = rows.Any(r => r.Type is AdObjectType.User or AdObjectType.Computer && !r.IsDisabled);
         SelectionHasUsers = rows.Any(r => r.Type == AdObjectType.User);
+        SelectionIsOneUser = SelectedRowsOrSingle() is { Count: 1 } one && one[0].Type == AdObjectType.User;
         SelectionHasGroups = rows.Any(r => r.Type == AdObjectType.Group);
 
         // The menu-bar entries for these actions disable with the selection; the context menu hides them.
@@ -1315,6 +1358,7 @@ public partial class MainViewModel : ObservableObject
         CopyGroupsToUserCommand.NotifyCanExecuteChanged();
         ExportGroupMembersCommand.NotifyCanExecuteChanged();
         AppendGroupMembersCommand.NotifyCanExecuteChanged();
+        ResetPasswordSelectedCommand.NotifyCanExecuteChanged();
     }
 
     private List<AdObjectRow> SelectedRowsOrSingle() =>

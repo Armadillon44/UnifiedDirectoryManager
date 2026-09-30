@@ -79,6 +79,51 @@ if ($unknown.Count -gt 0) {
 }
 Check 'every bound command is defined'  0 $unknown.Count
 
+# The check above matches \w+Command, so it never saw a DOTTED binding -- and P8 introduced four of
+# them when File started reaching into the cloud list ({Binding Cloud.ExportAllCsvCommand}). A typo
+# there fails exactly as silently as any other, so these are resolved for real: walk the property path
+# on the built MainViewModel type and require the command to exist at the end of it.
+# A dotted path is relative to the VIEW's own DataContext, so each view that uses one names its root
+# here. A view that starts using dotted bindings without being listed fails the next assertion rather
+# than being checked against the wrong type or skipped.
+$dottedRoots = @{
+    'MainWindow.xaml'     = 'MainViewModel'
+    'SettingsWindow.xaml' = 'SettingsViewModel'
+}
+function VmType([string]$name) {
+    [System.Type]::GetType("UnifiedDirectoryManager.ViewModels.$name, UnifiedDirectoryManager")
+}
+Check 'MainViewModel was loaded'       $true ($null -ne (VmType 'MainViewModel'))
+$dotted = @{}
+foreach ($view in (Get-ChildItem (Join-Path $src 'Views') -Filter '*.xaml' -Recurse)) {
+    $text = Get-Content -Raw $view.FullName
+    foreach ($m in [regex]::Matches($text, '\{Binding\s+((?:\w+\.)+\w+Command)\s*\}')) {
+        $dotted[$m.Groups[1].Value] = $view.Name
+    }
+}
+Check 'there are dotted bindings'       $true ($dotted.Count -ge 5)
+$unlisted = @($dotted.Values | Sort-Object -Unique | Where-Object { -not $dottedRoots.ContainsKey($_) })
+foreach ($u in $unlisted) { Write-Host "          $u uses dotted bindings and names no root" -ForegroundColor Yellow }
+Check 'every such view names its root'  0 $unlisted.Count
+$brokenPath = @()
+foreach ($path in ($dotted.Keys | Sort-Object)) {
+    $view = $dotted[$path]
+    if (-not $dottedRoots.ContainsKey($view)) { continue }
+    $type = VmType $dottedRoots[$view]
+    foreach ($segment in ($path -split '\.')) {
+        if ($null -eq $type) { break }
+        $prop = $type.GetProperty($segment)
+        $type = if ($null -eq $prop) { $null } else { $prop.PropertyType }
+    }
+    if ($null -eq $type) { $brokenPath += "$path  (in $view)" }
+}
+foreach ($b in $brokenPath) { Write-Host "          $b" -ForegroundColor Yellow }
+Check 'every dotted binding resolves'   0 $brokenPath.Count
+# Prove the walk can fail, rather than passing because GetProperty always returns something.
+$cloudType = (VmType 'MainViewModel').GetProperty('Cloud').PropertyType
+Check '  a bad path is caught'          $null ($cloudType.GetProperty('NoSuchCommand'))
+Check '  and a good one is not'         $true ($null -ne $cloudType.GetProperty('ExportAllCsvCommand'))
+
 Write-Host "`n== P1: the cloud list has a context menu ==" -ForegroundColor Cyan
 $cloudXaml = Get-Content -Raw (Join-Path $src 'Views\Controls\CloudObjectListView.xaml')
 Check 'the menu exists'                 $true ($cloudXaml -match '<ListView\.ContextMenu>')
@@ -270,7 +315,9 @@ Check 'and only for users'              $true ([regex]::Match($listXaml, '<MenuI
 
 # The tree's three create entries described one feature three ways. "Here" belongs on the two that
 # create INSIDE the selected container and not on the cloud one, which has no container to create in.
-Check 'Create OU Here is title case'    $true ($mainXaml -match 'Header="Create OU Here…"')
+# "Create OU Here…" became "New OU Here…" when P8 moved it under Action > New, so that all three read
+# as the same kind of thing as their menu-bar entries.
+Check 'New OU Here is title case'       $true ($mainXaml -match 'Header="New OU Here…"')
 Check 'New Group Here matches it'       $true ($mainXaml -match 'Header="New Group Here…"')
 Check 'New Cloud Group has no "Here"'   $true ($mainXaml -match 'Header="New Cloud Group…"')
 
@@ -288,6 +335,7 @@ $gates = @{
     'CopyGroupsToUser'          = 'SelectionHasUsers'
     'ExportGroupMembersAsync'   = 'SelectionHasGroups'
     'AppendGroupMembersAsync'   = 'SelectionHasGroups'
+    'ResetPasswordSelectedAsync' = 'SelectionIsOneUser'
 }
 foreach ($method in ($gates.Keys | Sort-Object)) {
     $want = $gates[$method]
@@ -295,12 +343,13 @@ foreach ($method in ($gates.Keys | Sort-Object)) {
     Check "  $method is gated on $want" $want ($decl.Groups[1].Value)
 }
 
-# None of the new Edit entries may hide themselves.
-$editMenu = [regex]::Match($menuOnly, '(?s)<MenuItem Header="_Edit"[^>]*>.*?\n            </MenuItem>').Value
-Check 'the Edit menu was found'         $true ($editMenu.Length -gt 0)
+# None of these may hide themselves. They lived in Edit when P4 put them in the menu bar; P8 moved
+# them to Action, and the assertion follows rather than being quietly dropped.
+$actionMenu = [regex]::Match($menuOnly, '(?s)<MenuItem Header="_Action" Visibility="\{Binding IsAdView.*?\n            </MenuItem>').Value
+Check 'the AD Action menu was found'    $true ($actionMenu.Length -gt 0)
 foreach ($cmd in 'EnableSelectedCommand', 'DisableSelectedCommand', 'UnlockSelectedCommand',
-                 'MoveSelectedToOuCommand', 'SaveSelectedAsTemplateCommand') {
-    $item = [regex]::Match($editMenu, '<MenuItem[^/]*' + $cmd + '[^/]*/>').Value
+                 'MoveSelectedToOuCommand', 'SaveSelectedAsTemplateCommand', 'ResetPasswordSelectedCommand') {
+    $item = [regex]::Match($actionMenu, '<MenuItem[^/]*' + $cmd + '[^/]*/>').Value
     Check "  $cmd is never hidden" $false ($item -match 'Visibility=')
 }
 
@@ -309,7 +358,8 @@ $sel = [regex]::Match($vmSrc2, '(?s)private void UpdateSelectionState\(\).*?\r?\
 Check 'UpdateSelectionState was found'  $true ($sel.Length -gt 0)
 foreach ($cmd in 'EnableSelectedCommand', 'DisableSelectedCommand', 'UnlockSelectedCommand',
                  'MoveSelectedToOuCommand', 'SaveSelectedAsTemplateCommand', 'CopyUserCommand',
-                 'CopyGroupsToUserCommand', 'ExportGroupMembersCommand', 'AppendGroupMembersCommand') {
+                 'CopyGroupsToUserCommand', 'ExportGroupMembersCommand', 'AppendGroupMembersCommand',
+                 'ResetPasswordSelectedCommand') {
     Check "  it re-evaluates $cmd" $true ($sel -match ([regex]::Escape($cmd) + '\.NotifyCanExecuteChanged\(\)'))
 }
 
@@ -358,12 +408,21 @@ function Region([string]$xml, [string]$openTag, [string]$closeTag) {
 
 function BoundLabels([string]$xml) {
     $out = @{}
-    foreach ($m in [regex]::Matches($xml, '<(?:MenuItem|Button)[\s][^>]*?/?>')) {
+    $path = New-Object System.Collections.Stack   # headers of the open MenuItems, outermost last
+    foreach ($m in [regex]::Matches($xml, '<(?:MenuItem|Button)[\s][^>]*?(/?)>|</MenuItem>')) {
+        if ($m.Value -eq '</MenuItem>') { if ($path.Count -gt 0) { [void]$path.Pop() }; continue }
         $lab = [regex]::Match($m.Value, '(?:Header|Content)="([^"]*)"')
-        $cmd = [regex]::Match($m.Value, 'Command="\{Binding ([A-Za-z0-9_]+)\}"')
-        if (-not $lab.Success -or -not $cmd.Success) { continue }
-        if (-not $out.ContainsKey($cmd.Groups[1].Value)) { $out[$cmd.Groups[1].Value] = @() }
-        $out[$cmd.Groups[1].Value] += (LabelText $lab.Groups[1].Value)
+        $cmd = [regex]::Match($m.Value, 'Command="\{Binding ([A-Za-z0-9_.]+)\}"')
+        $own = if ($lab.Success) { LabelText $lab.Groups[1].Value } else { '' }
+        if ($lab.Success -and $cmd.Success) {
+            $key = $cmd.Groups[1].Value -replace '^Cloud\.', ''   # the cloud pane's own DataContext
+            if (-not $out.ContainsKey($key)) { $out[$key] = @() }
+            $out[$key] += $own
+            # Prefixed with the enclosing submenu, but never with a top-level menu name: "New" is part
+            # of the item's name, "Action" is not.
+            if ($path.Count -ge 2) { $out[$key] += ((LabelText $path.Peek()) + ' ' + $own) }
+        }
+        if ($m.Value -notmatch '^<Button' -and $m.Groups[1].Value -ne '/') { $path.Push($own) }
     }
     return $out
 }
@@ -396,8 +455,14 @@ Check 'every toolbar label matches its menu label' 0 $toolbarDrift.Count
 # what the gesture already said. "Modify…" for "Open Selected…" was not fine -- it is a different word,
 # so nothing connects the two surfaces. The rule: the context label's words appear in the menu label, in
 # order, and the first word is the same, so both sort to the same place in an operator's head.
+# One word may be ADDED rather than dropped: a tree context menu says "New Group Here…" because it was
+# opened on the container being created in, which the menu bar has no way to name. It is listed rather
+# than allowed generally, because "the context menu may add words" is not a rule, it is the absence of
+# one.
+$ContextOnlyWords = @('here')
 function IsShorteningOf([string]$short, [string]$long) {
-    $s = LabelWords $short; $l = LabelWords $long
+    $s = @((LabelWords $short) | Where-Object { $ContextOnlyWords -notcontains $_ })
+    $l = LabelWords $long
     if ($s.Count -eq 0 -or $l.Count -eq 0) { return $false }
     if ($s[0] -ne $l[0]) { return $false }
     $i = 0
@@ -440,6 +505,20 @@ foreach ($pair in @(@('Pin to Favourites', 'PinSelectedNodeCommand'),
 # It opens a window, so it takes an ellipsis, like every other item in the app that opens one.
 Check '  the tree Properties has an ellipsis' $true ($treeCtx -match 'Header="Properties…"')
 
+# The tree's menu is wired with Click= handlers, so BoundLabels cannot see it and the label rules
+# above never reach it -- the same blind spot that let Favourites and OU management go unnoticed until
+# P2 and P3. Each of its items is therefore checked BY NAME above. This counts them, so that adding an
+# eleventh without adding an assertion for it fails here rather than sliding in unexamined.
+$treeItems = @()
+foreach ($m in [regex]::Matches($treeCtx, '<MenuItem[\s][^>]*Header="([^"]*)"')) { $treeItems += $m.Groups[1].Value }
+$treeCovered = @('New OU Here…', 'New Group Here…', 'New Cloud Group…', 'Pin to Favourites',
+                 'Unpin from Favourites', 'Move up', 'Move down', 'Properties…', 'Delete OU',
+                 "Yes, I'm sure…")
+$treeUncovered = @($treeItems | Where-Object { $treeCovered -notcontains $_ })
+foreach ($u in $treeUncovered) { Write-Host "          tree item '$u' has no assertion" -ForegroundColor Yellow }
+Check '  every tree item is accounted for' 0 $treeUncovered.Count
+Check '  and none went missing'            $treeCovered.Count $treeItems.Count
+
 Write-Host "`n== P6: no menu offers one letter twice ==" -ForegroundColor Cyan
 # A duplicate accelerator still works -- WPF cycles through the matches -- but Alt+D landing on Disable
 # or on Delete depending on how many times you press it is not a keyboard shortcut, it is a coin toss.
@@ -465,13 +544,21 @@ $groups = SiblingGroups $menuOnly
 Check 'the menu tree was walked'        $true ($groups.Count -ge 7)
 $dupes = @()
 foreach ($g in $groups) {
-    $letters = @()
+    $byLetter = @{}
     foreach ($h in $g) {
         $k = [regex]::Match($h, '_(.)')
-        if ($k.Success) { $letters += $k.Groups[1].Value.ToUpperInvariant() }
+        if (-not $k.Success) { continue }
+        $letter = $k.Groups[1].Value.ToUpperInvariant()
+        if (-not $byLetter.ContainsKey($letter)) { $byLetter[$letter] = @() }
+        # Two siblings with the SAME header are one item shown two ways -- the AD and cloud Action
+        # menus, which are mutually exclusive by view. A letter is only ambiguous when it could mean
+        # two different things.
+        if ($byLetter[$letter] -notcontains $h) { $byLetter[$letter] += $h }
     }
-    foreach ($grp in ($letters | Group-Object | Where-Object { $_.Count -gt 1 })) {
-        $dupes += ("Alt+" + $grp.Name + " x" + $grp.Count + " among: " + ($g -join ' | '))
+    foreach ($letter in ($byLetter.Keys | Sort-Object)) {
+        if ($byLetter[$letter].Count -gt 1) {
+            $dupes += ("Alt+" + $letter + " means " + ($byLetter[$letter] -join ' AND '))
+        }
     }
 }
 foreach ($d in $dupes) { Write-Host "          $d" -ForegroundColor Yellow }
@@ -480,6 +567,20 @@ Check 'no menu repeats an accelerator'  0 $dupes.Count
 $probe = SiblingGroups '<MenuItem Header="_A"><MenuItem Header="_X" /><MenuItem Header="_Y" /></MenuItem><MenuItem Header="_B"><MenuItem Header="_X" /></MenuItem>'
 Check '  it groups by nesting'          3 $probe.Count
 Check '  cousins may share a letter'    2 (@($probe | Where-Object { $_ -contains '_X' }).Count)
+# Same letter, same header: one item shown two ways. Same letter, different headers: a coin toss.
+function AccelClash([string[]]$headers) {
+    $byLetter = @{}
+    foreach ($h in $headers) {
+        $k = [regex]::Match($h, '_(.)'); if (-not $k.Success) { continue }
+        $l = $k.Groups[1].Value.ToUpperInvariant()
+        if (-not $byLetter.ContainsKey($l)) { $byLetter[$l] = @() }
+        if ($byLetter[$l] -notcontains $h) { $byLetter[$l] += $h }
+    }
+    foreach ($l in $byLetter.Keys) { if ($byLetter[$l].Count -gt 1) { return $true } }
+    return $false
+}
+Check '  twins are not a clash'         $false (AccelClash @('_Action', '_Action'))
+Check '  but two real items are'        $true  (AccelClash @('_Action', '_Advanced Search…'))
 
 Write-Host "`n== P7: nothing is in the menu bar twice ==" -ForegroundColor Cyan
 # Refresh was in File, in View and on the toolbar; the two log commands were in File and in Help, word
@@ -506,6 +607,123 @@ Check '  File does not end on one'      $false ($fileMenu -match '<Separator[^>]
 # The toolbar is allowed to duplicate -- that is what rule 3 says it is for -- so this is not a
 # regression of P7, and saying so here stops someone "fixing" it later.
 Check '  the toolbar may still offer Refresh' $true ($toolbarXml -match 'RefreshCommand')
+
+Write-Host "`n== P8: the menu bar is laid out the way MMC lays one out ==" -ForegroundColor Cyan
+# File / Action / View / Tools / Help, with New as a submenu inside Action. The previous shape had four
+# creates in File and a fifth nowhere, and split actions on the selection across File, Edit and Tools,
+# which is the structural reason the other findings existed.
+$topLevel = @()
+foreach ($m in [regex]::Matches($menuOnly, '(?m)^            <MenuItem Header="([^"]*)"')) {
+    $topLevel += (LabelText $m.Groups[1].Value)
+}
+Check 'the top-level menus are as agreed' 'File|Action|Action|View|Tools|Help' ($topLevel -join '|')
+# Two Action menus, not one with per-item Visibility: IsAdView and IsCloudView are strict complements
+# (IsAdView => !IsCloudView), so exactly one is ever on screen.
+Check '  IsAdView is the complement'     $true ($vmSrc2 -match 'public bool IsAdView => !IsCloudView')
+$adAction    = [regex]::Match($menuOnly, '(?s)<MenuItem Header="_Action" Visibility="\{Binding IsAdView.*?\n            </MenuItem>').Value
+$cloudAction = [regex]::Match($menuOnly, '(?s)<MenuItem Header="_Action" Visibility="\{Binding IsCloudView.*?\n            </MenuItem>').Value
+Check '  an AD Action menu exists'       $true ($adAction.Length -gt 0)
+Check '  a cloud Action menu exists'     $true ($cloudAction.Length -gt 0)
+Check '  Edit is gone'                   $false ($menuOnly -match '<MenuItem Header="_Edit"')
+foreach ($a in $adAction, $cloudAction) {
+    Check '  Action opens with New'      $true ($a -match '<MenuItem Header="_New">')
+}
+
+# Every action on the selected object is in Action, and nowhere else in the menu bar. This is the test
+# the finding asked for: one menu to open, and everything in it.
+$selectionCommands = @(
+    'OpenSelectedCommand', 'EnableSelectedCommand', 'DisableSelectedCommand', 'UnlockSelectedCommand',
+    'ResetPasswordSelectedCommand', 'CopyUserCommand', 'CopyGroupsToUserCommand',
+    'SaveSelectedAsTemplateCommand', 'AddSelectedToGroupsCommand', 'MoveSelectedToOuCommand',
+    'BulkEditCommand', 'ExportGroupMembersCommand', 'AppendGroupMembersCommand', 'DeleteSelectedCommand'
+)
+$strays = @()
+foreach ($cmd in $selectionCommands) {
+    if (-not ($adAction -match [regex]::Escape("{Binding $cmd}"))) { $strays += "$cmd is not in Action" }
+    $everywhere = [regex]::Matches($menuOnly, [regex]::Escape("{Binding $cmd}")).Count
+    if ($everywhere -ne 1) { $strays += "$cmd appears $everywhere times in the menu bar" }
+}
+foreach ($s in $strays) { Write-Host "          $s" -ForegroundColor Yellow }
+Check 'one menu holds the selection actions' 0 $strays.Count
+
+# The list exports write out what you are LOOKING at; the group-member exports write out what you
+# PICKED. That is the line between File and Action, and it is the only reason they are apart.
+$fileMenu2 = [regex]::Match($menuOnly, '(?s)<MenuItem Header="_File">.*?\n            </MenuItem>').Value
+Check '  File exports the list'          $true  ($fileMenu2 -match 'ExportCsvCommand')
+Check '  and the cloud list, both ways'  $true  (($fileMenu2 -match 'Cloud\.ExportCsvCommand') -and ($fileMenu2 -match 'Cloud\.ExportAllCsvCommand'))
+Check '  Action exports the selection'   $true  ($adAction -match 'ExportGroupMembersCommand')
+Check '  File does not'                  $false ($fileMenu2 -match 'ExportGroupMembersCommand')
+
+# Creating an OU joined the other creates; the two items that act on the tree node did not, because a
+# menu that means "the row I picked" or "the folder I picked" depending on the pane is not learnable.
+Check '  New offers OU'                  $true  ($adAction -match 'CreateOuHereCommand')
+$viewMenu2 = [regex]::Match($menuOnly, '(?s)<MenuItem Header="_View">.*?\n            </MenuItem>').Value
+Check '  View keeps OU properties'       $true  ($viewMenu2 -match 'SelectedNodePropertiesCommand')
+Check '  View keeps Delete OU'           $true  ($viewMenu2 -match 'DeleteSelectedOuCommand')
+Check '  Action has neither'             $false (($adAction -match 'SelectedNodePropertiesCommand') -or ($adAction -match 'DeleteSelectedOuCommand'))
+
+Write-Host "`n== P8: the menu bar hides by VIEW, never by selection ==" -ForegroundColor Cyan
+# Hiding by view is honest: a cloud user has no lockout to clear, so Unlock is not part of the cloud
+# vocabulary at all. Hiding by anything else teaches "if it is not here it does not exist", which is the
+# lesson this whole audit is undoing -- selection gates items with CanExecute so they grey out instead.
+$badVis = @()
+foreach ($m in [regex]::Matches($menuOnly, '<MenuItem[\s][^>]*?Visibility="\{Binding ([A-Za-z0-9_.]+)[,}]')) {
+    if ($m.Groups[1].Value -notin 'IsAdView', 'IsCloudView') { $badVis += $m.Groups[1].Value }
+}
+foreach ($b in ($badVis | Sort-Object -Unique)) { Write-Host "          Visibility bound to $b" -ForegroundColor Yellow }
+Check 'menu items hide only by view'    0 $badVis.Count
+# A separator that hides has to hide with the block it separates, or it draws a line across a gap.
+Check '  and so do separators'          $true ($menuOnly -notmatch '<Separator[^>]*Visibility="\{Binding (?!IsAdView|IsCloudView)')
+
+Write-Host "`n== rule 1 now covers the cloud list too ==" -ForegroundColor Cyan
+# Until P8 this test scanned MainViewModel and nothing else, so the cloud list's actions could be -- and
+# were -- in no menu at all while the suite reported the menu bar complete. Half an invariant is worse
+# than none: it is the half that reports green.
+$cloudSrc = Get-Content -Raw (Join-Path $src 'ViewModels\CloudObjectListViewModel.cs')
+$cloudNotInMenuBar = @(
+    'LoadMoreCommand'         # pane furniture: it pages the list, and means nothing away from it
+    'SearchCommand'           # the search box above the list IS the command
+    'EnableCheckedCommand'    # the button twins of the three selection commands that ARE in the menu;
+    'DisableCheckedCommand'   # they act strictly on the checked set, which is what the count beside
+    'RevokeCheckedCommand'    # them and their greying-out promise
+    'RefreshCommand'          # View > Refresh already refreshes whichever list is showing
+    'ExportAllCsvCommand'     # in File, bound through Cloud. -- see below
+    'ExportCsvCommand'        # likewise
+)
+$cloudCommands = @()
+foreach ($m in [regex]::Matches($cloudSrc, '\[RelayCommand[^\]]*\]\s*(?:private|public)\s+(?:async\s+)?(?:Task|void)\s+(\w+?)(Async)?\s*\(')) {
+    $cloudCommands += ($m.Groups[1].Value + 'Command')
+}
+$cloudCommands = @($cloudCommands | Sort-Object -Unique)
+Check 'CloudObjectListViewModel has commands' $true ($cloudCommands.Count -ge 10)
+$cloudMissing = @()
+foreach ($cmd in $cloudCommands) {
+    if ($cloudNotInMenuBar -contains $cmd) { continue }
+    if (-not ($menuOnly -match [regex]::Escape("{Binding Cloud.$cmd}"))) { $cloudMissing += $cmd }
+}
+foreach ($m in $cloudMissing) { Write-Host "          $m" -ForegroundColor Yellow }
+Check 'every cloud command is in the menu bar' 0 $cloudMissing.Count
+# The two exempted exports really are there, just reached through File rather than Action.
+foreach ($cmd in 'ExportCsvCommand', 'ExportAllCsvCommand') {
+    Check "  File carries Cloud.$cmd" $true ($menuOnly -match [regex]::Escape("{Binding Cloud.$cmd}"))
+}
+
+Write-Host "`n== P6 again: the cloud context menu shortens the cloud Action menu ==" -ForegroundColor Cyan
+# The cloud list got a context menu in P1 and a menu-bar home in P8, so the same rule now applies to it.
+$cloudXaml   = Get-Content -Raw (Join-Path $src 'Views\Controls\CloudObjectListView.xaml')
+$cloudCtxXml = Region $cloudXaml '<ContextMenu' '</ContextMenu>'
+$cloudLabels = BoundLabels $cloudCtxXml
+Check 'the cloud context menu was found' $true ($cloudLabels.Count -ge 4)
+$cloudDrift = @()
+foreach ($cmd in ($cloudLabels.Keys | Sort-Object)) {
+    if (-not $menuLabels.ContainsKey($cmd)) { $cloudDrift += "$cmd is in no menu"; continue }
+    $c = $cloudLabels[$cmd][0]
+    $ok = $false
+    foreach ($m in $menuLabels[$cmd]) { if (IsShorteningOf $c $m) { $ok = $true } }
+    if (-not $ok) { $cloudDrift += ($cmd + ": context '" + $c + "' vs menu '" + $menuLabels[$cmd][0] + "'") }
+}
+foreach ($d in $cloudDrift) { Write-Host "          $d" -ForegroundColor Yellow }
+Check 'every cloud context label shortens its menu label' 0 $cloudDrift.Count
 
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

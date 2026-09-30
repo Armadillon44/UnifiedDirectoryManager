@@ -5,62 +5,116 @@
         xmlns:ctrl="clr-namespace:UnifiedDirectoryManager.Views.Controls"
         Title="Unified Directory Manager" Height="760" Width="1240" WindowStartupLocation="CenterScreen">
     <DockPanel>
-        <!-- Menu bar -->
+        <!--
+          Menu bar, laid out the way MMC lays one out: File / Action / View / Tools / Help, with New as a
+          submenu inside Action. Audit finding P8 — the previous shape had four creates in File and a
+          fifth nowhere, and split actions on the selection across File, Edit and Tools, so knowing where
+          one thing lived predicted nothing about the next. ADUC, DNS, DHCP and Certificates all use this
+          layout, so it is the one an AD administrator already knows before they look.
+
+          Two rules hold across every item below and are asserted by test-ui-placement:
+
+            Visibility binds ONLY to IsAdView or IsCloudView. Hiding by VIEW is honest — a cloud user has
+            no lockout to clear, so Unlock does not belong in the cloud vocabulary at all. Hiding by
+            SELECTION is not: it teaches "if it is not here it does not exist", which is the lesson this
+            whole audit is undoing. Selection gates items with CanExecute, so they grey out instead.
+
+            Every command either view model exposes is reachable from here. Rule 1, and it now covers the
+            cloud list too, which until P8 had its actions in no menu at all.
+        -->
         <Menu DockPanel.Dock="Top">
             <MenuItem Header="_File">
-                <MenuItem Header="_New User…" Command="{Binding NewUserCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <MenuItem Header="_Bulk Create Users…" Command="{Binding BulkCreateUsersCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <MenuItem Header="New _Group…" Command="{Binding NewGroupCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <MenuItem Header="New _Cloud Group…" Command="{Binding NewCloudGroupCommand}" Visibility="{Binding IsCloudView, Converter={StaticResource BoolToVis}}" />
-                <MenuItem Header="_Properties…" Command="{Binding OpenSelectedCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <Separator Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
+                <!-- Exports write out the LIST you are looking at, not the rows you picked — which is why
+                     they are here and Export Group Members is in Action. The cloud list makes a real
+                     distinction between the page it has loaded and everything behind it, so both of its
+                     exports appear rather than one of them being chosen silently. -->
                 <MenuItem Header="_Export List to CSV…" Command="{Binding ExportCsvCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <MenuItem Header="Export Group _Members to CSV…" Command="{Binding ExportGroupMembersCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <MenuItem Header="_Append Group Members to CSV…" Command="{Binding AppendGroupMembersCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
+                <MenuItem Header="Export _Loaded to CSV…" Command="{Binding Cloud.ExportCsvCommand}" Visibility="{Binding IsCloudView, Converter={StaticResource BoolToVis}}" />
+                <MenuItem Header="Export _All to CSV…" Command="{Binding Cloud.ExportAllCsvCommand}" Visibility="{Binding IsCloudView, Converter={StaticResource BoolToVis}}" />
                 <Separator />
                 <MenuItem Header="_Settings…" Command="{Binding OpenSettingsCommand}" />
                 <Separator />
                 <MenuItem Header="E_xit" Command="{Binding ExitCommand}" />
             </MenuItem>
-            <!--
-              Grouped by what each item acts on: account state, then the copy/derive actions, then the ones
-              that move or change the selection wholesale, then the destructive one on its own.
 
-              Enable / Disable / Unlock / Move to OU / Save as Template were right-click-only (audit P4).
-              Every one is disabled rather than hidden when it does not apply — a menu bar is the index of
-              what the app can do, and an item that vanishes teaches that the feature does not exist.
+            <!--
+              Action, on-prem. There are two Action menus rather than one with per-item Visibility: the
+              menu swaps wholesale with the view, IsAdView and IsCloudView are strict complements so
+              exactly one is ever shown, and separators would otherwise need visibility logic of their own.
+              Grouped by what each item acts on: identity, then account state, then the copy/derive
+              actions, then the ones that move or change the whole selection, then the destructive one.
             -->
-            <MenuItem Header="_Edit" IsEnabled="{Binding IsAdView}">
-                <MenuItem Header="_Advanced Search…" Command="{Binding AdvancedSearchCommand}" />
+            <MenuItem Header="_Action" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}">
+                <MenuItem Header="_New">
+                    <MenuItem Header="_User…" Command="{Binding NewUserCommand}" />
+                    <MenuItem Header="_Bulk Create Users…" Command="{Binding BulkCreateUsersCommand}" />
+                    <MenuItem Header="_Group…" Command="{Binding NewGroupCommand}" />
+                    <!-- Creates under the selected TREE node, like the tree's own right-click entry. -->
+                    <MenuItem Header="_OU…" Command="{Binding CreateOuHereCommand}" />
+                </MenuItem>
+                <Separator />
+                <MenuItem Header="_Properties…" Command="{Binding OpenSelectedCommand}" />
                 <Separator />
                 <MenuItem Header="_Enable Account(s)" Command="{Binding EnableSelectedCommand}" />
                 <MenuItem Header="_Disable Account(s)" Command="{Binding DisableSelectedCommand}" />
-                <MenuItem Header="_Unlock Account(s)" Command="{Binding UnlockSelectedCommand}" />
+                <MenuItem Header="Un_lock Account(s)" Command="{Binding UnlockSelectedCommand}" />
+                <MenuItem Header="_Reset Password…" Command="{Binding ResetPasswordSelectedCommand}" />
                 <Separator />
                 <MenuItem Header="Cop_y User…" Command="{Binding CopyUserCommand}" />
-                <MenuItem Header="Copy _Groups to User…" Command="{Binding CopyGroupsToUserCommand}" />
+                <MenuItem Header="Copy Groups to _User…" Command="{Binding CopyGroupsToUserCommand}" />
                 <MenuItem Header="Save as Te_mplate…" Command="{Binding SaveSelectedAsTemplateCommand}" />
                 <Separator />
                 <MenuItem Header="Add to Gr_oups…" Command="{Binding AddSelectedToGroupsCommand}" />
                 <MenuItem Header="Mo_ve to OU…" Command="{Binding MoveSelectedToOuCommand}" />
-                <MenuItem Header="_Bulk Edit…" Command="{Binding BulkEditCommand}" />
+                <MenuItem Header="Bul_k Edit…" Command="{Binding BulkEditCommand}" />
                 <Separator />
-                <MenuItem Header="Delete _Selected…" Command="{Binding DeleteSelectedCommand}" />
+                <!-- These act on the groups you SELECTED, unlike File's list export. -->
+                <MenuItem Header="Export _Group Members to CSV…" Command="{Binding ExportGroupMembersCommand}" />
+                <MenuItem Header="Append Group Members to _CSV…" Command="{Binding AppendGroupMembersCommand}" />
+                <MenuItem Header="Run _Scenario on Selected" ItemsSource="{Binding ScenarioMenuItems}" IsEnabled="{Binding HasScenarios}">
+                    <MenuItem.ItemContainerStyle>
+                        <Style TargetType="MenuItem">
+                            <Setter Property="Header" Value="{Binding Name}" />
+                            <Setter Property="Command" Value="{Binding RunCommand}" />
+                        </Style>
+                    </MenuItem.ItemContainerStyle>
+                </MenuItem>
                 <Separator />
-                <MenuItem Header="User _Templates…" Command="{Binding ManageTemplatesCommand}" />
+                <MenuItem Header="Delete Selec_ted…" Command="{Binding DeleteSelectedCommand}" />
             </MenuItem>
+
+            <!--
+              Action, cloud. Same menu, same position, contents following the view. Until P8 none of these
+              were in the menu bar at all: they live on CloudObjectListViewModel, and rule 1's test only
+              ever scanned MainViewModel, so the cloud half of the app quietly taught the opposite lesson
+              to the on-prem half.
+            -->
+            <MenuItem Header="_Action" Visibility="{Binding IsCloudView, Converter={StaticResource BoolToVis}}">
+                <MenuItem Header="_New">
+                    <MenuItem Header="_Cloud Group…" Command="{Binding NewCloudGroupCommand}" />
+                </MenuItem>
+                <Separator />
+                <MenuItem Header="_Properties…" Command="{Binding Cloud.OpenSelectedCommand}" />
+                <Separator />
+                <MenuItem Header="_Enable Account(s)" Command="{Binding Cloud.EnableSelectedCommand}" />
+                <MenuItem Header="_Disable Account(s)" Command="{Binding Cloud.DisableSelectedCommand}" />
+                <MenuItem Header="_Revoke Sessions" Command="{Binding Cloud.RevokeSelectedCommand}" />
+                
+            </MenuItem>
+
             <MenuItem Header="_View">
-                <MenuItem Header="Toggle Pane _Dock (Right / Bottom)" Command="{Binding ToggleDockCommand}" />
                 <MenuItem Header="_Refresh" Command="{Binding RefreshCommand}" />
+                <MenuItem Header="Toggle Pane _Dock (Right / Bottom)" Command="{Binding ToggleDockCommand}" />
                 <Separator />
                 <!--
-                  Both submenus act on the SELECTED tree node, and both exist because audit findings P2 and
-                  P3 found them reachable only by right-clicking the tree. Favourites is a whole feature
-                  that was invisible unless an operator happened to guess the gesture.
+                  Both submenus act on the SELECTED TREE NODE, not on the list selection, which is why
+                  they are here and not in Action. Keeping the two apart is the whole point: one menu
+                  meaning "the row I picked" and another meaning "the folder I picked" is learnable; one
+                  menu that means whichever pane you touched last is not.
 
-                  Items stay ENABLED-or-disabled rather than shown-or-hidden here, unlike the context menu:
-                  a menu bar is an index, and an item that vanishes teaches that the feature does not
-                  exist — which is the very lesson this audit is undoing.
+                  Favourites is a whole feature that was invisible unless an operator guessed the
+                  right-click gesture (audit findings P2 and P3). Creating an OU used to be here too and
+                  moved to Action ▸ New with the other creates; Properties and Delete OU stayed.
                 -->
                 <MenuItem Header="_Favourites">
                     <MenuItem Header="_Pin to Favourites" Command="{Binding PinSelectedNodeCommand}" />
@@ -70,25 +124,22 @@
                     <MenuItem Header="Move _Down" Command="{Binding MoveSelectedFavoriteDownCommand}" />
                 </MenuItem>
                 <MenuItem Header="Selected F_older">
-                    <MenuItem Header="_Create OU Here…" Command="{Binding CreateOuHereCommand}" />
                     <MenuItem Header="_Properties…" Command="{Binding SelectedNodePropertiesCommand}" />
                     <Separator />
                     <MenuItem Header="_Delete OU…" Command="{Binding DeleteSelectedOuCommand}" />
                 </MenuItem>
             </MenuItem>
+
             <MenuItem Header="_Tools">
+                <!-- Finding things and managing the app's own machinery. Advanced Search is a find, not an
+                     edit, which is what it was filed under before P8. -->
+                <MenuItem Header="_Advanced Search…" Command="{Binding AdvancedSearchCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
+                <Separator Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="_Entra Connect Delta Sync…" Command="{Binding EntraSyncCommand}" />
-                <Separator />
-                <MenuItem Header="Run _Scenario on Selected" ItemsSource="{Binding ScenarioMenuItems}" IsEnabled="{Binding HasScenarios}">
-                    <MenuItem.ItemContainerStyle>
-                        <Style TargetType="MenuItem">
-                            <Setter Property="Header" Value="{Binding Name}" />
-                            <Setter Property="Command" Value="{Binding RunCommand}" />
-                        </Style>
-                    </MenuItem.ItemContainerStyle>
-                </MenuItem>
                 <MenuItem Header="_Manage Scenarios…" Command="{Binding ManageScenariosCommand}" />
+                <MenuItem Header="User _Templates…" Command="{Binding ManageTemplatesCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
             </MenuItem>
+
             <MenuItem Header="_Help">
                 <MenuItem Header="View _README…" Command="{Binding ViewReadmeCommand}" />
                 <Separator />
@@ -182,7 +233,7 @@
                               PreviewMouseRightButtonDown="OnNodePreviewMouseRightButtonDown">
                                 <StackPanel.ContextMenu>
                                     <ContextMenu>
-                                        <MenuItem Header="Create OU Here…" Click="OnNodeCreateOuClick"
+                                        <MenuItem Header="New OU Here…" Click="OnNodeCreateOuClick"
                                                   Visibility="{Binding CanCreateChildOu, Converter={StaticResource BoolToVis}}" />
                                         <!-- Groups are legal in plain containers (CN=Users) as well as OUs, so this
                                              is gated on IsContainerNode rather than the OU-only CanCreateChildOu. -->

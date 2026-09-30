@@ -143,7 +143,7 @@ it has to reach you verbatim to be diagnosable.
 - A yellow bar appears across the top when on-prem AD is not bound, with a **Connect…** button. The
   app stays usable for cloud work while it is showing.
 
-**Double-click any row** (or **File ▸ Properties…**) to edit that object in its own window;
+**Double-click any row** (or **Action ▸ Properties…**) to edit that object in its own window;
 multiple editor windows can be open at once. The list refreshes automatically after edits, so
 disabling a user immediately greys it.
 
@@ -177,31 +177,45 @@ tells you whether there is a counterpart at all.
 
 ## Menus
 
-A standard **File / Edit / View / Tools / Help** menu bar exposes every action. *(2.3.3.)* **Every
-command in the app is on it** — if something can be done, it has an entry here, even where right-click is
-the faster way to do it. An entry that does not apply to what you have selected is **greyed out rather
-than hidden**, so the menus stay a complete list of what the app can do.
+*(2.3.3.)* The menu bar is **File / Action / View / Tools / Help**, laid out the way ADUC and every
+other MMC snap-in lay one out — so if you know where something is in Active Directory Users and
+Computers, you already know where it is here. **Every command in the app is on it.** If something can
+be done, it has an entry, even where right-click is the faster way to do it. An entry that does not
+apply to what you have selected is **greyed out rather than hidden**, so the menus stay a complete
+list of what the app can do.
 
-- **File** — New User…, Bulk Create Users…, New Group…, **New Cloud Group…** (in the cloud view),
-  Properties…, Export List to CSV…, **Export Group Members to CSV…**, **Append Group Members to
-  CSV…**, Settings…, Exit.
-- **Edit** — grouped by what each item acts on: Advanced Search… | **Enable / Disable / Unlock
-  Account(s)** | Copy User…, Copy Groups to User…, **Save as Template…** | Add to Groups…,
-  **Move to OU…**, Bulk Edit… | Delete Selected… | User Templates…. The whole menu is disabled
-  in the cloud view, because every item on it acts on on-prem objects.
-- **View** — Toggle Pane Dock (Right / Bottom), **Refresh**, **Favourites** (Pin to Favourites / Unpin
-  from Favourites / Move Up / Move Down) and **Selected Folder** (Create OU Here… / Properties… /
-  Delete OU…), the last two acting on whichever folder is selected in the tree.
-- **Tools** — Entra Connect Delta Sync…, **Run Scenario on Selected** (a submenu of your saved
-  scenarios), Manage Scenarios….
-- **Help** — View README…, **View Log File…**, **Open Logs Folder**, About Unified Directory
-  Manager….
+- **File** — writes out **the list you are looking at**: Export List to CSV… in the AD view, or
+  **Export Loaded to CSV…** and **Export All to CSV…** in the cloud view (the page already fetched,
+  versus everything behind it). Then Settings… and Exit.
+- **Action** — everything you can do **to what you have selected**, and the only menu you need for
+  that. It opens with a **New** submenu (User…, Bulk Create Users…, Group…, OU…), then:
+  Properties… | Enable / Disable / Unlock Account(s), **Reset Password…** | Copy User…, Copy Groups
+  to User…, Save as Template… | Add to Groups…, Move to OU…, Bulk Edit… | Export Group Members to
+  CSV…, Append Group Members to CSV…, Run Scenario on Selected | Delete Selected….
+  **In the cloud view the same menu shows the cloud vocabulary instead**: New ▸ Cloud Group…,
+  Properties…, Enable / Disable Account(s), Revoke Sessions. Items a cloud object cannot have — there
+  is no lockout in Entra to clear — are not listed there at all.
+- **View** — Refresh, Toggle Pane Dock (Right / Bottom), then two submenus that act on **the folder
+  selected in the tree** rather than on the list: **Favourites** (Pin to Favourites / Unpin from
+  Favourites / Move Up / Move Down) and **Selected Folder** (Properties… / Delete OU…).
+- **Tools** — Advanced Search…, Entra Connect Delta Sync…, Manage Scenarios…, User Templates….
+  Finding things, and managing the app's own machinery.
+- **Help** — View README…, View Log File…, Open Logs Folder, About Unified Directory Manager….
 
-*(2.3.3.)* Two things moved. **Refresh** was in File, in View and on the toolbar; it is now in View and
-on the toolbar, where you are already looking at the thing being refreshed. **View Log File…** and
-**Open Logs Folder** were in File *and* in Help, word for word; Help keeps them. A command that appears
-in two menus does not become easier to find — it just means neither menu is the answer to "where does
-this live?".
+**If you are upgrading from 2.3.2 or earlier, the Edit menu is gone.** Everything that was in it is in
+**Action**, along with the creates that used to be in File and the four things that were only ever on
+right-click. The rule to carry: **File** is about the list, **Action** is about the selection, **View**
+is about the tree, **Tools** is about finding things and about the app itself.
+
+*(2.3.3.)* **Refresh** was in File, in View and on the toolbar; it is now in View and on the toolbar,
+where you are already looking at the thing being refreshed. **View Log File…** and **Open Logs
+Folder** were in File *and* in Help, word for word; Help keeps them. A command that appears in two
+menus does not become easier to find — it just means neither menu is the answer to "where does this
+live?".
+
+*(2.3.3.)* **Reset Password…** is in **Action** as well as on the edit pane. It works on **one** user
+at a time and is greyed out otherwise: every reset produces a secret that has to reach a different
+person, which is a different job from ticking a box on fifty accounts.
 
 *(2.3.3.)* Labels no longer change between surfaces. The toolbar button, the menu item and the
 right-click entry for one command now use one wording: what was **Templates…** on the toolbar and
@@ -213,16 +227,17 @@ doing. All three now say **Properties…**.
 ## Favourites
 
 *(2.3.3.)* Everything here is also on the menu bar under **View ▸ Favourites** (Pin to Favourites /
-Unpin from Favourites / Move Up / Move Down) and **View ▸ Selected Folder** (Create OU Here… / Properties… / Delete OU…), acting on whichever
-folder is selected in the tree. Before that these were reachable only by right-clicking a tree node, so an
+Unpin from Favourites / Move Up / Move Down) and **View ▸ Selected Folder** (Properties… / Delete OU…), acting on whichever
+folder is selected in the tree. Creating one moved to **Action ▸ New ▸ OU…** with the other
+creates. Before that these were reachable only by right-clicking a tree node, so an
 operator who never tried that gesture had no way of knowing favourites existed at all.
 
 *(New in 2.3.0.)* Pin the containers and searches you use constantly to a **Favourites** row at the
 top of the tree, so they are one click away instead of a drill-down.
 
 - **Pin a container** — right-click an OU, a container or the domain root and choose
-  **Pin to Favourites**.
-- **Pin a saved search** — open **Edit ▸ Advanced Search…**, select a search in the *Saved search*
+  **Pin to Favourites**, or use **View ▸ Favourites ▸ Pin to Favourites**.
+- **Pin a saved search** — open **Tools ▸ Advanced Search…**, select a search in the *Saved search*
   combo, and press **Pin**. The button reads **Unpin** when the selected search is already pinned,
   and is disabled until you select one. Save the search first: the pin stores its **name**.
 - **Reorder** — **Move up** / **Move down** on a pinned row's own right-click menu. New pins are
@@ -267,7 +282,7 @@ load to everything beneath it.
 
 ### Advanced search
 
-**Edit ▸ Advanced Search…** builds conditions from friendly attribute names and an operator (equals
+**Tools ▸ Advanced Search…** builds conditions from friendly attribute names and an operator (equals
 / contains / starts-with / present / …), combined with **Match ALL conditions** or **Match ANY
 condition**. Set a **Scope**, add one or more OUs under **Search in:** with **Add OU…** (leave it
 empty to search the whole domain), or tick **Use raw LDAP filter (advanced)** and type the filter
@@ -317,7 +332,7 @@ Right-click an OU or the domain root in the tree:
 ## Groups: create, modify, delete
 
 **Create** — right-click an OU (or the domain root) in the tree and choose **New Group Here…**, or
-use **File ▸ New Group…** and pick the OU with the **Browse…** button. The dialog takes the **group
+use **Action ▸ New ▸ Group…** and pick the OU with the **Browse…** button. The dialog takes the **group
 name**, a **logon name** derived from it (editable; group names keep their case, spaces, and hyphens
 rather than being flattened the way user logon names are), **Group scope** (Global / Domain local /
 Universal), **Group type** (Security / Distribution), description, initial **members**, and *protect
@@ -334,7 +349,7 @@ happens they are retried one at a time, so the legal ones land and the warning c
 explanation (Active Directory requires an intermediate hop through Universal), rather than being
 sent to the directory to fail.
 
-**Delete** — select one or more groups in the list and use **Edit ▸ Delete Selected…** or the row
+**Delete** — select one or more groups in the list and use **Action ▸ Delete Selected…** or the row
 right-click. The confirmation lists exactly what will be removed. Deleting **several** objects at once
 additionally makes you **type the number of objects**; deleting a single one is one confirmation, with
 no phrase — the dialog already names the one thing at risk. (An OU is the stricter case: a two-step
@@ -479,7 +494,7 @@ on empty space below the last row does nothing. It is not wired to the **Member 
 
 ## Add selected users to groups
 
-Select one or more objects in the list and use **Edit ▸ Add to Groups…** (or the toolbar
+Select one or more objects in the list and use **Action ▸ Add to Groups…** (or the toolbar
 button) to pick multiple groups and add every selected object to all of them in one confirmed batch,
 with a per-object result report.
 
@@ -489,7 +504,7 @@ is written through that service.
 
 ## Copy groups to user
 
-**Edit ▸ Copy Groups to User…** copies one user's memberships onto another. Untick any you don't want,
+**Action ▸ Copy Groups to User…** copies one user's memberships onto another. Untick any you don't want,
 pick the target with **Pick user…**, then **Copy**. The target's existing memberships are left as-is;
 this only adds. Each row is labelled with the backend that owns it — *Exchange* rather than *Cloud*
 for a distribution list — before you apply anything, and each membership is written through that
@@ -503,7 +518,7 @@ Every object's outcome is reported individually and one failure never aborts the
 
 ## New-user templates
 
-Create / save / recall / edit / delete templates (**User Templates…** button, **Edit ▸ User
+Create / save / recall / edit / delete templates (**User Templates…** button, **Tools ▸ User
 Templates…**, or from the New User wizard). A template stores a target OU, a UPN suffix, a country
 (pick by friendly name; it stores `co`, `c`, and `countryCode` together), attribute defaults with
 **tokens**, and groups to add. Supported tokens:
@@ -560,7 +575,7 @@ drag will not cross lines, so there is no way to select the whole pane by hand.
 
 ## Copy user
 
-**Edit ▸ Copy User…** (or **Copy user…** on the row right-click) creates a new user from an existing
+**Action ▸ Copy User…** (or **Copy user…** on the row right-click) creates a new user from an existing
 one. Naming autofills from the chosen naming-convention template; address, office, title, department,
 manager and group memberships are copied from the source, with the groups editable on the right. It
 offers the same delta sync and Temporary Access Pass steps as the New User wizard.
@@ -575,7 +590,7 @@ made from that template.
 
 ## Bulk create users
 
-**File ▸ Bulk Create Users…** (or the **Bulk Create Users…** toolbar button) provisions many users in one
+**Action ▸ New ▸ Bulk Create Users…** (or the **Bulk Create Users…** toolbar button) provisions many users in one
 pass. Pick a batch **template** (it supplies the defaults — target OU, UPN suffix, attribute/token
 defaults, on-prem and cloud groups), then build the batch list two ways:
 
@@ -954,7 +969,7 @@ cloud pane only; the on-premises AD edit pane does not have it.
 
 ### Creating cloud groups
 
-*(New in 2.3.0.)* **File ▸ New Cloud Group…** in the cloud view, or **New Cloud Group…** on the
+*(New in 2.3.0.)* **Action ▸ New ▸ Cloud Group…** in the cloud view, or **New Cloud Group…** on the
 right-click menu of the **Entra ID ▸ Groups** or **Exchange Online ▸ Distribution groups** node
 (which preselects the matching type). The **Group type** drop-down names its own backend:
 *Security (Entra ID)*, *Microsoft 365 (Entra ID)*, *Distribution list (Exchange Online)* and
