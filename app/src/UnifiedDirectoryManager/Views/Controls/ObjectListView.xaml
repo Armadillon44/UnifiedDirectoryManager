@@ -69,6 +69,10 @@
                               Visibility="{Binding SelectionHasUsers, Converter={StaticResource BoolToVis}}" />
                     <MenuItem Header="Move to OU…" Command="{Binding MoveSelectedToOuCommand}" />
                     <MenuItem Header="Bulk edit…" Command="{Binding BulkEditCommand}" />
+                    <MenuItem Header="Export members to CSV…" Command="{Binding ExportGroupMembersCommand}"
+                              Visibility="{Binding SelectionHasGroups, Converter={StaticResource BoolToVis}}" />
+                    <MenuItem Header="Append members to a CSV…" Command="{Binding AppendGroupMembersCommand}"
+                              Visibility="{Binding SelectionHasGroups, Converter={StaticResource BoolToVis}}" />
                     <MenuItem Header="Run scenario" ItemsSource="{Binding ScenarioMenuItems}" IsEnabled="{Binding HasScenarios}">
                         <MenuItem.ItemContainerStyle>
                             <Style TargetType="MenuItem">

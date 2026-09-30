@@ -218,6 +218,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private bool _selectionHasDisabled;
     [ObservableProperty] private bool _selectionHasEnabled;
     [ObservableProperty] private bool _selectionHasUsers;
+    [ObservableProperty] private bool _selectionHasGroups;
     [ObservableProperty] private bool _hasScenarios;
 
     public bool EditDockRight => EditDock == EditPaneDock.Right;
@@ -1236,6 +1237,7 @@ public partial class MainViewModel : ObservableObject
         SelectionHasDisabled = rows.Any(r => r.Type is AdObjectType.User or AdObjectType.Computer && r.IsDisabled);
         SelectionHasEnabled = rows.Any(r => r.Type is AdObjectType.User or AdObjectType.Computer && !r.IsDisabled);
         SelectionHasUsers = rows.Any(r => r.Type == AdObjectType.User);
+        SelectionHasGroups = rows.Any(r => r.Type == AdObjectType.Group);
     }
 
     private List<AdObjectRow> SelectedRowsOrSingle() =>
@@ -1288,6 +1290,113 @@ public partial class MainViewModel : ObservableObject
         catch (Exception ex)
         {
             _dialogs.Alert("Export failed", ex.Message);
+        }
+    }
+
+    /// <summary>Writes the selected groups' members to a new CSV, replacing anything already at that path.</summary>
+    [RelayCommand]
+    private Task ExportGroupMembersAsync() => ExportGroupMembersAsync(append: false);
+
+    /// <summary>
+    /// Adds the selected groups' members to the end of an existing export.
+    ///
+    /// A separate command rather than a prompt on the save path, because the save dialog's own "replace
+    /// this file?" already means replace — answering it and then being asked a second, opposite question
+    /// is how somebody overwrites a file they meant to add to.
+    /// </summary>
+    [RelayCommand]
+    private Task AppendGroupMembersAsync() => ExportGroupMembersAsync(append: true);
+
+    private async Task ExportGroupMembersAsync(bool append)
+    {
+        var groups = SelectedRowsOrSingle().Where(r => r.Type == AdObjectType.Group).ToList();
+        if (groups.Count == 0)
+        {
+            _dialogs.Alert("Export group members", "Select one or more groups first.");
+            return;
+        }
+
+        string? path;
+        GroupMemberCsv.AppendPlan plan;
+        if (append)
+        {
+            path = _dialogs.PromptOpenFile("CSV files (*.csv)|*.csv|All files (*.*)|*.*");
+            if (path is null) return;
+            plan = GroupMemberCsv.PlanAppend(path);
+            if (!plan.CanWrite)
+            {
+                // Refused rather than written: a file with different columns would stop parsing as either
+                // thing, and nobody would find out until they opened it.
+                _dialogs.Alert("Can't append to that file", plan.Problem ?? "That file cannot be appended to.");
+                return;
+            }
+        }
+        else
+        {
+            var suggested = groups.Count == 1
+                ? $"{OperationLog.SafeFileNamePart(groups[0].Name)}-members.csv"
+                : "group-members.csv";
+            path = _dialogs.PromptSaveFile("CSV files (*.csv)|*.csv|All files (*.*)|*.*", suggested);
+            if (path is null) return;
+            plan = GroupMemberCsv.FreshFile;
+        }
+
+        var rows = new List<string>();
+        var incomplete = new List<string>();
+        var unreadable = new List<string>();
+        var members = 0;
+
+        try
+        {
+            for (var i = 0; i < groups.Count; i++)
+            {
+                var group = groups[i];
+                StatusMessage = $"Reading members… ({i + 1}/{groups.Count}) {group.Name}";
+                var result = await _directory.GetGroupMembersAsync(group.DistinguishedName);
+
+                rows.AddRange(GroupMemberCsv.Rows(group.Name, group.DistinguishedName, result));
+                members += result.Members.Count;
+                if (result.Truncated) incomplete.Add(group.Name);
+                else if (result.Members.Count == 0 && result.Unconfirmed) unreadable.Add(group.Name);
+            }
+
+            var dir = System.IO.Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir)) System.IO.Directory.CreateDirectory(dir);
+
+            var text = GroupMemberCsv.Compose(plan, rows);
+            if (append)
+                // No encoding argument: appending one would write a second byte-order mark into the middle
+                // of the file. The header this is being added under already carries the file's encoding.
+                System.IO.File.AppendAllText(path, text);
+            else
+                System.IO.File.WriteAllText(path, text, new System.Text.UTF8Encoding(true));
+
+            AppLog.Instance.Info(
+                $"{(append ? "Appended" : "Exported")} {members} member(s) from {groups.Count} group(s) to {path}.");
+
+            // The warnings go in the message as well as in the file's Status column: an operator who is
+            // about to act on this needs to see them now, not when somebody opens the sheet next week.
+            var summary = new StringBuilder();
+            summary.Append($"{(append ? "Added" : "Exported")} {members} member(s) from {groups.Count} group(s):")
+                   .Append(Environment.NewLine).Append(path);
+            if (incomplete.Count > 0)
+                summary.Append(Environment.NewLine).Append(Environment.NewLine)
+                       .Append($"⚠ INCOMPLETE — the member list was cut short for: {string.Join(", ", incomplete)}. ")
+                       .Append("Those groups have more members than the file shows.");
+            if (unreadable.Count > 0)
+                summary.Append(Environment.NewLine).Append(Environment.NewLine)
+                       .Append($"⚠ UNREADABLE — membership could not be read for: {string.Join(", ", unreadable)}. ")
+                       .Append("These are NOT confirmed to be empty.");
+
+            StatusMessage = incomplete.Count + unreadable.Count > 0
+                ? $"Exported {members} member(s) — with warnings, see the message."
+                : $"Exported {members} member(s) from {groups.Count} group(s).";
+            _dialogs.Alert("Group members", summary.ToString());
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = "Export failed.";
+            _dialogs.Alert("Export failed", DirectoryService.Friendly(ex));
         }
     }
 

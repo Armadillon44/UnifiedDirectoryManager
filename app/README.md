@@ -351,6 +351,33 @@ from Entra, from an older export) made a removal skip and still report success. 
 longer costs the rest of a batch: if the directory refuses the group as a whole, each member is
 retried on its own, and anything that does fail is named along with how many succeeded.
 
+### Exporting members to CSV
+
+*(2.3.3.)* Select one group or several in the object list, right-click, and choose **Export members to
+CSV…**. One row per member, with the group repeated on each row so several groups can share a file and
+still be told apart — sort or filter by **Group** to separate them again.
+
+Columns: `Group`, `Group DN`, `Member`, `Member DN`, `Status`.
+
+**Append members to a CSV…** adds to a file you already have instead of replacing it. It asks for an
+existing file, checks that the file really is one of these exports, and refuses if it is not — appending
+these columns to an unrelated spreadsheet would leave a file that reads as neither. It also fixes up a
+missing line break at the end of the old file, which would otherwise join the first new row onto the last
+old one.
+
+> **Read the Status column.** It is blank for an ordinary member. It is not blank when the export could not
+> tell you everything:
+>
+> - **INCOMPLETE** — the member list was cut short, and the group has more members than the file shows.
+>   Every row of that group carries this, because sorting the sheet would otherwise separate a single
+>   warning from the group it belongs to.
+> - **UNREADABLE** — the membership could not be read. LDAP answers identically for a group with no members
+>   and a group whose membership you may not see, so this is **not** a confirmed empty group.
+> - **No members** — confirmed empty.
+>
+> A group that produced no rows still gets one, saying which of those applies. Dropping it would leave you
+> unable to tell an empty group from one that was silently skipped.
+
 ### Paste a list of members
 
 *(New in 2.3.0.)* **Paste a list…** sits beside *Add members…* on an AD group, an Entra group and a
