@@ -197,5 +197,81 @@ foreach ($file in 'NewUserViewModel.cs', 'CopyUserViewModel.cs') {
     Check "  and the shared log folder"     $true ($src -match 'OperationLog\.ResolveDirectory\(')
 }
 
+Write-Host "`n== the record says what the account was created with ==" -ForegroundColor Cyan
+# The record used to say an account was created and not WHAT it was created with, so checking a mistake
+# against it meant opening the account in another tool.
+$describe = $Log.GetMethod('DescribeAttributes')
+function Describe([hashtable]$pairs) {
+    $d = [System.Collections.Generic.Dictionary[string, string]]::new()
+    foreach ($k in $pairs.Keys) { $d[$k] = $pairs[$k] }
+    $box = [object[]]::new(1); $box[0] = $d
+    # The leading comma is load-bearing. Without it PowerShell unrolls a ONE-line result back to a
+    # bare string, whose .Count is also 1 and whose [0] is its first CHARACTER -- so the no-attributes
+    # case silently compares a bullet against the message and the count assertion passes anyway.
+    return ,@($describe.Invoke($null, $box))
+}
+
+$lines = Describe @{ sAMAccountName = 'jdoe'; displayName = 'Jane Doe'; mail = 'jane.doe@contoso.net' }
+Check 'it counts them'                  $true ($lines[0] -like '*Attributes set (3)*')
+Check '  and lists every one'           4 $lines.Count
+Check '  with the lDAP name'            $true (($lines -join "`n") -like '*sAMAccountName*')
+Check '  and the value'                 $true (($lines -join "`n") -like '*jdoe*')
+# lDAPDisplayNames, not friendly labels: this gets filed against a ticket, and sAMAccountName is the name
+# whoever picks it up can act on.
+Check '  not the friendly label'        $false (($lines -join "`n") -like '*Logon name*')
+# Sorted, so two records of the same account can be compared line by line.
+Check '  sorted by name'                $true ($lines[1] -like '*displayName*')
+Check '  values line up'                $true ($lines[1] -match 'displayName\s{4,}Jane Doe')
+
+Check 'nothing set says so'             $true ((Describe @{})[0] -like '*No attributes were set*')
+Check '  rather than printing a header' 1 (Describe @{}).Count
+$empty = Describe @{ title = '' }
+Check 'an empty value is marked'        $true (($empty -join "`n") -like '*(empty)*')
+
+Write-Host "`n== and never says what the password was ==" -ForegroundColor Cyan
+# THE REASON THIS FEATURE NEEDED A GUARD OF ITS OWN. The rule keeping secrets out of the record is
+# enforced elsewhere by GREPPING source for Step($"...{Password}..."). Writing out a whole dictionary
+# walks straight past that check: the attribute names live in data, not in source, so a grep sees
+# nothing. The guard has to be where the values are.
+#
+# Nothing can put a password in this dictionary today -- CreateUserAsync takes it as a separate argument
+# -- so this is a guard against a future change, which is exactly the kind that arrives unnoticed.
+$isSecret = $Log.GetMethod('IsSecretAttribute')
+function Secret([string]$name) { $box = [object[]]::new(1); $box[0] = $name; return $isSecret.Invoke($null, $box) }
+foreach ($name in 'unicodePwd', 'userPassword', 'dBCSPwd', 'lmPwdHistory', 'ntPwdHistory',
+                  'supplementalCredentials', 'msDS-ManagedPassword') {
+    Check "  $name is a secret"          $true (Secret $name)
+}
+# The net under the list, so an attribute nobody thought of is redacted rather than printed.
+foreach ($name in 'myCustomPassword', 'legacyPwdField', 'clientSecret', 'storedCredential') {
+    Check "  so is $name"                $true (Secret $name)
+}
+Check '  and it is case-insensitive'    $true (Secret 'UNICODEPWD')
+foreach ($name in 'sAMAccountName', 'displayName', 'mail', 'department', 'title') {
+    Check "  $name is not"               $false (Secret $name)
+}
+Check '  nor is a blank name'           $false (Secret '')
+
+$leaky = Describe @{ sAMAccountName = 'jdoe'; unicodePwd = 'Brave-Tiger_Maple-7kR2m'; myCustomPassword = 'hunter2' }
+$text = $leaky -join "`n"
+Check 'the secret VALUE never appears'  $false ($text -like '*Brave-Tiger_Maple-7kR2m*')
+Check '  nor the improvised one'        $false ($text -like '*hunter2*')
+# The attribute is still listed, so the record shows that something was set rather than hiding it.
+Check '  but the attribute is listed'   $true ($text -like '*unicodePwd*')
+Check '  marked as withheld'            $true ($text -like '*(not recorded)*')
+Check '  and the rest is intact'        $true ($text -like '*jdoe*')
+
+Write-Host "`n== both creation windows record them ==" -ForegroundColor Cyan
+# Same reason the two share the record builder: a record that lists attributes for one window and not the
+# other is the drift that assertion exists to prevent, one level up.
+foreach ($file in 'NewUserViewModel.cs', 'CopyUserViewModel.cs') {
+    $src = Get-Content -Raw (Join-Path $repoRoot (Join-Path 'app\src\UnifiedDirectoryManager\ViewModels' $file))
+    Check "  $file describes them"       $true ($src -match 'OperationLog\.DescribeAttributes\(')
+    # After the create, not before: until it succeeds these are a proposal, not a record.
+    $created = $src.IndexOf('Created {result.DistinguishedName}')
+    $described = $src.IndexOf('OperationLog.DescribeAttributes(')
+    Check "  $file records them after"   $true ($described -gt $created -and $created -gt 0)
+}
+
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

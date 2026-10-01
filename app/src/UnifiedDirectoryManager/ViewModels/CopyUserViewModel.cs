@@ -391,6 +391,13 @@ public partial class CopyUserViewModel : ObservableObject
             UserCreated?.Invoke();
             if (doSync) Step($"✓ Created {result.DistinguishedName}");
 
+            // What the account was actually created with. Gated on doSync like every other step here,
+            // so this does not start producing a log in the cases that deliberately have none. Copy User
+            // sends no proxy addresses, unlike New User.
+            if (doSync)
+                foreach (var line in OperationLog.DescribeAttributes(attributes))
+                    Step(line);
+
             if (pwRequested && !result.PasswordSet)
             {
                 if (doSync) Step("⚠ Password was NOT set — account left disabled (the connection isn't encrypted).");

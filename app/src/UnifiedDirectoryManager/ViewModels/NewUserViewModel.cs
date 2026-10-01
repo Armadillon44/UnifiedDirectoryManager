@@ -529,6 +529,15 @@ public partial class NewUserViewModel : ObservableObject
             _createdDn = result.DistinguishedName;
             Step($"✓ Created {result.DistinguishedName}");
 
+            // What the account was actually created with. Recorded AFTER the create succeeded, because
+            // until then these are a proposal; the object now exists with exactly these on it. Proxy
+            // addresses are sent separately from the attribute dictionary, so they are folded in here to
+            // match what the operator reviewed in the preview before pressing Create.
+            foreach (var line in OperationLog.DescribeAttributes(
+                         attributes.Concat(ResolvedProxies().Select(
+                             p => new KeyValuePair<string, string>("proxyAddresses", p)))))
+                Step(line);
+
             if (passwordRequested)
             {
                 if (result.PasswordSet)

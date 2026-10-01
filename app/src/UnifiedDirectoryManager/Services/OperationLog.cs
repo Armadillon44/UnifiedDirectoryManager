@@ -72,6 +72,78 @@ public static class OperationLog
     }
 
     /// <summary>
+    /// Fragments that make an attribute name one whose value must never be written down.
+    /// </summary>
+    /// <remarks>
+    /// Nothing can put a secret in this dictionary today — the password is a separate argument to
+    /// <c>CreateUserAsync</c> and never travels with the attributes. This exists because the rule that
+    /// keeps secrets out of the record is otherwise enforced by GREPPING the source for
+    /// <c>Step($"…{Password}…")</c>, and writing out a whole dictionary walks straight past that: the
+    /// names are in data, not in source. So the guard has to live where the values are.
+    ///
+    /// This started as an explicit list of AD's secret attributes with these fragments as a net beneath
+    /// it. A mutation check showed the list could be broken with no test noticing, and the reason is that
+    /// it was redundant: every one of them — <c>unicodePwd</c>, <c>userPassword</c>, <c>dBCSPwd</c>,
+    /// <c>lmPwdHistory</c>, <c>ntPwdHistory</c>, <c>supplementalCredentials</c>,
+    /// <c>msDS-ManagedPassword</c>, LAPS's <c>ms-Mcs-AdmPwd</c> and <c>msLAPS-Password</c> — contains one
+    /// of these four. A redundant list that looks load-bearing is worse than none, because it invites
+    /// maintaining the list instead of the thing that works.
+    ///
+    /// Matching wide is deliberate. A false positive withholds a value that was safe to print; a false
+    /// negative puts a credential in a file that gets attached to tickets. Only one of those is
+    /// recoverable, and no attribute a template sets goes anywhere near these words.
+    /// </remarks>
+    private static readonly string[] SecretFragments = { "password", "pwd", "secret", "credential" };
+
+    /// <summary>Whether an attribute's VALUE must never be written to a record.</summary>
+    public static bool IsSecretAttribute(string? ldapName) =>
+        !string.IsNullOrWhiteSpace(ldapName) &&
+        SecretFragments.Any(f => ldapName.Contains(f, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Stands in for a value that must not be recorded. Says it was withheld, not that it was absent.</summary>
+    public const string Redacted = "(not recorded)";
+
+    /// <summary>
+    /// Formats the attributes an account was created with, one per line, for the progress pane and the
+    /// record it is saved to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// lDAPDisplayNames rather than friendly labels: this record gets filed against a ticket and read by
+    /// whoever picks it up, and <c>sAMAccountName</c> is the name they can act on. Values are printed as
+    /// they were sent, except that a secret-named attribute is replaced with <see cref="Redacted"/>.
+    /// </para>
+    /// <para>
+    /// Returns one line per attribute rather than a single block, so each is its own row in the progress
+    /// pane and can be selected and copied on its own.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<string> DescribeAttributes(IEnumerable<KeyValuePair<string, string>>? attributes)
+    {
+        var pairs = (attributes ?? Enumerable.Empty<KeyValuePair<string, string>>())
+            .Where(kv => !string.IsNullOrWhiteSpace(kv.Key))
+            .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (pairs.Count == 0) return new[] { "• No attributes were set." };
+
+        // Pad to the longest name so the values line up, but not past a width that would push the value
+        // off the edge of the pane when one attribute has an unusually long name.
+        var width = Math.Min(pairs.Max(kv => kv.Key.Trim().Length), 28);
+
+        var lines = new List<string> { $"• Attributes set ({pairs.Count}):" };
+        lines.AddRange(pairs.Select(kv =>
+        {
+            var name = kv.Key.Trim();
+            var value = IsSecretAttribute(name) ? Redacted
+                : string.IsNullOrEmpty(kv.Value) ? "(empty)"
+                : kv.Value;
+            return $"    {name.PadRight(width)}  {value}";
+        }));
+        return lines;
+    }
+
+    /// <summary>
     /// A default file name for a creation record, e.g. <c>new-user-jdoe-20260930-142211.log</c>. Shaped like
     /// the deleted-group records so one folder of operation logs sorts and reads consistently.
     /// </summary>

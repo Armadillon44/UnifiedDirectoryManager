@@ -605,12 +605,41 @@ directory account and when, then every progress line exactly as it appeared, the
 Logs**), named `new-user-<name>-<date>.log` or `copy-user-<name>-<date>.log`, so one ticket's paperwork
 ends up together. Cancelling the save changes nothing.
 
+*(2.3.3.)* The record also lists **every attribute the account was created with**, one per line, under
+a heading that counts them:
+
+```
+✓ Created CN=Jane Doe,OU=Sales,DC=contoso,DC=net
+• Attributes set (7):
+    company                 Contoso
+    department              Sales
+    displayName             Jane Doe
+    mail                    jane.doe@contoso.net
+    proxyAddresses          SMTP:jane.doe@contoso.net
+    sAMAccountName          jdoe
+    userPrincipalName       jane.doe@contoso.net
+```
+
+They are listed by their **LDAP names** (`sAMAccountName`, not “Logon name”), because the record gets
+filed against a ticket and whoever picks it up needs the name they can act on. Sorted alphabetically,
+so two records of the same account can be compared line by line. Proxy addresses appear in the list
+even though they are set separately, matching what the preview showed you before you pressed Create.
+
+The attributes are recorded **after** the account is created, not before: until it succeeds they are a
+proposal rather than a record of anything.
+
 **Copy log** exists because each progress line is its own read-only box — you can select one line, but a
 drag will not cross lines, so there is no way to select the whole pane by hand.
 
 > The record deliberately contains **no password and no Temporary Access Pass**. The password step says
 > only that it was set, and the TAP step only that one was issued; neither value is written. A test
 > enforces that, because this text now goes to a file on disk.
+>
+> *(2.3.3.)* That holds for the attribute list too. An attribute whose name contains *password*,
+> *pwd*, *secret* or *credential* is listed by name with its value shown as `(not recorded)` — so the
+> record still shows that something was set, without saying what. No attribute the app sets today goes
+> anywhere near those words; the check exists so that one added later cannot quietly start writing a
+> credential to disk.
 
 ## Copy user
 
