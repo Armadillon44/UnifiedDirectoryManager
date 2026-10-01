@@ -73,7 +73,15 @@ public class InertDialogService : IDialogService
     public virtual void ShowScenarioEditor(Action onChanged) => throw Unused();
     public virtual void ShowReadme() => throw Unused();
     public virtual void ShowEntraSync() => throw Unused();
-    public virtual void ShowSettings(Action onReconnected) => throw Unused();
+    /// <summary>
+    /// Tab headers Settings was asked to open on, newest last; null means “whatever is first”. Recorded
+    /// rather than refused because the toolbar’s own right-click is supposed to land on its own page,
+    /// and a test cannot check that against a method that throws.
+    /// </summary>
+    public List<string?> SettingsTabsOpened { get; } = new();
+
+    public virtual void ShowSettings(Action onReconnected, string? openOnTab = null) =>
+        SettingsTabsOpened.Add(openOnTab);
     public virtual void ShowCloudObjectProperties(CloudObjectRow row) => throw Unused();
     public virtual void ShowOuProperties(string distinguishedName, string name) => throw Unused();
     public virtual void ShowAdObjectProperties(string distinguishedName, AdObjectType type) => throw Unused();

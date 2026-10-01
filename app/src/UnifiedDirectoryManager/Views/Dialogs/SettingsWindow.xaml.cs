@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Windows;
 using UnifiedDirectoryManager.Services;
 using UnifiedDirectoryManager.ViewModels;
@@ -10,6 +11,22 @@ public partial class SettingsWindow : Window
     {
         InitializeComponent();
         this.FixLazyRender();
+    }
+
+    /// <summary>
+    /// Opens on the tab whose header matches <paramref name="header"/>, or leaves the first selected.
+    /// An unknown header is ignored rather than throwing: landing on the wrong page is a nuisance, and
+    /// failing to open Settings at all is not a proportionate response to it.
+    /// </summary>
+    public void SelectTab(string? header)
+    {
+        if (string.IsNullOrEmpty(header)) return;
+        foreach (var item in Tabs.Items.OfType<System.Windows.Controls.TabItem>())
+        {
+            if (!string.Equals(item.Header as string, header, StringComparison.Ordinal)) continue;
+            Tabs.SelectedItem = item;
+            return;
+        }
     }
 
     private void OnClose(object sender, RoutedEventArgs e) => Close();

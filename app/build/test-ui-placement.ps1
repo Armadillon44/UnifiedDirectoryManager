@@ -429,26 +429,15 @@ function BoundLabels([string]$xml) {
 
 $toolbarXml = Region $mainXaml '<ToolBarTray' '</ToolBarTray>'
 $menuLabels    = BoundLabels $menuOnly
-$toolbarLabels = BoundLabels $toolbarXml
 $listCtxXml    = Region $listXaml '<ContextMenu' '</ContextMenu>'
 $listLabels    = BoundLabels $listCtxXml
 
-Check 'the toolbar was found'           $true ($toolbarLabels.Count -ge 8)
 Check 'the list context menu was found' $true ($listLabels.Count -ge 8)
 
-# --- the toolbar is not allowed its own vocabulary --------------------------------------------------
-# It is a shortcut to a menu item, so it says what that menu item says. Where a label is too long for a
-# button, the fix is to shorten the canonical label, not to invent a second one (audit P6).
-$toolbarDrift = @()
-foreach ($cmd in ($toolbarLabels.Keys | Sort-Object)) {
-    if (-not $menuLabels.ContainsKey($cmd)) { continue }
-    $t = $toolbarLabels[$cmd][0]
-    if ($menuLabels[$cmd] -notcontains $t) {
-        $toolbarDrift += ($cmd + ": toolbar '" + $t + "' vs menu '" + $menuLabels[$cmd][0] + "'")
-    }
-}
-foreach ($d in $toolbarDrift) { Write-Host "          $d" -ForegroundColor Yellow }
-Check 'every toolbar label matches its menu label' 0 $toolbarDrift.Count
+# The toolbar is not allowed its own vocabulary -- it is a shortcut to a menu item, so it says what
+# that menu item says. Since T1 the toolbar is built from a catalogue rather than written out in XAML,
+# so that check lives in the T1 block below and covers every button that CAN be added, not just the
+# ones on it today.
 
 # --- the context menu may drop words, never change them ---------------------------------------------
 # "Delete…" for "Delete Selected…" is fine: you right-clicked the selection, so the menu need not say
@@ -495,7 +484,12 @@ Check '  no "Modify" anywhere'             $false ($listXaml -match 'Header="Mod
 Check '  no "a CSV"'                       $false ($listXaml -match 'to a CSV')
 
 # --- the tree context menu and the View menu are the same feature -----------------------------------
-$treeCtx = Region $mainXaml '<ContextMenu' '</ContextMenu>'
+# Scoped to the TreeView: the toolbar has a context menu of its own now, and it appears earlier in the
+# file, so searching the whole document finds that one instead and every assertion below quietly moves
+# to a menu it was not written for.
+$treeRegion = Region $mainXaml '<TreeView' '</TreeView>'
+Check 'the tree was found'              $true ($treeRegion.Length -gt 0)
+$treeCtx = Region $treeRegion '<ContextMenu' '</ContextMenu>'
 Check 'the tree context menu was found' $true ($treeCtx.Length -gt 200)
 foreach ($pair in @(@('Pin to Favourites', 'PinSelectedNodeCommand'),
                     @('Unpin from Favourites', 'UnpinSelectedNodeCommand'))) {
@@ -605,8 +599,8 @@ Check '  File has no doubled separator' $false ($fileMenu -match '<Separator[^>]
 Check '  File does not end on one'      $false ($fileMenu -match '<Separator[^>]*/>\s*</MenuItem>')
 
 # The toolbar is allowed to duplicate -- that is what rule 3 says it is for -- so this is not a
-# regression of P7, and saying so here stops someone "fixing" it later.
-Check '  the toolbar may still offer Refresh' $true ($toolbarXml -match 'RefreshCommand')
+# regression of P7, and saying so here stops someone "fixing" it later. Since T1 the question is about
+# the catalogue rather than the XAML, and it is asserted in the T1 block below.
 
 Write-Host "`n== P8: the menu bar is laid out the way MMC lays one out ==" -ForegroundColor Cyan
 # File / Action / View / Tools / Help, with New as a submenu inside Action. The previous shape had four
@@ -927,6 +921,245 @@ ProbeFocus $pbox
 $before = $fired.Refresh; ProbeKey 'F5'
 Check '  F5 gets through from a TextBox'     ($before + 1) $fired.Refresh
 $pw.Close()
+
+Write-Host "`n== T1: the toolbar owns nothing, and now it has to ==" -ForegroundColor Cyan
+# Rule 3 used to hold by luck. Once an operator can REMOVE a button it becomes a safety requirement: a
+# command reachable only from the toolbar would lose its last route the moment someone took it off, with
+# no way back except working out that customisation is where it went.
+#
+# The catalogue is where that is checked instead of remembered.
+$cat = [System.Type]::GetType('UnifiedDirectoryManager.Services.ToolbarCatalogue, UnifiedDirectoryManager')
+Check 'the catalogue exists'            $true ($null -ne $cat)
+$items = $cat.GetProperty('All').GetValue($null)
+$defaults = @($cat.GetProperty('DefaultIds').GetValue($null))
+Check '  it offers a useful number'     $true ($items.Count -ge 20)
+Check '  and has defaults'              $true ($defaults.Count -ge 8)
+
+$mainVmType = VmType 'MainViewModel'
+$offenders = @()
+$labelDrift = @()
+foreach ($item in $items) {
+    # (a) the command has to resolve, or the button is dead on arrival and looks merely disabled
+    $type = $mainVmType
+    foreach ($segment in ($item.CommandName -split '\.')) {
+        if ($null -eq $type) { break }
+        $prop = $type.GetProperty($segment)
+        $type = if ($null -eq $prop) { $null } else { $prop.PropertyType }
+    }
+    if ($null -eq $type) { $offenders += "$($item.Id): $($item.CommandName) does not resolve"; continue }
+
+    # (b) rule 3 itself -- it must also be in the menu bar
+    $leaf = ($item.CommandName -split '\.')[-1]
+    $inMenu = ($menuOnly -match [regex]::Escape("{Binding $($item.CommandName)}")) -or
+              ($menuOnly -match [regex]::Escape("{Binding $leaf}"))
+    if (-not $inMenu) { $offenders += "$($item.Id): $($item.CommandName) is NOT in the menu bar"; continue }
+
+    # (c) and it must say what the menu says (audit P6), so it can be found by scanning for the word
+    $ok = $false
+    foreach ($m in $menuLabels[$leaf]) { if ((LabelText $m) -eq (LabelText $item.Label)) { $ok = $true } }
+    if (-not $ok) { $labelDrift += "$($item.Id): toolbar '$($item.Label)' vs menu '$($menuLabels[$leaf][0])'" }
+}
+foreach ($o in $offenders)   { Write-Host "          $o" -ForegroundColor Yellow }
+foreach ($d in $labelDrift)  { Write-Host "          $d" -ForegroundColor Yellow }
+Check 'every catalogue command is in the menu bar' 0 $offenders.Count
+Check 'every catalogue label matches the menu'     0 $labelDrift.Count
+
+# Ids are written into settings.json, so changing one silently resets that operator's toolbar.
+$ids = @($items | ForEach-Object { $_.Id })
+Check '  ids are unique'                $ids.Count (@($ids | Sort-Object -Unique).Count)
+Check '  none collides with separator'  $false ($ids -contains 'separator')
+$badDefault = @($defaults | Where-Object { $_ -ne 'separator' -and $_ -notin $ids })
+Check '  every default is a real id'    0 $badDefault.Count
+
+Write-Host "`n== T1: a saved layout survives being wrong ==" -ForegroundColor Cyan
+# A settings file written by a NEWER build knows ids this one does not. Dropping the layout wholesale
+# would be the easy response and the wrong one: the operator loses an arrangement they built, over a
+# button that simply is not here yet.
+$normalise = $cat.GetMethod('Normalise')
+# The argument array has to be built element by element. Writing @([IEnumerable[string]]$ids) looks
+# right and is not: @() ENUMERATES the cast collection, so Invoke is handed one argument per id and
+# fails with a parameter-count mismatch.
+function Invoke1($method, $arg) {
+    $box = [object[]]::new(1)
+    $box[0] = $arg
+    return $method.Invoke($null, $box)
+}
+function Norm([string[]]$ids) { @(Invoke1 $normalise ([string[]]$ids)) }
+
+Check 'nothing saved means the defaults' ($defaults -join ',') ((Norm @()) -join ',')
+Check '  and so does null'               ($defaults -join ',') (@(Invoke1 $normalise $null) -join ',')
+Check 'an unknown id is dropped'         'refresh,bulk-edit' ((Norm @('refresh', 'no-such-button', 'bulk-edit')) -join ',')
+Check '  and the rest keep their order'  'bulk-edit,refresh' ((Norm @('bulk-edit', 'nope', 'refresh')) -join ',')
+Check 'separators repeat'                'refresh,separator,bulk-edit,separator,delete' ((Norm @('refresh','separator','bulk-edit','separator','delete')) -join ',')
+Check '  but never lead'                 'refresh' ((Norm @('separator', 'refresh')) -join ',')
+Check '  never trail'                    'refresh' ((Norm @('refresh', 'separator')) -join ',')
+Check '  and never double'               'refresh,separator,bulk-edit' ((Norm @('refresh','separator','separator','bulk-edit')) -join ',')
+# Dropping unknown ids can leave two separators adjacent that were not adjacent when saved.
+Check '  including after a drop'         'refresh,separator,bulk-edit' ((Norm @('refresh','separator','gone','separator','bulk-edit')) -join ',')
+# A row of nothing but separators is a rendering artefact, not a layout anyone chose.
+Check 'separators alone fall back'       ($defaults -join ',') ((Norm @('separator', 'separator')) -join ',')
+Check 'all-unknown falls back too'       ($defaults -join ',') ((Norm @('gone', 'also-gone')) -join ',')
+
+Write-Host "`n== T1: the glyphs exist in the font that ships with Windows ==" -ForegroundColor Cyan
+# A wrong codepoint renders as an empty box, which reads as a missing font rather than as a typo -- so
+# they are checked against the installed Segoe MDL2 Assets rather than trusted from a table.
+$fontPath = Join-Path $env:SystemRoot 'Fonts\segmdl2.ttf'
+if (-not (Test-Path $fontPath)) {
+    Write-Host "          NOT EXERCISED: Segoe MDL2 Assets is not installed here" -ForegroundColor Yellow
+} else {
+    $gt = [Windows.Media.GlyphTypeface]::new([Uri]$fontPath)
+    $missing = @()
+    $glyphCount = 0
+    foreach ($item in $items) {
+        if ([string]::IsNullOrEmpty($item.Glyph)) { continue }
+        $glyphCount++
+        $cp = [int][char]$item.Glyph[0]
+        if (-not $gt.CharacterToGlyphMap.ContainsKey($cp)) { $missing += ("{0}: U+{1:X4}" -f $item.Id, $cp) }
+    }
+    foreach ($m in $missing) { Write-Host "          $m" -ForegroundColor Yellow }
+    Check 'the catalogue uses glyphs'   $true ($glyphCount -ge 10)
+    Check 'every glyph is in the font'  0 $missing.Count
+    # Prove the lookup can fail, rather than passing because ContainsKey is always true.
+    Check '  and a made-up one is not'  $false ($gt.CharacterToGlyphMap.ContainsKey(0xE0FF))
+}
+
+# P7 again, from the other side. The toolbar is ALLOWED to duplicate the menu bar -- that is what rule
+# 3 says it is for -- so this stops someone "finishing" P7 by taking Refresh and the logs off it. The
+# question moved from the XAML to the catalogue when the toolbar stopped being written out by hand.
+$dupeOk = @($items | Where-Object { $_.Id -eq 'refresh' -or $_.Id -eq 'logs-folder' })
+Check 'the toolbar may still duplicate'  2 $dupeOk.Count
+$refreshItem = $items | Where-Object { $_.Id -eq 'refresh' }
+Check '  and Refresh works in both views' 'Both' ($refreshItem.Scope.ToString())
+
+Write-Host "`n== T1: text only where an icon would mislead ==" -ForegroundColor Cyan
+# Two rules from the design: no icon beats a vague icon, and destructive items keep their words.
+$usesTextOnly = $cat.GetMethod('UsesTextOnly')
+# Where-Object hands back a PSObject WRAPPER, which reflection cannot convert to the parameter type.
+# Unwrap before every Invoke, or the call fails with a conversion error that reads like a bad signature.
+function Item([string]$id) { ($items | Where-Object { $_.Id -eq $id }).PSObject.BaseObject }
+$deleteItem = Item 'delete'
+Check 'Delete is on the toolbar at all' $true ($null -ne $deleteItem)
+Check '  and never shows as an icon'    $true (Invoke1 $usesTextOnly $deleteItem)
+Check '  while Refresh may'             $false (Invoke1 $usesTextOnly (Item 'refresh'))
+$vmRow = [System.Type]::GetType('UnifiedDirectoryManager.ViewModels.ToolbarButtonViewModel, UnifiedDirectoryManager')
+$forMethod = $vmRow.GetMethod('For', [System.Reflection.BindingFlags]'Public,Static')
+$noop = [CommunityToolkit.Mvvm.Input.RelayCommand]::new([System.Action]{})
+$box = [object[]]::new(2); $box[0] = $deleteItem; $box[1] = $noop
+$deleteRow = $forMethod.Invoke($null, $box)
+Check '  so its rendered glyph is blank' '' $deleteRow.Glyph
+Check '  and it reports no glyph'        $false $deleteRow.HasGlyph
+
+Write-Host "`n== T1: the customisation surfaces ==" -ForegroundColor Cyan
+# Right-clicking the thing you want to change is where a Windows user looks first, and finding nothing
+# there teaches that it cannot be changed.
+$toolbarXml2 = Region $mainXaml '<ToolBarTray' '</ToolBarTray>'
+Check 'the toolbar is data-driven'      $true ($toolbarXml2 -match 'ItemsSource="\{Binding ToolbarItems\}"')
+Check '  with no hand-written buttons'  $false ($toolbarXml2 -match '<Button Content=')
+Check '  and its own right-click'       $true ($toolbarXml2 -match 'CustomiseToolbarCommand')
+$settingsXaml = Get-Content -Raw (Join-Path $src 'Views\Dialogs\SettingsWindow.xaml')
+Check 'Settings has a Toolbar page'     $true ($settingsXaml -match '<TabItem Header="Toolbar"')
+foreach ($cmd in 'AddCommand', 'RemoveCommand', 'MoveUpCommand', 'MoveDownCommand', 'ResetToDefaultsCommand', 'SaveCommand') {
+    Check "  the page offers $cmd"      $true ($settingsXaml -match [regex]::Escape("{Binding $cmd}"))
+}
+# Tab headers are matched by their words, which is fragile the moment one is renamed.
+$tabsType = [System.Type]::GetType('UnifiedDirectoryManager.Services.SettingsTabs, UnifiedDirectoryManager')
+Check 'the tab names are constants'     $true ($null -ne $tabsType)
+$declared = @($tabsType.GetProperty('All').GetValue($null))
+$actual = @([regex]::Matches($settingsXaml, '<TabItem Header="([^"]*)"') | ForEach-Object { $_.Groups[1].Value })
+Check '  and match the dialog exactly'  ($actual -join '|') ($declared -join '|')
+
+Write-Host "`n== T1: the customisation page actually rearranges things ==" -ForegroundColor Cyan
+# The assertions above prove the page EXISTS and that its catalogue is safe. These prove it works: the
+# four buttons are the whole feature, and a Move that silently does nothing looks exactly like a list
+# that was already in that order.
+Add-Type -ReferencedAssemblies (Join-Path $repoRoot 'debug\UnifiedDirectoryManager.dll') @'
+using UnifiedDirectoryManager.Services;
+public sealed class CountingSettingsStore : ISettingsStore {
+    public int Saves;
+    public AppSettings Last;
+    public AppSettings Load() { return new AppSettings(); }
+    public void Save(AppSettings settings) { Saves++; Last = settings; }
+    public string RecoveredFrom { get { return null; } }
+}
+'@
+if (-not ('CountingSettingsStore' -as [type])) { throw 'the fake store did not compile -- everything below would be a false pass' }
+
+$EditorVm = [UnifiedDirectoryManager.ViewModels.ToolbarEditorViewModel]
+function NewEditor([string[]]$saved) {
+    $store = [CountingSettingsStore]::new()
+    $s = [UnifiedDirectoryManager.Services.AppSettings]::new()
+    foreach ($id in $saved) { $s.ToolbarItemIds.Add($id) }
+    $vm = $EditorVm::new($store, $s)
+    return @{ Vm = $vm; Store = $store; Settings = $s }
+}
+function ChosenIds($vm) { ($vm.Chosen | ForEach-Object { $_.Id }) -join ',' }
+
+$e = NewEditor @()
+Check 'it opens on the saved layout'    (($defaults) -join ',') (ChosenIds $e.Vm)
+Check '  and offers the whole catalogue' ($items.Count + 1) $e.Vm.Available.Count   # +1 for the separator
+Check '  with a separator to add'        $true (@($e.Vm.Available | Where-Object { $_.Id -eq 'separator' }).Count -eq 1)
+
+# --- Add lands AFTER the selected row, which is how every list like this behaves -------------------
+$e = NewEditor @('refresh', 'bulk-edit')
+$e.Vm.SelectedAvailable = $e.Vm.Available | Where-Object { $_.Id -eq 'delete' }
+$e.Vm.SelectedChosen = $e.Vm.Chosen[0]
+Check 'Add is offered'                  $true $e.Vm.AddCommand.CanExecute($null)
+$e.Vm.AddCommand.Execute($null)
+Check '  and inserts after the selection' 'refresh,delete,bulk-edit' (ChosenIds $e.Vm)
+Check '  selecting what it added'       'delete' $e.Vm.SelectedChosen.Id
+# The same button twice would be confusing rather than useful.
+$e.Vm.SelectedAvailable = $e.Vm.Available | Where-Object { $_.Id -eq 'delete' }
+Check '  but not the same one twice'    $false $e.Vm.AddCommand.CanExecute($null)
+# ...except a separator, which is the only thing a layout needs more than one of.
+$e.Vm.SelectedAvailable = $e.Vm.Available | Where-Object { $_.Id -eq 'separator' }
+Check '  while separators repeat'       $true $e.Vm.AddCommand.CanExecute($null)
+
+# --- Remove, and the floor under it ----------------------------------------------------------------
+$e = NewEditor @('refresh', 'bulk-edit')
+$e.Vm.SelectedChosen = $e.Vm.Chosen[0]
+$e.Vm.RemoveCommand.Execute($null)
+Check 'Remove takes the row out'        'bulk-edit' (ChosenIds $e.Vm)
+# An empty saved list means "use the defaults", so emptying the toolbar would silently restore it. The
+# last row therefore cannot be removed -- stated here because it is a surprising rule to meet cold.
+Check '  but never the last one'        $false $e.Vm.RemoveCommand.CanExecute($null)
+
+# --- Move -------------------------------------------------------------------------------------------
+$e = NewEditor @('refresh', 'bulk-edit', 'delete')
+$e.Vm.SelectedChosen = $e.Vm.Chosen[2]
+$e.Vm.MoveUpCommand.Execute($null)
+Check 'Move up moves it up'             'refresh,delete,bulk-edit' (ChosenIds $e.Vm)
+Check '  and the selection follows'     'delete' $e.Vm.SelectedChosen.Id
+$e.Vm.MoveDownCommand.Execute($null)
+Check 'Move down puts it back'          'refresh,bulk-edit,delete' (ChosenIds $e.Vm)
+$e.Vm.SelectedChosen = $e.Vm.Chosen[0]
+Check '  the top row cannot go up'      $false $e.Vm.MoveUpCommand.CanExecute($null)
+$e.Vm.SelectedChosen = $e.Vm.Chosen[2]
+Check '  nor the bottom one down'       $false $e.Vm.MoveDownCommand.CanExecute($null)
+
+# --- Save, Reset, and the round trip ----------------------------------------------------------------
+$e = NewEditor @('refresh', 'bulk-edit')
+$e.Vm.SelectedChosen = $e.Vm.Chosen[1]
+$e.Vm.SelectedAvailable = $e.Vm.Available | Where-Object { $_.Id -eq 'separator' }
+$e.Vm.AddCommand.Execute($null)
+Check 'a trailing separator is allowed while editing' 'refresh,bulk-edit,separator' (ChosenIds $e.Vm)
+$e.Vm.SaveCommand.Execute($null)
+Check 'Save writes to the store'        1 $e.Store.Saves
+# Saving stores what will actually be RENDERED, so reopening the page shows the truth rather than a
+# trailing separator that the toolbar was always going to drop.
+Check '  and tidies on the way out'     'refresh,bulk-edit' (($e.Settings.ToolbarItemIds) -join ',')
+Check '  the page agrees afterwards'    'refresh,bulk-edit' (ChosenIds $e.Vm)
+
+$e = NewEditor @('delete')
+$e.Vm.ResetToDefaultsCommand.Execute($null)
+Check 'Reset restores the defaults'     (($defaults) -join ',') (ChosenIds $e.Vm)
+Check '  without saving by itself'      0 $e.Store.Saves
+$e.Vm.SaveCommand.Execute($null)
+Check '  until Save is pressed'         1 $e.Store.Saves
+
+# Nothing the editor can produce may be rejected by the renderer.
+$e = NewEditor @('refresh')
+$e.Vm.SaveCommand.Execute($null)
+Check 'a one-button toolbar survives'   'refresh' (($e.Settings.ToolbarItemIds) -join ',')
 
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

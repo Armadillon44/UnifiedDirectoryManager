@@ -320,12 +320,14 @@ public sealed class DialogService : IDialogService
         new EntraSyncWindow { DataContext = vm, Owner = Owner }.Show(); // non-modal
     }
 
-    public void ShowSettings(Action onReconnected)
+    public void ShowSettings(Action onReconnected, string? openOnTab = null)
     {
         var connection = new ConnectionViewModel(_directory, _locator, _credentials, _settingsStore, _settings);
         var cloud = new CloudSignInViewModel(_graph, _settingsStore, _settings);
         var vm = new SettingsViewModel(connection, cloud, _settingsStore, _settings, _credentials, onReconnected);
-        new SettingsWindow { DataContext = vm, Owner = Owner }.ShowDialog(); // modal
+        var window = new SettingsWindow { DataContext = vm, Owner = Owner };
+        window.SelectTab(openOnTab);
+        window.ShowDialog(); // modal
     }
 
     public void ShowCloudObjectProperties(CloudObjectRow row)

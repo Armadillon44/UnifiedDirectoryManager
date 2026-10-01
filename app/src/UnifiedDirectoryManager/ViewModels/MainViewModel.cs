@@ -222,6 +222,13 @@ public partial class MainViewModel : ObservableObject
     // passwords at once needs its own confirmation and its own report of which secrets went where,
     // and that is a feature, not a menu entry (audit P8).
     [ObservableProperty] private bool _selectionIsOneUser;
+
+    /// <summary>
+    /// What the toolbar shows, built from the operator's chosen ids (audit T1). Rebuilt rather than
+    /// filtered in the view, because an item's SCOPE decides whether it belongs in the current view at
+    /// all — the hand-written toolbar did the same thing with a Visibility binding per button.
+    /// </summary>
+    public ObservableCollection<ToolbarButtonViewModel> ToolbarItems { get; } = new();
     [ObservableProperty] private bool _selectionHasGroups;
     [ObservableProperty] private bool _hasScenarios;
 
@@ -255,6 +262,7 @@ public partial class MainViewModel : ObservableObject
         };
 
         ReloadScenarios();
+        RebuildToolbar();
 
         // Double-click a row → open it in its own editor window; refresh the list when it changes.
         List.OpenRequested += (_, row) =>
@@ -413,6 +421,7 @@ public partial class MainViewModel : ObservableObject
         // Both have keyboard shortcuts and no menu item in the cloud view to grey out for them.
         NewUserCommand.NotifyCanExecuteChanged();
         AdvancedSearchCommand.NotifyCanExecuteChanged();
+        RebuildToolbar();   // on-prem-only buttons do not belong in the cloud view
     }
 
     partial void OnSelectedNodeChanged(TreeNodeViewModel? value)
@@ -561,12 +570,25 @@ public partial class MainViewModel : ObservableObject
         finally { _suppressNodeLoad = false; }
     }
 
+    /// <summary>
+    /// Right-click the toolbar ▸ Customise Toolbar… Opens the same Settings page the menu route opens;
+    /// it exists because right-clicking the thing you want to change is where a Windows user looks
+    /// first, and finding nothing there teaches that it cannot be changed.
+    /// </summary>
+    [RelayCommand]
+    private void CustomiseToolbar()
+    {
+        _dialogs.ShowSettings(RefreshAfterReconnect, SettingsTabs.Toolbar);
+        RebuildToolbar();
+    }
+
     [RelayCommand]
     private void OpenSettings()
     {
         _dialogs.ShowSettings(RefreshAfterReconnect);
         EnsureCloudRoot();      // a sign-in/out in Settings may have added/removed the cloud sections
         ReconfigureExchange();  // …and may have pointed the app at a different tenant
+        RebuildToolbar();       // …and may have changed what is on the toolbar
     }
 
     /// <summary>
@@ -1348,6 +1370,47 @@ public partial class MainViewModel : ObservableObject
         if (user is null) { _dialogs.Alert("Copy groups to user", "Select the source user (whose groups to copy)."); return; }
         if (_dialogs.ShowCopyGroupsToUser(user.DistinguishedName)) _ = List.ReloadAsync();
     }
+
+    /// <summary>
+    /// Rebuilds <see cref="ToolbarItems"/> from the operator's saved layout (audit T1).
+    /// </summary>
+    /// <remarks>
+    /// Two things are dropped silently rather than rendered: an item whose scope does not match the
+    /// current view, and an item whose command does not resolve. The first is how the hand-written
+    /// toolbar always behaved, with a Visibility binding per button. The second should be impossible —
+    /// the suite walks the catalogue and fails by name if a command path goes stale — but a dead button
+    /// is indistinguishable from a disabled one on screen, so it is left off rather than shown.
+    /// </remarks>
+    public void RebuildToolbar()
+    {
+        ToolbarItems.Clear();
+        foreach (var id in ToolbarCatalogue.Normalise(Settings.ToolbarItemIds))
+        {
+            if (id == ToolbarCatalogue.SeparatorId)
+            {
+                // Never open with one, and never show two in a row once scope filtering has removed
+                // what was between them: Normalise tidies the SAVED list, but which buttons survive
+                // depends on the view, so it has to be done again here.
+                if (ToolbarItems.Count > 0 && !ToolbarItems[^1].IsSeparator)
+                    ToolbarItems.Add(ToolbarButtonViewModel.Separator());
+                continue;
+            }
+
+            if (ToolbarCatalogue.Find(id) is not { } item) continue;
+            if (!AppliesToCurrentView(item.Scope)) continue;
+            if (ToolbarButtonViewModel.Resolve(this, item.CommandName) is not { } command) continue;
+            ToolbarItems.Add(ToolbarButtonViewModel.For(item, command));
+        }
+        while (ToolbarItems.Count > 0 && ToolbarItems[^1].IsSeparator)
+            ToolbarItems.RemoveAt(ToolbarItems.Count - 1);
+    }
+
+    private bool AppliesToCurrentView(ToolbarScope scope) => scope switch
+    {
+        ToolbarScope.OnPremOnly => IsAdView,
+        ToolbarScope.CloudOnly => IsCloudView,
+        _ => true,
+    };
 
     private void UpdateSelectionState()
     {

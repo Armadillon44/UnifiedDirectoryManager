@@ -119,7 +119,11 @@ public interface IDialogService
 
     /// <summary>Opens the (modal) Settings dialog (on-prem AD connection + cloud sign-in);
     /// <paramref name="onReconnected"/> fires when the AD connection is successfully rebound.</summary>
-    void ShowSettings(Action onReconnected);
+    /// <param name="openOnTab">
+    /// Header of the tab to open on, or null for the first. Right-clicking the toolbar opens this
+    /// dialog straight on its own page, because that is where a Windows user reaches for it first.
+    /// </param>
+    void ShowSettings(Action onReconnected, string? openOnTab = null);
 
     /// <summary>Opens a (non-modal) read-only properties window for a cloud (Entra ID) object.</summary>
     void ShowCloudObjectProperties(CloudObjectRow row);

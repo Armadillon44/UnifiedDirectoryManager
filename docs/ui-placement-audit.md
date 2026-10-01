@@ -1,7 +1,7 @@
 # Where the app's functions live — a placement audit
 
-Status: **Every finding is DONE (P1–P9). All three rules hold and are enforced by tests. Only T1
-(customisable toolbar) is left, whose open questions are all settled. Shipping as 2.3.3.**
+Status: **DONE — every finding (P1–P9) and the feature (T1). All three rules hold and are enforced by
+tests. Shipping as 2.3.3.**
 
 Measured against `master` at **`8a2dc29`**. Everything below was derived from the XAML and
 `MainViewModel.cs` rather than from memory, and the method is in
@@ -28,7 +28,7 @@ The complaint that prompted it, in the maintainer's words:
 | **P7** | Refresh and the log commands are duplicated *within* the menu bar | **Done** |
 | **P8** | The menu bar is organised by nothing in particular | **Done** — File/Action/View/Tools/Help |
 | **P9** | There are no keyboard shortcuts anywhere in the app | **Done** |
-| **T1** | *(feature)* Let the operator choose what is on the toolbar | **Designed, not started** |
+| **T1** | *(feature)* Let the operator choose what is on the toolbar | **Done** |
 
 ---
 
@@ -506,7 +506,7 @@ before that. Measured before the code was written rather than after it failed.
 
 ---
 
-## T1 — Let the operator choose what is on the toolbar
+## T1 — Let the operator choose what is on the toolbar — **DONE**
 
 Requested alongside this audit. It interacts with the rule above in a way that decides the design.
 
@@ -598,9 +598,39 @@ Two rules for whoever implements it:
 
 ### Still open
 
-
-Nothing. The maintainer has confirmed the toolbar never needs to be pinned read-only, so per-user storage
+Nothing. The maintainer confirmed the toolbar never needs to be pinned read-only, so per-user storage
 with a Reset to defaults button is the whole of it.
+
+### What building it turned up
+
+**Rule 1 caught the first version of the feature.** `Customise Toolbar…` was on the toolbar's own
+right-click menu and nowhere else — which is precisely the shape rule 1 exists to stop, committed by the
+change whose own safety argument depends on that rule. The suite named it on the first run. It is in
+**View** now, where MMC also puts Customize.
+
+**The old toolbar assertion had to move, not go.** P6 asserted "every toolbar label equals its menu
+label" by reading literal `<Button Content=…>` out of the `ToolBarTray`. A data-driven toolbar has none,
+so that check would have passed vacuously forever. It now runs over the CATALOGUE, which is strictly
+stronger: it covers every button that CAN be added, not just the nine that happen to be on it today.
+
+**One context menu quietly became another.** The suite found the tree's context menu with "the first
+`<ContextMenu>` in the file". The toolbar gained one of its own, earlier in the file, so six assertions
+silently moved to a menu they were not written for. They are scoped to the `TreeView` region now. Worth
+remembering: an anchor that says "the first one" is a bet that nothing will ever be added above it.
+
+**Glyph codepoints were checked against the font rather than trusted**, as this section asked. All 24
+are present in the Segoe MDL2 Assets that ships with Windows, and the suite re-checks them, so one
+dropped from a future Windows is found here rather than by an operator seeing an empty box.
+
+**Emptying the toolbar cannot be allowed**, which is a consequence of the storage decision rather than a
+choice. An empty saved list means "use the defaults" — that is what lets an existing `settings.json` work
+unchanged — so removing the last button would silently restore the whole default toolbar. The Remove
+button is disabled at one item, and the suite says so in those words.
+
+**Normalise does three things, in order**, each of which has a test: nothing saved means the defaults; an
+id this build does not know is dropped while the rest survive in order; and separators are tidied (none
+leading, none trailing, never two together) — including the doubled ones that appear only *after* an
+unknown id between them is dropped.
 
 ### Testing
 
@@ -696,7 +726,9 @@ already hidden in exactly the cases the gates now disable.
    P8 was the only subjective item and was agreed before it was built — see *The agreed shape* above.
 3. **`ui/shortcuts` — P9.** ✅ **Done.** Small and self-contained, apart from one measurement that
    changed the design — see the finding.
-4. **`ui/custom-toolbar` — T1.** After package 1, for the reason given above.
+4. **`ui/custom-toolbar` — T1.** ✅ **Done.** After package 1, for the reason given above — and rule 1
+   caught a violation inside T1 itself on the first test run, which is the clearest argument there is
+   for having done them in that order.
 
 ---
 

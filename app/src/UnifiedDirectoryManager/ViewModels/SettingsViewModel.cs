@@ -20,6 +20,9 @@ public partial class SettingsViewModel : ObservableObject
     public ConnectionViewModel Connection { get; }
     public CloudSignInViewModel Cloud { get; }
 
+    /// <summary>The Toolbar page (audit T1).</summary>
+    public ToolbarEditorViewModel Toolbar { get; }
+
     /// <summary>Operation-log folder override; blank means use the default shown in <see cref="DefaultLogDirectory"/>.</summary>
     [ObservableProperty] private string _operationLogDirectory = string.Empty;
     [ObservableProperty] private string _logStatus = string.Empty;
@@ -50,6 +53,7 @@ public partial class SettingsViewModel : ObservableObject
         _credentials = credentials;
         _onReconnected = onReconnected;
         _operationLogDirectory = settings.OperationLogDirectory ?? string.Empty;
+        Toolbar = new ToolbarEditorViewModel(settingsStore, settings);
         Connection.ConnectionSucceeded += (_, _) => _onReconnected();
 
         // Prefill the sync account from the server's saved credential, if any.

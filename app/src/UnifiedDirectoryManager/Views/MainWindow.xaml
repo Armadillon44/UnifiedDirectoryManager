@@ -124,6 +124,7 @@
             <MenuItem Header="_View">
                 <MenuItem Header="_Refresh" Command="{Binding RefreshCommand}" InputGestureText="F5" />
                 <MenuItem Header="Toggle Pane _Dock (Right / Bottom)" Command="{Binding ToggleDockCommand}" />
+                <MenuItem Header="C_ustomise Toolbar…" Command="{Binding CustomiseToolbarCommand}" />
                 <Separator />
                 <!--
                   Both submenus act on the SELECTED TREE NODE, not on the list selection, which is why
@@ -169,10 +170,27 @@
             </MenuItem>
         </Menu>
 
-        <!-- Toolbar. On-prem-specific actions hide in the cloud view (IsAdView); the cloud list has its
-             own toolbar for search/filter/columns/export. Refresh, Dock and Logs apply to both views. -->
+        <!--
+          Toolbar. The operator chooses what is on it (audit T1), so it is an ItemsControl over
+          MainViewModel.ToolbarItems rather than hand-written buttons, and the scope filtering that used
+          to be a Visibility binding per button now happens when the list is rebuilt.
+
+          Rule 3 of the audit says the toolbar owns NOTHING: everything here is also in the menu bar.
+          That used to be a happy accident; now that a button can be removed it is a safety requirement,
+          because removing the only route to a feature would otherwise destroy access to it. The
+          catalogue is checked against the menu bar by the suite rather than by anyone remembering.
+
+          Icons sit BESIDE the text, never instead of it. An icon-only toolbar is its own memorisation
+          problem, which is the thing this whole audit exists to remove.
+        -->
         <ToolBarTray DockPanel.Dock="Top">
-            <ToolBar>
+            <ToolBar ItemsSource="{Binding ToolbarItems}">
+                <ToolBar.ContextMenu>
+                    <!-- Where a Windows user reaches for this first, before they think of Settings. -->
+                    <ContextMenu>
+                        <MenuItem Header="Customise Toolbar…" Command="{Binding CustomiseToolbarCommand}" />
+                    </ContextMenu>
+                </ToolBar.ContextMenu>
                 <ToolBar.Resources>
                     <!-- Keep the App.xaml Button template (BasedOn) but give toolbar buttons breathing room. -->
                     <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
@@ -180,18 +198,29 @@
                         <Setter Property="Padding" Value="9,3" />
                     </Style>
                 </ToolBar.Resources>
-                <Button Content="New User…" Command="{Binding NewUserCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <Button Content="Bulk Create Users…" Command="{Binding BulkCreateUsersCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <Button Content="User Templates…" Command="{Binding ManageTemplatesCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <Separator Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <Button Content="Advanced Search…" Command="{Binding AdvancedSearchCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <Button Content="Add to Groups…" Command="{Binding AddSelectedToGroupsCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <Button Content="Bulk Edit…" Command="{Binding BulkEditCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <Separator Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <Button Content="Refresh" Command="{Binding RefreshCommand}" />
-                <Button Content="Export List to CSV…" Command="{Binding ExportCsvCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
-                <Separator />
-                <Button Content="Open Logs Folder" Command="{Binding OpenLogsCommand}" />
+                <ToolBar.ItemTemplate>
+                    <DataTemplate>
+                        <!--
+                          One template for both kinds. A separator is an item in the saved layout too, or
+                          the operator could not group anything; IsSeparator picks which half renders.
+                        -->
+                        <Grid>
+                            <Separator Visibility="{Binding IsSeparator, Converter={StaticResource BoolToVis}}"
+                                       Margin="4,2" />
+                            <Button Command="{Binding Command}"
+                                    Visibility="{Binding IsButton, Converter={StaticResource BoolToVis}}">
+                                <StackPanel Orientation="Horizontal">
+                                    <!-- Segoe MDL2 Assets ships with Windows, so there is nothing to
+                                         install and nothing to scale badly on a high-DPI display. -->
+                                    <TextBlock Text="{Binding Glyph}" FontFamily="Segoe MDL2 Assets"
+                                               FontSize="14" VerticalAlignment="Center" Margin="0,0,6,0"
+                                               Visibility="{Binding HasGlyph, Converter={StaticResource BoolToVis}}" />
+                                    <TextBlock Text="{Binding Label}" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+                    </DataTemplate>
+                </ToolBar.ItemTemplate>
             </ToolBar>
         </ToolBarTray>
 

@@ -202,6 +202,26 @@ list of what the app can do.
   Finding things, and managing the app's own machinery.
 - **Help** — View README…, View Log File…, Open Logs Folder, About Unified Directory Manager….
 
+### The toolbar is yours
+
+*(2.3.3.)* **Right-click the toolbar ▸ Customise Toolbar…**, or **View ▸ Customise Toolbar…**, to
+choose what is on it. Pick from the list on the left, **Add** it, and use **Move up** / **Move down**
+to arrange it. **— separator —** can be added as many times as you like, to group buttons. **Reset to
+defaults** puts back the toolbar the app ships with. Nothing changes until you press **Save**.
+
+Your layout is **per-user**, kept with the rest of your settings, so it follows you between
+workstations rather than belonging to the machine.
+
+Two things worth knowing:
+
+- **Everything offered is also in the menus**, so removing a button never removes the only way to do
+  something. That is deliberate, and the build refuses to add a button that would break it.
+- Items marked **(on-prem view)** or **(cloud view)** only appear in that view, the way the toolbar
+  has always behaved. They are not missing; they do not apply.
+
+You cannot remove the last button. An empty toolbar is stored the same way as “I have not customised
+anything”, so emptying it would simply bring the default one back.
+
 ### Keyboard shortcuts
 
 *(2.3.3.)* The app had none before this, so the habits people arrive with from ADUC failed silently.

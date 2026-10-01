@@ -53,6 +53,14 @@ public sealed class AppSettings
     public List<string> VisibleCloudGroupColumns { get; set; } = new();
     public List<string> VisibleCloudDeviceColumns { get; set; } = new();
 
+    /// <summary>
+    /// Ids of the toolbar items the operator has chosen, in order (audit T1). Empty or absent means the
+    /// default set, so an existing settings file needs no migration and a new install looks as it did.
+    /// Ids this build does not recognise are dropped on load rather than rejected — see
+    /// <see cref="ToolbarCatalogue.Normalise"/>.
+    /// </summary>
+    public List<string> ToolbarItemIds { get; set; } = new();
+
     /// <summary>Visible-column keys for the Exchange Online Mailboxes / Distribution Groups lists.</summary>
     public List<string> VisibleExchangeMailboxColumns { get; set; } = new();
     public List<string> VisibleExchangeGroupColumns { get; set; } = new();

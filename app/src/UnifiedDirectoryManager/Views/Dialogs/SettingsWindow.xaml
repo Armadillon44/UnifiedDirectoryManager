@@ -9,7 +9,7 @@
             <Button Content="Close" IsCancel="True" Click="OnClose" MinWidth="90" />
         </StackPanel>
 
-        <TabControl SelectionChanged="OnTabChanged">
+        <TabControl x:Name="Tabs" SelectionChanged="OnTabChanged">
             <!-- On-prem Active Directory connection (embedded form + live reconnect) -->
             <TabItem Header="On-prem AD (LDAP)">
                 <DockPanel Margin="12">
@@ -129,6 +129,62 @@
                     <TextBlock DockPanel.Dock="Top" Text="{Binding LogStatus}" Foreground="#0A7" Margin="0,10,0,0" TextWrapping="Wrap" />
 
                     <Border /><!-- filler so the fields stay top-aligned -->
+                </DockPanel>
+            </TabItem>
+
+            <!-- Toolbar customisation (audit T1). Only commands that are also in the menu bar are
+                 offered, so no amount of customising can leave a feature with no route to it. -->
+            <TabItem Header="Toolbar">
+                <DockPanel Margin="12" DataContext="{Binding Toolbar}">
+                    <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,12"
+                               Text="Choose what appears on the toolbar. Everything offered here is also in the menus, so removing a button never removes the only way to do something. Items marked for one view only are hidden in the other." />
+
+                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,12,0,0">
+                        <Button Content="Save" Command="{Binding SaveCommand}" MinWidth="90" />
+                        <Button Content="Reset to defaults" Command="{Binding ResetToDefaultsCommand}" MinWidth="120" />
+                        <TextBlock Text="{Binding Status}" Foreground="#0A7" Margin="12,0,0,0"
+                                   VerticalAlignment="Center" TextWrapping="Wrap" />
+                    </StackPanel>
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Available" Style="{StaticResource FieldLabel}" />
+                        <ListBox Grid.Row="1" Grid.Column="0" ItemsSource="{Binding Available}"
+                                 SelectedItem="{Binding SelectedAvailable}" MinHeight="220">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="{Binding Label}" />
+                                        <TextBlock Text="{Binding ScopeNote, StringFormat=({0})}" Foreground="#999"
+                                                   FontSize="11" Margin="6,0,0,0" VerticalAlignment="Center"
+                                                   Visibility="{Binding HasScopeNote, Converter={StaticResource BoolToVis}}" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <StackPanel Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" Margin="8,0">
+                            <Button Content="Add →" Command="{Binding AddCommand}" MinWidth="90" Margin="0,2" />
+                            <Button Content="← Remove" Command="{Binding RemoveCommand}" MinWidth="90" Margin="0,2" />
+                            <Separator Margin="0,8" />
+                            <Button Content="Move up" Command="{Binding MoveUpCommand}" MinWidth="90" Margin="0,2" />
+                            <Button Content="Move down" Command="{Binding MoveDownCommand}" MinWidth="90" Margin="0,2" />
+                        </StackPanel>
+
+                        <TextBlock Grid.Row="0" Grid.Column="2" Text="On the toolbar" Style="{StaticResource FieldLabel}" />
+                        <ListBox Grid.Row="1" Grid.Column="2" ItemsSource="{Binding Chosen}"
+                                 SelectedItem="{Binding SelectedChosen}" MinHeight="220"
+                                 DisplayMemberPath="Label" />
+                    </Grid>
                 </DockPanel>
             </TabItem>
         </TabControl>
