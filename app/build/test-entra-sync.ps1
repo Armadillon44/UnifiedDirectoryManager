@@ -58,20 +58,39 @@ function Hang-Script([string]$pidFile) {
     return "`$PID | Set-Content -LiteralPath '$pidFile'`nStart-Sleep -Seconds 120"
 }
 
+# Returns 0 rather than throwing. This used to throw, which aborted the WHOLE suite before it printed a
+# tally -- so a slow CI runner produced a job that just said "failed" with nothing to read. A missing
+# pid is now one reported assertion, which is a diagnosis instead of a mystery.
+#
+# The budget is deliberately far longer than anything being measured. Waiting for a child to start is
+# not the thing under test; it is setup, and setup that shares an order of magnitude with the subject
+# turns a slow morning into a failure.
 function Wait-ForPid([string]$pidFile) {
-    for ($i = 0; $i -lt 200; $i++) {
+    for ($i = 0; $i -lt 600; $i++) {   # 30s
         if (Test-Path $pidFile) {
             $raw = (Get-Content -LiteralPath $pidFile -Raw).Trim()
             if ($raw) { return [int]$raw }
         }
         Start-Sleep -Milliseconds 50
     }
-    throw "The helper process never wrote its pid to $pidFile"
+    Write-Host "          no pid at $pidFile after 30s" -ForegroundColor Yellow
+    return 0
 }
 
 # The budget under test is seconds; anything approaching this means the call is not coming back, which is
 # the regression itself. Kept well under the CI job timeout so the failure is reported rather than reaped.
 $GiveUpMs = 45000
+
+# The timeout the hung call is given. It has to be comfortably longer than starting a pwsh child, or the
+# call is abandoned and the child KILLED before it can write its pid -- which is what made this suite
+# fail on a cold GitHub runner while passing every time locally. Still an eighth of the 120s the helper
+# script would otherwise sleep for, so "it gave up early" is just as provable at 15 seconds as at 3.
+$HangBudget = [timespan]::FromSeconds(15)
+
+# Pay for pwsh's first launch here, where nothing is being timed. On a cold runner the first one can take
+# seconds -- JIT, disk, and the antimalware scan of a process nobody has run yet -- and that cost landing
+# inside a measured window is the whole bug.
+& pwsh -NoProfile -NonInteractive -Command 'exit 0' | Out-Null
 
 # Waits for a reflected Task and returns the exception it ended with, the string 'never-returned' if it did
 # not end, or $null if it succeeded. Never throws, so one regression cannot abort the whole suite.
@@ -87,6 +106,7 @@ function TypeName($outcome) {
 }
 
 function Test-Gone([int]$processId) {
+    if ($processId -eq 0) { return $false }   # never started; nothing to prove was killed
     for ($i = 0; $i -lt 100; $i++) {
         if (-not (Get-Process -Id $processId -ErrorAction SilentlyContinue)) { return $true }
         Start-Sleep -Milliseconds 100
@@ -104,16 +124,20 @@ $sw = [System.Diagnostics.Stopwatch]::StartNew()
 $err = $null
 $task = $runPs.Invoke($null, @(
     (Hang-Script $pidFile), $null, $null,
-    [timespan]::FromSeconds(3), [System.Threading.CancellationToken]::None))
+    $HangBudget, [System.Threading.CancellationToken]::None))
 $childPid = Wait-ForPid $pidFile
 $strays += $childPid
+Check 'the helper process started'          $true ($childPid -ne 0)
 $err = Wait-Outcome $task
 $sw.Stop()
 
 Check 'the call ends'                       $true ($err -isnot [string])
 Check 'as a timeout'                        'System.TimeoutException' (TypeName $err)
 Check 'naming the budget'                   $true ($err -is [System.TimeoutException] -and $err.Message -like '*minute(s)*')
-Check 'well before the script would finish' $true ($sw.Elapsed.TotalSeconds -lt 30)
+# Two bounds, not one. Under the script's own 120s proves it gave up early; at least the budget proves
+# it gave up BECAUSE the budget expired, rather than falling over instantly for some other reason.
+Check 'well before the script would finish' $true ($sw.Elapsed.TotalSeconds -lt 60)
+Check '  and not before the budget expired' $true ($sw.Elapsed -ge $HangBudget)
 # The part that leaked: the helper owns a WinRM session, and abandoning the awaits left it running.
 Check 'and the helper process is killed'    $true (Test-Gone $childPid)
 
@@ -127,6 +151,7 @@ $task = $runPs.Invoke($null, @(
     [timespan]::FromMinutes(10), $cts.Token))
 $childPid = Wait-ForPid $pidFile
 $strays += $childPid
+Check 'the helper process started'       $true ($childPid -ne 0)
 $cts.Cancel()
 $err = Wait-Outcome $task
 
