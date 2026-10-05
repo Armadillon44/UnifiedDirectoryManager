@@ -24,6 +24,7 @@ $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $dll = Join-Path $repoRoot 'debug\UnifiedDirectoryManager.dll'
 if (-not (Test-Path $dll)) { throw "Build first - could not find $dll" }
 [System.Reflection.Assembly]::LoadFrom($dll) | Out-Null
+$src = Join-Path $repoRoot 'app\src\UnifiedDirectoryManager'
 
 $pass = 0; $fail = 0
 function Check([string]$name, $expected, $actual) {
@@ -188,6 +189,63 @@ Check '  where it lived matches'        $true  (Call2 $matches $row 'sales')
 Check '  and something absent does not' $false (Call2 $matches $row 'zzz')
 # The filter must not match the raw deleted DN, or typing "DEL" would return the whole container.
 Check '  the mangled DN is not searched' $false (Call2 $matches $row 'ADEL')
+
+Write-Host "`n== LDAP result codes, not Win32 ones ==" -ForegroundColor Cyan
+# Going through LdapConnection rather than ADSI means the server's own answer arrives intact instead of
+# wrapped in a COM HRESULT, so these are the protocol's codes.
+$classifyLdap = $DO.GetMethod('ClassifyLdap')
+Check 'insufficientAccessRights (50)'   $Status::AccessDenied (Call2 $classifyLdap 50 '')
+Check '  strongerAuthRequired (8)'      $Status::AccessDenied (Call2 $classifyLdap 8 '')
+Check '  noSuchObject (32)'             $Status::NotFound (Call2 $classifyLdap 32 '')
+# The control is sent CRITICAL, so a DC that will not honour it says so rather than returning nothing.
+Check '  unavailableCriticalExtension (12)' $Status::ControlRefused (Call2 $classifyLdap 12 '')
+Check '  success is not an error'       $Status::Failed (Call2 $classifyLdap 0 'something else')
+# It still falls back to the text markers, for the paths that carry a message and no useful code.
+Check '  text still classifies'         $Status::AccessDenied (Call2 $classifyLdap ([int]-1) '00002098: SecErr: problem 4003 (INSUFF_ACCESS_RIGHTS)')
+
+Write-Host "`n== whenChanged is a string here, not a DateTime ==" -ForegroundColor Cyan
+# ADSI converted this for us; raw LDAP does not, and what it returns is not a format DateTime.Parse
+# recognises. Getting this wrong puts a blank date on every row.
+$genTime = $DO.GetMethod('ParseGeneralizedTime')
+$parsed = Call1 $genTime '20260928140211.0Z'
+Check 'the AD form parses'              $true ($null -ne $parsed)
+Check '  to the right instant'          ([datetime]'2026-09-28T14:02:11Z').ToLocalTime() $parsed
+Check '  without the fraction'          ([datetime]'2026-09-28T14:02:11Z').ToLocalTime() (Call1 $genTime '20260928140211Z')
+Check '  and with a longer fraction'    ([datetime]'2026-09-28T14:02:11Z').ToLocalTime() (Call1 $genTime '20260928140211.123Z')
+Check 'rubbish is null, not a wrong date' $null (Call1 $genTime 'not a time')
+Check '  too short is null'             $null (Call1 $genTime '202609')
+Check '  blank is null'                 $null (Call1 $genTime '')
+Check '  and null is null'              $null (Call1 $genTime $null)
+# A workstation whose default calendar is Buddhist stamps 2569 rather than 2026, which is exactly the
+# trap F23 recorded in the scenario runner. The invariant culture is what keeps this Gregorian.
+$prev = [System.Threading.Thread]::CurrentThread.CurrentCulture
+try {
+    [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::new('th-TH')
+    Check '  and the calendar cannot shift it' 2026 ((Call1 $genTime '20260928140211.0Z').Year)
+}
+finally { [System.Threading.Thread]::CurrentThread.CurrentCulture = $prev }
+
+Write-Host "`n== the control rides on the search, never on a bind ==" -ForegroundColor Cyan
+# THE BUG THIS SECTION EXISTS FOR. The first version pointed a DirectorySearcher at a DirectoryEntry
+# bound to the container and set Tombstone = true. A searcher must BIND its root before it can search,
+# the bind carries no controls, and the container is invisible without one -- so the bind failed with
+# "no such object" and the window reported a container that was plainly there in ADAC.
+Check 'the OID is the documented one'   '1.2.840.113556.1.4.417' $DO::ShowDeletedControlOid
+$svc = Get-Content -Raw (Join-Path $src 'Services\DirectoryService.cs')
+$block = [regex]::Match($svc, '(?s)public Task<DeletedObjectsResult> ListDeletedObjectsAsync.*?\n    \}').Value
+Check 'the listing was found'           $true ($block.Length -gt 0)
+Check '  it sends the control'          $true ($block -match 'ShowDeletedControlOid')
+# true, true = the control is critical. A server that ignored it would answer with an empty result set,
+# and an empty result set here reads as "nothing has been deleted".
+Check '  as a CRITICAL control'         $true ($block -match 'ShowDeletedControlOid, null, true, true')
+Check '  and does not bind the container' $false ($block -match 'CreateEntry\(')
+Check '  nor use the searcher at all'   $false ($block -match 'DirectorySearcher|Tombstone')
+# Thousands of objects can sit in that container, well past the server's default page size, where an
+# unpaged search stops short and presents itself as complete.
+Check '  it pages'                      $true ($block -match 'request\.Controls\.Add\(paging\)')
+Check '  and follows the cookie'        $true ($block -match 'paging\.Cookie = cookie')
+# "Not found" is a dead end without the DN that was actually asked for.
+Check '  failures name the base DN'     $true ($block -match 'searching \{dn\}')
 
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

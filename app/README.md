@@ -747,6 +747,9 @@ empty grid and they mean entirely different things:
 - **You cannot read it** — reading the Deleted Objects container is a **Domain Admin** right by
   default. If your account has not been granted it, the window says that instead of showing an empty
   list, which would read as “nothing has been deleted”.
+- **The domain controller refused the request** — reading deleted objects needs an LDAP control, and
+  the app asks for it in a way the DC must either honour or reject. A DC that quietly ignored it would
+  answer with an empty list, so being told is better than being misinformed.
 
 **Include recycled** also lists objects past the recoverable window. They are off by default: those
 cannot be brought back, and a list mixing them in invites trying.

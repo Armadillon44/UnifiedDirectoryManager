@@ -1420,47 +1420,58 @@ public sealed class DirectoryService : IDirectoryService
             // leave the list readable. A domain where the Partitions container is unreadable is reported as
             // "not enabled", which is the safe way round -- it under-promises what can be restored.
             var (enabled, lifetime) = ReadRecycleBinState();
+            var baseDn = DeletedObjects.ContainerDn(Required.DefaultNamingContext);
 
             try
             {
-                // The container's real DN in every normal domain. AD also publishes it as a well-known
-                // object (<WKGUID=18E2EA80684F11D2B9AA00C04F79F805,...>), which survives the container being
-                // renamed; that is not used here because the ADsPath escaping for a WKGUID bind is its own
-                // problem and nothing renames this container.
-                using var container = Required.CreateEntry(DeletedObjects.ContainerDn(Required.DefaultNamingContext));
-                using var searcher = new DirectorySearcher(container)
-                {
-                    Filter = DeletedObjects.Filter(includeRecycled),
-                    SearchScope = SearchScope.OneLevel,
-                    // The managed name for the Show Deleted Objects control (LDAP OID 1.2.840.113556.1.4.417).
-                    // Without it the container and everything in it are invisible, and the search comes back
-                    // empty rather than failing -- which would read as "nothing has been deleted".
-                    Tombstone = true,
-                    PageSize = 1000,
-                };
-                searcher.PropertiesToLoad.AddRange(new[]
-                {
-                    "msDS-LastKnownRDN", "cn", "distinguishedName", "lastKnownParent",
-                    "whenChanged", "objectClass", "sAMAccountName", "isRecycled", "objectGUID",
-                });
-
+                using var conn = Required.CreateLdapConnection();
                 var rows = new List<DeletedObjectRow>();
-                using var results = searcher.FindAll();
-                foreach (SearchResult r in results)
+
+                var request = new Protocols.SearchRequest(
+                    baseDn, DeletedObjects.Filter(includeRecycled), Protocols.SearchScope.OneLevel,
+                    "msDS-LastKnownRDN", "cn", "distinguishedName", "lastKnownParent",
+                    "whenChanged", "objectClass", "sAMAccountName", "isRecycled", "objectGUID");
+
+                // Show Deleted Objects. Marked CRITICAL on purpose: a server that silently ignored it would
+                // answer with an empty result set, and an empty result set here reads as "nothing has been
+                // deleted". Better to be told the control was refused than to be quietly misinformed.
+                request.Controls.Add(new Protocols.DirectoryControl(
+                    DeletedObjects.ShowDeletedControlOid, null, true, true));
+
+                // The container holds everything deleted inside the whole lifetime, which is thousands of
+                // objects in a domain that has been running a while -- well past the server's default page
+                // size, where an unpaged search would stop short and present itself as complete.
+                var paging = new Protocols.PageResultRequestControl(1000);
+                request.Controls.Add(paging);
+
+                while (true)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var dn = GetString(r, "distinguishedName");
-                    if (string.IsNullOrEmpty(dn)) continue;
+                    var response = (Protocols.SearchResponse)conn.SendRequest(request);
 
-                    rows.Add(new DeletedObjectRow(
-                        Name: DeletedObjects.DisplayName(GetString(r, "msDS-LastKnownRDN"), GetString(r, "cn")),
-                        DistinguishedName: dn,
-                        Type: AdObjectTypeExtensions.FromClasses(GetStrings(r, "objectClass")),
-                        LastKnownParent: GetString(r, "lastKnownParent"),
-                        DeletedOn: GetDateTime(r, "whenChanged"),
-                        SamAccountName: GetString(r, "sAMAccountName"),
-                        IsRecycled: string.Equals(GetString(r, "isRecycled"), "True", StringComparison.OrdinalIgnoreCase),
-                        ObjectGuid: GetGuidText(r, "objectGUID")));
+                    foreach (Protocols.SearchResultEntry entry in response.Entries)
+                    {
+                        var dn = Attr(entry, "distinguishedName") is { Length: > 0 } d ? d : entry.DistinguishedName;
+                        if (string.IsNullOrEmpty(dn)) continue;
+
+                        rows.Add(new DeletedObjectRow(
+                            Name: DeletedObjects.DisplayName(Attr(entry, "msDS-LastKnownRDN"), Attr(entry, "cn")),
+                            DistinguishedName: dn,
+                            Type: AdObjectTypeExtensions.FromClasses(AttrAll(entry, "objectClass")),
+                            LastKnownParent: Attr(entry, "lastKnownParent"),
+                            // Not a DateTime here, unlike the ADSI path: LDAP hands back a generalized-time
+                            // string such as 20260928140211.0Z.
+                            DeletedOn: DeletedObjects.ParseGeneralizedTime(Attr(entry, "whenChanged")),
+                            SamAccountName: Attr(entry, "sAMAccountName"),
+                            IsRecycled: string.Equals(Attr(entry, "isRecycled"), "TRUE", StringComparison.OrdinalIgnoreCase),
+                            ObjectGuid: GuidText(entry, "objectGUID")));
+                    }
+
+                    var cookie = response.Controls
+                        .OfType<Protocols.PageResultResponseControl>()
+                        .FirstOrDefault()?.Cookie;
+                    if (cookie is null || cookie.Length == 0) break;
+                    paging.Cookie = cookie;
                 }
 
                 // Newest first: an operator opening this is almost always looking for something deleted in
@@ -1469,30 +1480,56 @@ public sealed class DirectoryService : IDirectoryService
                 return new DeletedObjectsResult(DeletedObjectsStatus.Ok, rows, enabled, lifetime, null);
             }
             catch (OperationCanceledException) { throw; }
-            catch (DirectoryServicesCOMException com)
+            catch (Protocols.DirectoryOperationException ex)
             {
-                var detail = string.IsNullOrWhiteSpace(com.ExtendedErrorMessage) ? com.Message : com.ExtendedErrorMessage;
+                var detail = ex.Response?.ErrorMessage;
+                if (string.IsNullOrWhiteSpace(detail)) detail = ex.Message;
                 return new DeletedObjectsResult(
-                    DeletedObjects.Classify(com.ErrorCode, detail),
-                    Array.Empty<DeletedObjectRow>(), enabled, lifetime, detail?.Trim());
+                    DeletedObjects.ClassifyLdap((int?)ex.Response?.ResultCode ?? -1, detail),
+                    Array.Empty<DeletedObjectRow>(), enabled, lifetime, Describe(detail, baseDn));
             }
-            catch (System.Runtime.InteropServices.COMException com)
+            catch (Protocols.LdapException ex)
             {
+                var detail = string.IsNullOrWhiteSpace(ex.ServerErrorMessage) ? ex.Message : ex.ServerErrorMessage;
                 return new DeletedObjectsResult(
-                    DeletedObjects.Classify(com.HResult, com.Message),
-                    Array.Empty<DeletedObjectRow>(), enabled, lifetime, com.Message?.Trim());
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                return new DeletedObjectsResult(
-                    DeletedObjectsStatus.AccessDenied, Array.Empty<DeletedObjectRow>(), enabled, lifetime, ex.Message);
+                    DeletedObjects.ClassifyLdap(ex.ErrorCode, detail),
+                    Array.Empty<DeletedObjectRow>(), enabled, lifetime, Describe(detail, baseDn));
             }
             catch (Exception ex)
             {
                 return new DeletedObjectsResult(
-                    DeletedObjectsStatus.Failed, Array.Empty<DeletedObjectRow>(), enabled, lifetime, Friendly(ex));
+                    DeletedObjectsStatus.Failed, Array.Empty<DeletedObjectRow>(), enabled, lifetime,
+                    Describe(Friendly(ex), baseDn));
             }
+
+            // The DN that was actually asked for. Without it "not found" is a dead end; with it, the next
+            // person can paste it into another tool and see for themselves.
+            static string Describe(string? detail, string dn) =>
+                string.IsNullOrWhiteSpace(detail) ? $"(searching {dn})" : $"{detail!.Trim()} (searching {dn})";
         }, cancellationToken);
+    }
+
+    private static string Attr(Protocols.SearchResultEntry entry, string name)
+    {
+        var attr = entry.Attributes[name];
+        if (attr is null || attr.Count == 0) return string.Empty;
+        return attr.GetValues(typeof(string)) is { Length: > 0 } values ? (string)values[0] : string.Empty;
+    }
+
+    private static IEnumerable<string> AttrAll(Protocols.SearchResultEntry entry, string name)
+    {
+        var attr = entry.Attributes[name];
+        if (attr is null || attr.Count == 0) yield break;
+        foreach (var v in attr.GetValues(typeof(string))) if (v is string s) yield return s;
+    }
+
+    private static string GuidText(Protocols.SearchResultEntry entry, string name)
+    {
+        var attr = entry.Attributes[name];
+        if (attr is null || attr.Count == 0) return string.Empty;
+        return attr.GetValues(typeof(byte[])) is { Length: > 0 } values && values[0] is byte[] { Length: 16 } bytes
+            ? new Guid(bytes).ToString()
+            : string.Empty;
     }
 
     /// <summary>
@@ -1540,16 +1577,6 @@ public sealed class DirectoryService : IDirectoryService
 
     private static int? IntOf(DirectoryEntry entry, string prop) =>
         entry.Properties[prop]?.Value is int i ? i : null;
-
-    private static DateTime? GetDateTime(SearchResult r, string prop) =>
-        r.Properties.Contains(prop) && r.Properties[prop].Count > 0 && r.Properties[prop][0] is DateTime d
-            ? d.ToLocalTime()
-            : null;
-
-    private static string GetGuidText(SearchResult r, string prop) =>
-        r.Properties.Contains(prop) && r.Properties[prop].Count > 0 && r.Properties[prop][0] is byte[] bytes && bytes.Length == 16
-            ? new Guid(bytes).ToString()
-            : string.Empty;
 
     internal static string Friendly(Exception ex)
     {

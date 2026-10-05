@@ -15,6 +15,12 @@ public enum DeletedObjectsStatus
     /// <summary>There is no Deleted Objects container, which means this is not an AD domain this app can read.</summary>
     NotFound,
 
+    /// <summary>
+    /// The DC refused the Show Deleted Objects control. The control is sent as critical on purpose, so
+    /// that this is an error rather than an empty list that would read as "nothing has been deleted".
+    /// </summary>
+    ControlRefused,
+
     /// <summary>Anything else. <c>Message</c> carries the server's own words.</summary>
     Failed,
 }
@@ -72,6 +78,18 @@ public static class DeletedObjects
 
     /// <summary>What Windows has used since Server 2003 SP1 when neither lifetime attribute is set.</summary>
     public const int DefaultLifetimeDays = 180;
+
+    /// <summary>
+    /// LDAP OID of the Show Deleted Objects control.
+    /// </summary>
+    /// <remarks>
+    /// This has to ride on the SEARCH, not on a bind. The first version of this feature pointed a
+    /// <c>DirectorySearcher</c> at a <c>DirectoryEntry</c> bound to the container and set
+    /// <c>Tombstone = true</c>; that fails, because the searcher must bind its root before it can search,
+    /// the bind carries no controls, and the container is invisible without one. The bind came back
+    /// "no such object" and the window reported a container that was plainly there in ADAC.
+    /// </remarks>
+    public const string ShowDeletedControlOid = "1.2.840.113556.1.4.417";
 
     /// <summary>Relative DN of the container, under the domain naming context.</summary>
     public const string ContainerRdn = "CN=Deleted Objects";
@@ -195,6 +213,51 @@ public static class DeletedObjects
     }
 
     /// <summary>
+    /// Parses an LDAP generalized time, e.g. <c>20260928140211.0Z</c>, into local time.
+    /// </summary>
+    /// <remarks>
+    /// ADSI hands <c>whenChanged</c> over as a <c>DateTime</c> already; raw LDAP does not, and the string
+    /// it returns is not a format <c>DateTime.Parse</c> recognises. Parsed with the invariant culture
+    /// because it is a wire format, and because a workstation whose default calendar is Buddhist would
+    /// otherwise read 2026 as 2569 — the same trap F23 recorded in the scenario runner.
+    /// </remarks>
+    public static DateTime? ParseGeneralizedTime(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var text = value.Trim();
+        // yyyyMMddHHmmss, then an optional fraction, then an optional zone. AD always sends ".0Z"; only
+        // the 14 leading digits are needed and the rest is tolerated rather than required.
+        if (text.Length < 14) return null;
+        var core = text[..14];
+        if (!core.All(char.IsAsciiDigit)) return null;
+        if (!DateTime.TryParseExact(core, "yyyyMMddHHmmss", CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var utc))
+            return null;
+        return utc.ToLocalTime();
+    }
+
+    /// <summary>
+    /// Turns an LDAP result code into a status the window can explain in a sentence.
+    /// </summary>
+    /// <remarks>
+    /// The codes are the protocol's own (50 insufficientAccessRights, 32 noSuchObject), not Win32 ones:
+    /// going through <c>LdapConnection</c> rather than ADSI means the server's own answer arrives intact
+    /// instead of wrapped in a COM HRESULT. <c>unavailableCriticalExtension</c> gets its own words because
+    /// it means precisely one thing here — the DC would not honour the Show Deleted Objects control.
+    /// </remarks>
+    public static DeletedObjectsStatus ClassifyLdap(int resultCode, string? message)
+    {
+        switch (resultCode)
+        {
+            case 50: return DeletedObjectsStatus.AccessDenied;          // insufficientAccessRights
+            case 8:  return DeletedObjectsStatus.AccessDenied;          // strongerAuthRequired
+            case 32: return DeletedObjectsStatus.NotFound;              // noSuchObject
+            case 12: return DeletedObjectsStatus.ControlRefused;        // unavailableCriticalExtension
+        }
+        return Classify(0, message);
+    }
+
+    /// <summary>
     /// Turns a failed read into a status the window can explain in a sentence.
     /// </summary>
     /// <remarks>
@@ -241,7 +304,13 @@ public static class DeletedObjects
                        "been granted it.";
 
             case DeletedObjectsStatus.NotFound:
-                return $"No Deleted Objects container was found in {where}.";
+                return $"No Deleted Objects container was found in {where}. " +
+                       (string.IsNullOrWhiteSpace(result.Message) ? string.Empty : result.Message!.Trim());
+
+            case DeletedObjectsStatus.ControlRefused:
+                return "The domain controller would not honour the Show Deleted Objects control, so the " +
+                       "Deleted Objects container cannot be read. " +
+                       (string.IsNullOrWhiteSpace(result.Message) ? string.Empty : result.Message!.Trim());
 
             case DeletedObjectsStatus.Failed:
                 return string.IsNullOrWhiteSpace(result.Message)
