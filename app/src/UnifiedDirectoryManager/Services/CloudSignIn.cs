@@ -58,11 +58,20 @@ public static class CloudSignIn
     {
         if (check is null) return string.Empty;
 
-        // A switch EXPRESSION with no default arm, on purpose. Under -warnaserror a non-exhaustive one
-        // is a build error, so a state added to CloudSignInState cannot reach an operator without
-        // somebody deciding what it should say. The default arm this replaced made the NotConfigured
-        // case inert -- mutation testing deleted that case and nothing changed, because both returned
-        // empty -- and would have quietly swallowed any new state the same way.
+        // Every state named explicitly, and the catch-all THROWS rather than returning empty.
+        //
+        // The arm this replaced was `default: return string.Empty`, which made the NotConfigured case
+        // inert: mutation testing deleted that case and nothing changed, because both returned empty.
+        // It would have swallowed any state added later in exactly the same way.
+        //
+        // Dropping the catch-all entirely does not work, however appealing it sounds: a C# enum is not a
+        // closed set, so `(CloudSignInState)5` is a legal value and the compiler insists on an arm for
+        // it (CS8524 under -warnaserror). Throwing satisfies that without reintroducing the silence --
+        // a state nobody wrote a sentence for is a bug, and the one caller already degrades a throw into
+        // "could not check" rather than taking the app down.
+        //
+        // The guard against FORGETTING a state is therefore the suite, not the compiler: it asserts that
+        // every member of the enum is named in this switch.
         return check.State switch
         {
             // Nothing is wrong.
@@ -83,6 +92,9 @@ public static class CloudSignIn
             // cannot fix it.
             CloudSignInState.CheckFailed =>
                 "Could not check the Entra ID sign-in, so cloud features may not work." + Because(check.Message),
+
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(check), check.State, "No warning-bar wording has been written for this sign-in state."),
         };
 
         static string For(string? account) =>

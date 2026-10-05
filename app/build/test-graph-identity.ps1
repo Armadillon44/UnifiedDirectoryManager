@@ -194,16 +194,24 @@ Check '  nor claiming expired'          $false ((Warn $unknown) -like '*expired*
 Check '  and offers NO button'          $false (CanSignIn $unknown)
 Check 'null is treated as nothing'      '' (Warn $null)
 
-# The wording switch is EXHAUSTIVE over the enum, with no catch-all arm. Under -warnaserror that makes
-# a missing state a build error (CS8524), so a state added later cannot reach an operator without
-# somebody deciding what it should say. It replaced a default arm, which mutation testing showed had
-# made the NotConfigured case inert: deleting that case changed nothing, because both returned empty.
-# A discard arm would quietly restore exactly that, so its absence is asserted here.
+# The wording switch names every state, and its catch-all THROWS rather than returning empty.
+#
+# It replaced a `default: return string.Empty`, which mutation testing showed had made the
+# NotConfigured case inert -- deleting that case changed nothing, because both returned empty.
+#
+# Removing the catch-all altogether does not work, however appealing: a C# enum is not a closed set, so
+# (CloudSignInState)5 is legal and the compiler demands an arm for it. That is CS8524, and it reached
+# CI because a local INCREMENTAL build had reported success for a compile that never ran. So the guard
+# against forgetting a state is this suite, not the compiler -- which is why it checks every member by
+# name, and checks that the catch-all cannot quietly swallow one.
 $cloudSrc = Get-Content -Raw (Join-Path (Join-Path $repoRoot 'app\src\UnifiedDirectoryManager') 'Services\CloudSignIn.cs')
 $switchBlock = [regex]::Match($cloudSrc, '(?s)return check\.State switch.*?\n        \};').Value
 Check 'the wording switch was found'    $true ($switchBlock.Length -gt 0)
-Check '  it has no catch-all arm'       $false ($switchBlock -match '_\s*=>')
-Check '  and no default'                $false ($switchBlock -match 'default\s*:')
+Check '  it has a catch-all'            $true  ($switchBlock -match '_\s*=>')
+Check '  which throws'                  $true  ($switchBlock -match '_\s*=>\s*throw')
+# The failure that matters is a state nobody wrote a sentence for being shown as no warning at all.
+Check '  and never returns empty'       $false ($switchBlock -match '_\s*=>\s*string\.Empty')
+Check '  with no default label'         $false ($switchBlock -match 'default\s*:')
 # Every state named, so the compiler has something to check against.
 foreach ($state in 'SignedIn', 'NotConfigured', 'NotSignedIn', 'Expired', 'CheckFailed') {
     Check "  it handles $state" $true ($switchBlock -match ('CloudSignInState\.' + $state))
