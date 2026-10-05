@@ -198,8 +198,9 @@ list of what the app can do.
 - **View** — Refresh, Toggle Pane Dock (Right / Bottom), then two submenus that act on **the folder
   selected in the tree** rather than on the list: **Favourites** (Pin to Favourites / Unpin from
   Favourites / Move Up / Move Down) and **Selected Folder** (Properties… / Delete OU…).
-- **Tools** — Advanced Search…, Entra Connect Delta Sync…, Manage Scenarios…, **Deleted Objects…**,
-  User Templates…. Finding things, and managing the app's own machinery.
+- **Tools** — Advanced Search…, Entra Connect Delta Sync…, **Sign in to Entra ID…**, Manage
+  Scenarios…, **Deleted Objects…**, User Templates…. Finding things, and managing the app's own
+  machinery.
 - **Help** — View README…, View Log File…, Open Logs Folder, About Unified Directory Manager….
 
 ### The toolbar is yours
@@ -730,6 +731,32 @@ Every line of a progress log — New User, Bulk create, Copy user, Copy groups a
 — can be **selected with the mouse and copied with right-click ▸ Copy** *(New in 2.3.0.)*, and the
 scenario progress window additionally has a **Copy log** button that puts the whole log on the
 clipboard at once. Attach that text to a ticket rather than a screenshot.
+
+## The cloud sign-in is checked at startup
+
+*(2.3.4.)* When the app opens it quietly checks whether the saved Entra ID sign-in still works, and
+shows a warning bar if it does not — the same yellow bar used when on-prem AD is not connected, with a
+**Sign in…** button that opens **Settings ▸ Cloud**. You can also sign in deliberately from
+**Tools ▸ Sign in to Entra ID…**.
+
+It checks by **actually asking for a token**, not by looking at whether a sign-in was once saved. The
+saved sign-in outlives the token it was saved with: it stays on disk after the refresh token ages out
+(roughly 90 days idle), after consent is withdrawn, and after the account is disabled. Looking only at
+what was saved would report “signed in” for an account that stopped working months ago, and you would
+find out at the first cloud operation of the day instead.
+
+**It will never open a sign-in window by itself.** The check uses a credential that cannot prompt, so
+opening the app to look up an on-prem user does not put a browser in front of you.
+
+Three things it deliberately does not do:
+
+- **Nothing at all if Entra ID was never set up here.** No tenant, no warning. A machine used only for
+  on-prem work has not got a problem.
+- **It does not say “signed out” when it could not tell.** If the network is down, the bar says the
+  check could not be completed and quotes why — and offers **no** Sign in button, because signing in
+  cannot fix a network that is down.
+- **It does not block startup.** The check runs after the on-prem connection attempt, in the
+  background, and a failure in the check itself never stops the app opening.
 
 ## Deleted objects (AD Recycle Bin)
 

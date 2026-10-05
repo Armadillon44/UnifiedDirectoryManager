@@ -213,6 +213,18 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Non-empty drives the yellow "not connected to on-prem AD" warning bar; cleared once connected.</summary>
     [ObservableProperty] private string _adWarning = string.Empty;
 
+    /// <summary>
+    /// Warning-bar text when the Entra ID sign-in is missing or no longer works. Empty means nothing is
+    /// wrong, or that cloud was never set up here — see <see cref="CloudSignIn.Warning"/>.
+    /// </summary>
+    [ObservableProperty] private string _cloudWarning = string.Empty;
+
+    /// <summary>
+    /// Whether the cloud bar offers a Sign in… button. False when the check could not be completed:
+    /// signing in cannot fix a network that is down.
+    /// </summary>
+    [ObservableProperty] private bool _canSignInToCloud;
+
     // Selection-driven flags so the right-click menu can show only the relevant account actions.
     [ObservableProperty] private bool _hasSelection;
     [ObservableProperty] private bool _selectionHasDisabled;
@@ -306,6 +318,41 @@ public partial class MainViewModel : ObservableObject
     {
         await TryAutoConnectAsync();
         Initialize();
+        // After the on-prem attempt, not before: that one is what most sessions are waiting on, and the
+        // cloud check costs a round trip to the token endpoint.
+        await CheckCloudSignInAsync();
+    }
+
+    /// <summary>
+    /// Asks whether the saved Entra ID sign-in still works, and puts the answer in the warning bar.
+    /// </summary>
+    /// <remarks>
+    /// Silent: it never opens a browser. Run at startup and again whenever Settings closes, because
+    /// signing in or out there is exactly what changes the answer.
+    /// </remarks>
+    public async Task CheckCloudSignInAsync()
+    {
+        CloudSignInCheck check;
+        try { check = await _graph.CheckSignInAsync(); }
+        catch (Exception ex)
+        {
+            // The check must never be the thing that breaks startup.
+            AppLog.Instance.Warn("The Entra ID sign-in check failed: " + ex.Message);
+            check = new CloudSignInCheck(CloudSignInState.CheckFailed, null, ex.Message);
+        }
+        CloudWarning = CloudSignIn.Warning(check);
+        CanSignInToCloud = CloudSignIn.CanSignIn(check);
+    }
+
+    /// <summary>The bar's Sign in… button: Settings, open on the page that does it.</summary>
+    [RelayCommand]
+    private void SignInToCloud()
+    {
+        _dialogs.ShowSettings(RefreshAfterReconnect, SettingsTabs.Cloud);
+        EnsureCloudRoot();
+        ReconfigureExchange();
+        RebuildToolbar();
+        _ = CheckCloudSignInAsync();
     }
 
     /// <summary>Best-effort silent reconnect using the last successful profile and a saved credential.</summary>
@@ -601,6 +648,7 @@ public partial class MainViewModel : ObservableObject
         EnsureCloudRoot();      // a sign-in/out in Settings may have added/removed the cloud sections
         ReconfigureExchange();  // …and may have pointed the app at a different tenant
         RebuildToolbar();       // …and may have changed what is on the toolbar
+        _ = CheckCloudSignInAsync(); // …and signing in or out is the whole point of the Cloud page
     }
 
     /// <summary>

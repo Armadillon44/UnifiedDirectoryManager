@@ -27,6 +27,19 @@ public class InertGraphService : IGraphService
     /// </summary>
     public string? SignedInAccount { get; set; }
     public virtual void Configure(string tenantId, string clientId) => throw Unused();
+    /// <summary>What the next CheckSignInAsync reports. Defaults to “nobody set cloud up here”, which is
+    /// the state that makes the warning bar stay quiet.</summary>
+    public CloudSignInCheck SignInCheck { get; set; } = CloudSignInCheck.NotConfigured;
+
+    /// <summary>How many times the sign-in was checked.</summary>
+    public int SignInChecks { get; private set; }
+
+    public virtual Task<CloudSignInCheck> CheckSignInAsync(CancellationToken cancellationToken = default)
+    {
+        SignInChecks++;
+        return Task.FromResult(SignInCheck);
+    }
+
     public virtual Task SignInAsync(CancellationToken cancellationToken = default) => throw Unused();
     public virtual void SignOut() => throw Unused();
     public virtual Task<string> GetAccessTokenAsync(string[] scopes, CancellationToken cancellationToken = default) => throw Unused();

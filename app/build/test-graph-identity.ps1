@@ -148,5 +148,99 @@ Check 'it drops the record on a change'      $true  ($configure -match '_record 
 Check 'and never loads one blindly'          $false ($configure -match '_record \?\?= TryLoadAuthRecord\(\)')
 Check 'loading one is tenant-scoped'         $true  ($configure -match '_record \?\?= LoadAuthRecordFor\(')
 
+Write-Host "`n== the cloud sign-in is checked at startup ==" -ForegroundColor Cyan
+# IsSignedIn only means a saved record exists, and a record OUTLIVES the token it was saved with: it
+# stays on disk after the refresh token ages out, after consent is revoked, and after the account is
+# disabled. Reporting from the record would say "signed in" for an account that stopped working months
+# ago, and the operator would find out at the first cloud operation instead of at startup.
+$Cloud = [UnifiedDirectoryManager.Services.CloudSignIn]
+$CheckType = [UnifiedDirectoryManager.Services.CloudSignInCheck]
+$State = [UnifiedDirectoryManager.Services.CloudSignInState]
+function Warn($check) { $b = [object[]]::new(1); $b[0] = $check; return $Cloud.GetMethod('Warning').Invoke($null, $b) }
+function CanSignIn($check) { $b = [object[]]::new(1); $b[0] = $check; return $Cloud.GetMethod('CanSignIn').Invoke($null, $b) }
+function Mk($state, $account, $message) { return $CheckType::new($state, $account, $message) }
+
+$ok = Mk $State::SignedIn 'jane@contoso.net' $null
+Check 'a working sign-in says nothing'  '' (Warn $ok)
+Check '  and offers no button'          $false (CanSignIn $ok)
+
+# An operator doing only on-prem work has not got a problem. A warning they cannot act on and do not
+# need is one they learn to ignore, which costs the warnings that matter.
+$unconfigured = $CheckType::NotConfigured
+Check 'an unconfigured tenant is silent' '' (Warn $unconfigured)
+Check '  and offers no button'           $false (CanSignIn $unconfigured)
+
+$out = Mk $State::NotSignedIn $null $null
+Check 'signed out is reported'          $true ((Warn $out) -like '*Not signed in to Entra ID*')
+Check '  with the consequence'          $true ((Warn $out) -like '*Exchange Online features are unavailable*')
+Check '  and offers the button'         $true (CanSignIn $out)
+
+$expired = Mk $State::Expired 'jane@contoso.net' $null
+Check 'an expired sign-in is reported'  $true ((Warn $expired) -like '*has expired*')
+Check '  naming whose it was'           $true ((Warn $expired) -like '*jane@contoso.net*')
+Check '  and offers the button'         $true (CanSignIn $expired)
+# The account is not always known; the sentence still has to read.
+$expiredAnon = Mk $State::Expired $null $null
+Check '  it reads without an account'   $true ((Warn $expiredAnon) -like '*saved Entra ID sign-in has expired*')
+Check '  with no dangling "for"'        $false ((Warn $expiredAnon) -like '*for *has expired*')
+
+# THE DISTINCTION THIS FILE EXISTS FOR. "Could not tell" is not "signed out". Telling someone to sign in
+# again when the real problem is a dropped network sends them round a loop that cannot fix it.
+$unknown = Mk $State::CheckFailed 'jane@contoso.net' 'No such host is known.'
+Check 'an unreachable check says so'    $true ((Warn $unknown) -like '*Could not check*')
+Check '  quoting why'                   $true ((Warn $unknown) -like '*No such host is known*')
+Check '  never claiming signed out'     $false ((Warn $unknown) -like '*Not signed in*')
+Check '  nor claiming expired'          $false ((Warn $unknown) -like '*expired*')
+Check '  and offers NO button'          $false (CanSignIn $unknown)
+Check 'null is treated as nothing'      '' (Warn $null)
+
+# The wording switch is EXHAUSTIVE over the enum, with no catch-all arm. Under -warnaserror that makes
+# a missing state a build error (CS8524), so a state added later cannot reach an operator without
+# somebody deciding what it should say. It replaced a default arm, which mutation testing showed had
+# made the NotConfigured case inert: deleting that case changed nothing, because both returned empty.
+# A discard arm would quietly restore exactly that, so its absence is asserted here.
+$cloudSrc = Get-Content -Raw (Join-Path (Join-Path $repoRoot 'app\src\UnifiedDirectoryManager') 'Services\CloudSignIn.cs')
+$switchBlock = [regex]::Match($cloudSrc, '(?s)return check\.State switch.*?\n        \};').Value
+Check 'the wording switch was found'    $true ($switchBlock.Length -gt 0)
+Check '  it has no catch-all arm'       $false ($switchBlock -match '_\s*=>')
+Check '  and no default'                $false ($switchBlock -match 'default\s*:')
+# Every state named, so the compiler has something to check against.
+foreach ($state in 'SignedIn', 'NotConfigured', 'NotSignedIn', 'Expired', 'CheckFailed') {
+    Check "  it handles $state" $true ($switchBlock -match ('CloudSignInState\.' + $state))
+}
+
+$srcDir = Join-Path $repoRoot 'app\src\UnifiedDirectoryManager'
+Write-Host "`n== the check never opens a browser ==" -ForegroundColor Cyan
+# The credential used for real work falls back to INTERACTIVE when silent acquisition fails, which is
+# right when an operator asked for something and wrong at startup -- it would put a sign-in window in
+# front of someone who only wanted to look up an on-prem user.
+$graphSrc = Get-Content -Raw (Join-Path $srcDir 'Services\GraphService.cs')
+$checkBlock = [regex]::Match($graphSrc, '(?s)public async Task<CloudSignInCheck> CheckSignInAsync.*?\n    \}').Value
+Check 'the check was found'             $true ($checkBlock.Length -gt 0)
+Check '  it disables the prompt'        $true ($checkBlock -match 'DisableAutomaticAuthentication = true')
+Check '  and reads the expiry case'     $true ($checkBlock -match 'catch \(AuthenticationRequiredException\)')
+# Everything else is "could not tell", not "signed out".
+Check '  anything else is CheckFailed'  $true ($checkBlock -match 'CloudSignInState\.CheckFailed')
+Check '  and never authenticates'       $false ($checkBlock -match 'AuthenticateAsync')
+
+Write-Host "`n== and it runs where it should ==" -ForegroundColor Cyan
+$mainSrc = Get-Content -Raw (Join-Path $srcDir 'ViewModels\MainViewModel.cs')
+$startup = [regex]::Match($mainSrc, '(?s)public async Task StartupAsync\(\).*?\n    \}').Value
+Check 'startup checks the sign-in'      $true ($startup -match 'CheckCloudSignInAsync\(\)')
+# After the on-prem attempt: that is what most sessions are waiting on.
+Check '  after the on-prem connect'     $true ($startup.IndexOf('CheckCloudSignInAsync') -gt $startup.IndexOf('TryAutoConnectAsync'))
+# Signing in or out is the whole point of the Cloud page, so closing Settings has to re-ask.
+$settingsBlock = [regex]::Match($mainSrc, '(?s)private void OpenSettings\(\).*?\n    \}').Value
+Check 'closing Settings re-checks'      $true ($settingsBlock -match 'CheckCloudSignInAsync')
+# A failed check must never be the thing that breaks startup.
+$checkMethod = [regex]::Match($mainSrc, '(?s)public async Task CheckCloudSignInAsync\(\).*?\n    \}').Value
+Check 'the check cannot throw'          $true ($checkMethod -match 'catch \(Exception')
+
+$mainXamlSrc = Get-Content -Raw (Join-Path $srcDir 'Views\MainWindow.xaml')
+Check 'the bar is in the window'        $true ($mainXamlSrc -match 'CloudWarning, Converter=\{StaticResource NonEmptyToVis\}')
+Check '  with a Sign in button'         $true ($mainXamlSrc -match 'SignInToCloudCommand')
+# Hidden when signing in cannot help, which is the CheckFailed case.
+Check '  that hides when it cannot help' $true ($mainXamlSrc -match 'CanSignInToCloud, Converter=\{StaticResource BoolToVis\}')
+
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

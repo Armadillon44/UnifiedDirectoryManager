@@ -146,6 +146,47 @@ public sealed class GraphService : IGraphService
         AppLog.Instance.Info($"Signed in to Entra ID as '{_record.Username}'.");
     }
 
+    /// <inheritdoc />
+    public async Task<CloudSignInCheck> CheckSignInAsync(CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured) return CloudSignInCheck.NotConfigured;
+        if (_record is null) return new CloudSignInCheck(CloudSignInState.NotSignedIn, null, null);
+
+        try
+        {
+            // A credential that CANNOT open a browser. The one the app uses for real work falls back to
+            // interactive when silent acquisition fails, which is right when an operator asked for
+            // something and wrong at startup, where it would put a sign-in window in front of someone who
+            // never asked for one. DisableAutomaticAuthentication turns that fallback into an exception.
+            var silent = new InteractiveBrowserCredential(new InteractiveBrowserCredentialOptions
+            {
+                TenantId = _tenantId,
+                ClientId = _clientId,
+                RedirectUri = new Uri("http://localhost"),
+                TokenCachePersistenceOptions = new TokenCachePersistenceOptions { Name = TokenCacheName },
+                AuthenticationRecord = _record,
+                DisableAutomaticAuthentication = true,
+            });
+
+            await silent.GetTokenAsync(new TokenRequestContext(Scopes), cancellationToken);
+            return new CloudSignInCheck(CloudSignInState.SignedIn, _record.Username, null);
+        }
+        catch (AuthenticationRequiredException)
+        {
+            // The documented way DisableAutomaticAuthentication reports “this needs a human”.
+            AppLog.Instance.Info($"The saved Entra ID sign-in for '{_record.Username}' no longer yields a token.");
+            return new CloudSignInCheck(CloudSignInState.Expired, _record.Username, null);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            // Could not TELL. Reporting this as signed out would send the operator to re-authenticate,
+            // which cannot fix a network that is down.
+            AppLog.Instance.Warn("Could not check the Entra ID sign-in: " + ex.Message);
+            return new CloudSignInCheck(CloudSignInState.CheckFailed, _record.Username, ex.Message);
+        }
+    }
+
     public void SignOut()
     {
         _record = null;

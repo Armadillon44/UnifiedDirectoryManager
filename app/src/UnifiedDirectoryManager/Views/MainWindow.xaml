@@ -156,6 +156,9 @@
                 <MenuItem Header="_Advanced Search…" Command="{Binding AdvancedSearchCommand}" InputGestureText="Ctrl+F" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <Separator Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="_Entra Connect Delta Sync…" Command="{Binding EntraSyncCommand}" />
+                <!-- Also the warning bar's Sign in button. Here as well because signing in is something
+                     to do deliberately, not only when something has already gone wrong. -->
+                <MenuItem Header="Sign in to Entra _ID…" Command="{Binding SignInToCloudCommand}" />
                 <MenuItem Header="_Manage Scenarios…" Command="{Binding ManageScenariosCommand}" />
                 <MenuItem Header="_Deleted Objects…" Command="{Binding ShowDeletedObjectsCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="User _Templates…" Command="{Binding ManageTemplatesCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
@@ -244,6 +247,24 @@
                 <Button DockPanel.Dock="Right" Content="Connect…" Command="{Binding OpenSettingsCommand}" Margin="10,0,0,0" />
                 <TextBlock Text="⚠" Foreground="#B8860B" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="0,0,8,0" />
                 <TextBlock Text="{Binding AdWarning}" Foreground="#5C4700" VerticalAlignment="Center" TextWrapping="Wrap" />
+            </DockPanel>
+        </Border>
+
+        <!--
+          The same bar for the cloud sign-in, stacked under the on-prem one. A sign-in that has quietly
+          stopped working otherwise shows up as the first cloud operation of the day failing, which is
+          both later and harder to read than being told at startup.
+
+          The button hides when the check could not be completed: signing in cannot fix a network that
+          is down, and a button that does nothing useful is worse than no button.
+        -->
+        <Border DockPanel.Dock="Top" Background="#FFF4CE" BorderBrush="#E0C36A" BorderThickness="0,0,0,1" Padding="10,6"
+                Visibility="{Binding CloudWarning, Converter={StaticResource NonEmptyToVis}}">
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Content="Sign in…" Command="{Binding SignInToCloudCommand}" Margin="10,0,0,0"
+                        Visibility="{Binding CanSignInToCloud, Converter={StaticResource BoolToVis}}" />
+                <TextBlock Text="⚠" Foreground="#B8860B" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <TextBlock Text="{Binding CloudWarning}" Foreground="#5C4700" VerticalAlignment="Center" TextWrapping="Wrap" />
             </DockPanel>
         </Border>
 

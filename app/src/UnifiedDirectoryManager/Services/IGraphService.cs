@@ -25,6 +25,19 @@ public interface IGraphService
     /// <summary>Interactively signs the admin in (opens the system browser) and records the account.</summary>
     Task SignInAsync(CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Whether the saved sign-in still yields a token, WITHOUT ever prompting.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="IsSignedIn"/> only says a saved record exists, and a record outlives the token it was
+    /// saved with: it stays on disk after the refresh token ages out, after consent is revoked, and
+    /// after the account is disabled. This asks the question that record cannot answer.
+    ///
+    /// Never throws for an expired sign-in, and never opens a browser — it runs at startup, where a
+    /// sign-in window would appear in front of someone who only wanted to look up an on-prem user.
+    /// </remarks>
+    Task<CloudSignInCheck> CheckSignInAsync(CancellationToken cancellationToken = default);
+
     /// <summary>Forgets the signed-in admin (clears the persisted authentication record).</summary>
     void SignOut();
 
