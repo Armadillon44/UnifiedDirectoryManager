@@ -80,6 +80,11 @@ public class InertDialogService : IDialogService
     /// </summary>
     public List<string?> SettingsTabsOpened { get; } = new();
 
+    /// <summary>How many times the Deleted Objects window was asked for.</summary>
+    public int DeletedObjectsShown { get; private set; }
+
+    public virtual void ShowDeletedObjects() => DeletedObjectsShown++;
+
     public virtual void ShowSettings(Action onReconnected, string? openOnTab = null) =>
         SettingsTabsOpened.Add(openOnTab);
     public virtual void ShowCloudObjectProperties(CloudObjectRow row) => throw Unused();

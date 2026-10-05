@@ -157,6 +157,7 @@
                 <Separator Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="_Entra Connect Delta Sync…" Command="{Binding EntraSyncCommand}" />
                 <MenuItem Header="_Manage Scenarios…" Command="{Binding ManageScenariosCommand}" />
+                <MenuItem Header="_Deleted Objects…" Command="{Binding ShowDeletedObjectsCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
                 <MenuItem Header="User _Templates…" Command="{Binding ManageTemplatesCommand}" Visibility="{Binding IsAdView, Converter={StaticResource BoolToVis}}" />
             </MenuItem>
 

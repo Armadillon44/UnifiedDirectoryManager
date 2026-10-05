@@ -330,6 +330,16 @@ public sealed class DialogService : IDialogService
         window.ShowDialog(); // modal
     }
 
+    public void ShowDeletedObjects()
+    {
+        // Non-modal, like the object editors: an operator wants this open beside the tree while they
+        // work out what went missing.
+        var vm = new DeletedObjectsViewModel(_directory);
+        var window = new DeletedObjectsWindow { DataContext = vm, Owner = Owner };
+        window.Show();
+        _ = vm.LoadAsync();
+    }
+
     public void ShowCloudObjectProperties(CloudObjectRow row)
     {
         var vm = new CloudObjectDetailViewModel(_graph, _exchange, this);

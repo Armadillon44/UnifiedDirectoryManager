@@ -198,8 +198,8 @@ list of what the app can do.
 - **View** — Refresh, Toggle Pane Dock (Right / Bottom), then two submenus that act on **the folder
   selected in the tree** rather than on the list: **Favourites** (Pin to Favourites / Unpin from
   Favourites / Move Up / Move Down) and **Selected Folder** (Properties… / Delete OU…).
-- **Tools** — Advanced Search…, Entra Connect Delta Sync…, Manage Scenarios…, User Templates….
-  Finding things, and managing the app's own machinery.
+- **Tools** — Advanced Search…, Entra Connect Delta Sync…, Manage Scenarios…, **Deleted Objects…**,
+  User Templates…. Finding things, and managing the app's own machinery.
 - **Help** — View README…, View Log File…, Open Logs Folder, About Unified Directory Manager….
 
 ### The toolbar is yours
@@ -730,6 +730,30 @@ Every line of a progress log — New User, Bulk create, Copy user, Copy groups a
 — can be **selected with the mouse and copied with right-click ▸ Copy** *(New in 2.3.0.)*, and the
 scenario progress window additionally has a **Copy log** button that puts the whole log on the
 clipboard at once. Attach that text to a ticket rather than a screenshot.
+
+## Deleted objects (AD Recycle Bin)
+
+*(2.3.4.)* **Tools ▸ Deleted Objects…** lists what has been deleted from the domain and is still
+recoverable — what it was called, what type it was, which container it was deleted from, and when.
+Filter by name, logon name or old location. It is **read-only**: nothing here can be restored yet.
+
+The line above the list tells you which of three situations you are in, because all three produce an
+empty grid and they mean entirely different things:
+
+- **The Recycle Bin is enabled** — the list shows what can still be brought back, and for how long.
+- **It is not enabled** — you are looking at *tombstones*. AD strips almost every attribute when it
+  makes one, so you can see that something was deleted and roughly what it was, but it cannot be
+  restored with its group memberships. The window says so rather than pretending otherwise.
+- **You cannot read it** — reading the Deleted Objects container is a **Domain Admin** right by
+  default. If your account has not been granted it, the window says that instead of showing an empty
+  list, which would read as “nothing has been deleted”.
+
+**Include recycled** also lists objects past the recoverable window. They are off by default: those
+cannot be brought back, and a list mixing them in invites trying.
+
+> Names look right here even though AD does not store them that way. A deleted object's `cn` is
+> rewritten to `Jane Doe\0ADEL:<guid>` so that two objects deleted from different places cannot
+> collide in one flat container; the window shows the name the object actually had.
 
 ## Scenarios
 

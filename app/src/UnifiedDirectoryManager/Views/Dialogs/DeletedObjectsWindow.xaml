@@ -1,0 +1,69 @@
+<Window x:Class="UnifiedDirectoryManager.Views.Dialogs.DeletedObjectsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Deleted Objects" Height="560" Width="940" WindowStartupLocation="CenterOwner">
+    <DockPanel Margin="12">
+
+        <!--
+          The summary line carries the whole point of this window's error handling: "nothing has been
+          deleted", "you are not allowed to look" and "the Recycle Bin is off" all produce an empty grid,
+          and telling them apart is the difference between a useful view and a misleading one.
+        -->
+        <Border DockPanel.Dock="Top" Padding="10,8" Margin="0,0,0,10" BorderThickness="1">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Setter Property="Background" Value="#F3F7FB" />
+                    <Setter Property="BorderBrush" Value="#CFE0F0" />
+                    <Style.Triggers>
+                        <!-- The same yellow the main window uses for its not-connected bar, so a problem
+                             here looks like a problem everywhere else in the app. -->
+                        <DataTrigger Binding="{Binding IsProblem}" Value="True">
+                            <Setter Property="Background" Value="#FFF4CE" />
+                            <Setter Property="BorderBrush" Value="#E0C36A" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
+            <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" />
+        </Border>
+
+        <Border DockPanel.Dock="Top" Padding="0,0,0,8">
+            <WrapPanel>
+                <TextBlock Text="Filter:" VerticalAlignment="Center" Margin="0,0,6,0" />
+                <TextBox Width="220" VerticalAlignment="Center"
+                         Text="{Binding QuickFilter, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="Matches the name, the logon name, or where the object used to live." />
+                <CheckBox Content="Include recycled" VerticalAlignment="Center" Margin="16,0,0,0"
+                          IsChecked="{Binding IncludeRecycled}"
+                          ToolTip="Also list objects past the deleted-object lifetime. Those keep only a few attributes and cannot be restored." />
+                <Button Content="Refresh" Command="{Binding LoadCommand}" Margin="16,0,0,0" Padding="9,3"
+                        IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" />
+            </WrapPanel>
+        </Border>
+
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+            <Button DockPanel.Dock="Right" Content="Close" IsCancel="True" MinWidth="90" Click="OnClose" />
+            <TextBlock Text="{Binding CountText}" Foreground="#666" VerticalAlignment="Center" />
+        </DockPanel>
+
+        <!--
+          Read-only, and visibly so: no context menu and no edit affordances, because nothing here can be
+          acted on yet. Restoring is a separate change.
+        -->
+        <ListView ItemsSource="{Binding RowsView}" IsSynchronizedWithCurrentItem="True"
+                  ScrollViewer.IsDeferredScrollingEnabled="True"
+                  VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Name" Width="200" DisplayMemberBinding="{Binding Name}" />
+                    <GridViewColumn Header="Type" Width="90" DisplayMemberBinding="{Binding Type}" />
+                    <GridViewColumn Header="Logon name" Width="130" DisplayMemberBinding="{Binding SamAccountName}" />
+                    <!-- Where it was deleted FROM, which is the question anyone opening this window has. -->
+                    <GridViewColumn Header="Was in" Width="220" DisplayMemberBinding="{Binding LastKnownParentText}" />
+                    <GridViewColumn Header="Deleted" Width="130" DisplayMemberBinding="{Binding DeletedOnText}" />
+                    <GridViewColumn Header="State" Width="80" DisplayMemberBinding="{Binding StateText}" />
+                </GridView>
+            </ListView.View>
+        </ListView>
+    </DockPanel>
+</Window>

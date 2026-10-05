@@ -124,6 +124,21 @@ public interface IDirectoryService
     /// <summary>True if an object with the given DN currently exists (used to validate template group DNs before use).</summary>
     Task<bool> ExistsAsync(string distinguishedName, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Reads the domain's Deleted Objects container, along with whether the AD Recycle Bin is enabled
+    /// and how long deletions stay recoverable.
+    /// </summary>
+    /// <param name="includeRecycled">
+    /// Also list objects past the deleted-object lifetime. Those keep only a few attributes and cannot be
+    /// brought back by the Recycle Bin, so they are off by default rather than mixed in.
+    /// </param>
+    /// <remarks>
+    /// Never throws for the expected failures. Reading this container is a Domain Admin right by default,
+    /// so “you are not allowed to look” is an ordinary outcome and comes back as a status rather than an
+    /// exception — an empty list and an unreadable one must not look the same to the caller.
+    /// </remarks>
+    Task<DeletedObjectsResult> ListDeletedObjectsAsync(bool includeRecycled, CancellationToken cancellationToken = default);
+
     /// <summary>Returns the subset of the given sAMAccountNames that already exist in the directory (matched
     /// case-insensitively, across any object type since the logon-name namespace is domain-wide), so callers
     /// can reject duplicate logon names before attempting to create. Runs as one chunked query.</summary>

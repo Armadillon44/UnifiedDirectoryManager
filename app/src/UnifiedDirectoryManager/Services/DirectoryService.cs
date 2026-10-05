@@ -1409,6 +1409,148 @@ public sealed class DirectoryService : IDirectoryService
     private static string EscapeRdn(string value) => EscapeDnValue(value).Replace("/", "\\/");
 
     /// <summary>Turns directory exceptions into short, user-facing messages.</summary>
+    // ---------------------------------------------------------------- Deleted Objects (AD Recycle Bin)
+
+    /// <inheritdoc />
+    public Task<DeletedObjectsResult> ListDeletedObjectsAsync(bool includeRecycled, CancellationToken cancellationToken = default)
+    {
+        return Task.Run(() =>
+        {
+            // Feature state first, and separately: it is informational, so failing to read it must still
+            // leave the list readable. A domain where the Partitions container is unreadable is reported as
+            // "not enabled", which is the safe way round -- it under-promises what can be restored.
+            var (enabled, lifetime) = ReadRecycleBinState();
+
+            try
+            {
+                // The container's real DN in every normal domain. AD also publishes it as a well-known
+                // object (<WKGUID=18E2EA80684F11D2B9AA00C04F79F805,...>), which survives the container being
+                // renamed; that is not used here because the ADsPath escaping for a WKGUID bind is its own
+                // problem and nothing renames this container.
+                using var container = Required.CreateEntry(DeletedObjects.ContainerDn(Required.DefaultNamingContext));
+                using var searcher = new DirectorySearcher(container)
+                {
+                    Filter = DeletedObjects.Filter(includeRecycled),
+                    SearchScope = SearchScope.OneLevel,
+                    // The managed name for the Show Deleted Objects control (LDAP OID 1.2.840.113556.1.4.417).
+                    // Without it the container and everything in it are invisible, and the search comes back
+                    // empty rather than failing -- which would read as "nothing has been deleted".
+                    Tombstone = true,
+                    PageSize = 1000,
+                };
+                searcher.PropertiesToLoad.AddRange(new[]
+                {
+                    "msDS-LastKnownRDN", "cn", "distinguishedName", "lastKnownParent",
+                    "whenChanged", "objectClass", "sAMAccountName", "isRecycled", "objectGUID",
+                });
+
+                var rows = new List<DeletedObjectRow>();
+                using var results = searcher.FindAll();
+                foreach (SearchResult r in results)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var dn = GetString(r, "distinguishedName");
+                    if (string.IsNullOrEmpty(dn)) continue;
+
+                    rows.Add(new DeletedObjectRow(
+                        Name: DeletedObjects.DisplayName(GetString(r, "msDS-LastKnownRDN"), GetString(r, "cn")),
+                        DistinguishedName: dn,
+                        Type: AdObjectTypeExtensions.FromClasses(GetStrings(r, "objectClass")),
+                        LastKnownParent: GetString(r, "lastKnownParent"),
+                        DeletedOn: GetDateTime(r, "whenChanged"),
+                        SamAccountName: GetString(r, "sAMAccountName"),
+                        IsRecycled: string.Equals(GetString(r, "isRecycled"), "True", StringComparison.OrdinalIgnoreCase),
+                        ObjectGuid: GetGuidText(r, "objectGUID")));
+                }
+
+                // Newest first: an operator opening this is almost always looking for something deleted in
+                // the last few minutes, not browsing six months of history.
+                rows.Sort((a, b) => Nullable.Compare(b.DeletedOn, a.DeletedOn));
+                return new DeletedObjectsResult(DeletedObjectsStatus.Ok, rows, enabled, lifetime, null);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (DirectoryServicesCOMException com)
+            {
+                var detail = string.IsNullOrWhiteSpace(com.ExtendedErrorMessage) ? com.Message : com.ExtendedErrorMessage;
+                return new DeletedObjectsResult(
+                    DeletedObjects.Classify(com.ErrorCode, detail),
+                    Array.Empty<DeletedObjectRow>(), enabled, lifetime, detail?.Trim());
+            }
+            catch (System.Runtime.InteropServices.COMException com)
+            {
+                return new DeletedObjectsResult(
+                    DeletedObjects.Classify(com.HResult, com.Message),
+                    Array.Empty<DeletedObjectRow>(), enabled, lifetime, com.Message?.Trim());
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return new DeletedObjectsResult(
+                    DeletedObjectsStatus.AccessDenied, Array.Empty<DeletedObjectRow>(), enabled, lifetime, ex.Message);
+            }
+            catch (Exception ex)
+            {
+                return new DeletedObjectsResult(
+                    DeletedObjectsStatus.Failed, Array.Empty<DeletedObjectRow>(), enabled, lifetime, Friendly(ex));
+            }
+        }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Whether the Recycle Bin is enabled and how long deletions stay recoverable.
+    /// </summary>
+    /// <remarks>
+    /// Both live in the CONFIGURATION naming context, which is not the domain one and cannot be derived
+    /// from it: in a multi-domain forest the configuration partition belongs to the forest root, so
+    /// "CN=Configuration," + defaultNamingContext is wrong for every child domain. It is read from RootDSE
+    /// instead, which costs one extra round trip when this window opens and nothing the rest of the time.
+    /// </remarks>
+    private (bool Enabled, int LifetimeDays) ReadRecycleBinState()
+    {
+        try
+        {
+            string? configNc;
+            using (var rootDse = Required.CreateRootDse())
+                configNc = rootDse.Properties["configurationNamingContext"]?.Value as string;
+
+            if (string.IsNullOrWhiteSpace(configNc))
+                return (false, DeletedObjects.DefaultLifetimeDays);
+
+            bool enabled;
+            using (var partitions = Required.CreateEntry($"CN=Partitions,{configNc}"))
+                enabled = DeletedObjects.IsRecycleBinEnabled(ValuesOf(partitions, "msDS-EnabledFeature"));
+
+            using var ds = Required.CreateEntry($"CN=Directory Service,CN=Windows NT,CN=Services,{configNc}");
+            return (enabled, DeletedObjects.ResolveLifetimeDays(
+                IntOf(ds, "msDS-deletedObjectLifetime"), IntOf(ds, "tombstoneLifetime")));
+        }
+        catch (Exception ex)
+        {
+            // Informational only. The listing below is what the operator came for.
+            AppLog.Instance.Warn("Could not read the AD Recycle Bin state: " + Friendly(ex));
+            return (false, DeletedObjects.DefaultLifetimeDays);
+        }
+    }
+
+    private static IEnumerable<string> ValuesOf(DirectoryEntry entry, string prop)
+    {
+        var values = entry.Properties[prop];
+        if (values is null) yield break;
+        foreach (var v in values) if (v is string s) yield return s;
+    }
+
+    private static int? IntOf(DirectoryEntry entry, string prop) =>
+        entry.Properties[prop]?.Value is int i ? i : null;
+
+    private static DateTime? GetDateTime(SearchResult r, string prop) =>
+        r.Properties.Contains(prop) && r.Properties[prop].Count > 0 && r.Properties[prop][0] is DateTime d
+            ? d.ToLocalTime()
+            : null;
+
+    private static string GetGuidText(SearchResult r, string prop) =>
+        r.Properties.Contains(prop) && r.Properties[prop].Count > 0 && r.Properties[prop][0] is byte[] bytes && bytes.Length == 16
+            ? new Guid(bytes).ToString()
+            : string.Empty;
+
     internal static string Friendly(Exception ex)
     {
         switch (ex)

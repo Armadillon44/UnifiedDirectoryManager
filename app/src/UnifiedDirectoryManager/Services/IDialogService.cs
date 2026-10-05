@@ -125,6 +125,9 @@ public interface IDialogService
     /// </param>
     void ShowSettings(Action onReconnected, string? openOnTab = null);
 
+    /// <summary>Opens the read-only Deleted Objects window (AD Recycle Bin). Non-modal.</summary>
+    void ShowDeletedObjects();
+
     /// <summary>Opens a (non-modal) read-only properties window for a cloud (Entra ID) object.</summary>
     void ShowCloudObjectProperties(CloudObjectRow row);
 

@@ -96,6 +96,18 @@ public sealed class FakeDirectoryService : IDirectoryService
     public NameResolver? Resolver => null;
     public bool IsConnected => true;
 
+    /// <summary>What the next ListDeletedObjectsAsync returns. Null means the call was not expected.</summary>
+    public DeletedObjectsResult? DeletedObjects { get; set; }
+
+    /// <summary>Every ListDeletedObjectsAsync call, recording whether recycled objects were asked for.</summary>
+    public List<bool> DeletedObjectReads { get; } = new();
+
+    public Task<DeletedObjectsResult> ListDeletedObjectsAsync(bool includeRecycled, CancellationToken cancellationToken = default)
+    {
+        DeletedObjectReads.Add(includeRecycled);
+        return Task.FromResult(DeletedObjects ?? throw Unused());
+    }
+
     public Task ConnectAsync(ConnectionProfile profile, string password, CancellationToken cancellationToken = default) => throw Unused();
     public void Disconnect() => throw Unused();
     /// <summary>The tree root handed to a picker. Null until a test builds one.</summary>

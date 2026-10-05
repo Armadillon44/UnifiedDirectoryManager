@@ -421,6 +421,7 @@ public partial class MainViewModel : ObservableObject
         // Both have keyboard shortcuts and no menu item in the cloud view to grey out for them.
         NewUserCommand.NotifyCanExecuteChanged();
         AdvancedSearchCommand.NotifyCanExecuteChanged();
+        ShowDeletedObjectsCommand.NotifyCanExecuteChanged();
         RebuildToolbar();   // on-prem-only buttons do not belong in the cloud view
     }
 
@@ -569,6 +570,17 @@ public partial class MainViewModel : ObservableObject
         }
         finally { _suppressNodeLoad = false; }
     }
+
+    /// <summary>
+    /// Tools ▸ Deleted Objects… — a read-only view of what has been deleted from the domain, and of
+    /// whether the AD Recycle Bin is on at all.
+    /// </summary>
+    /// <remarks>
+    /// On-prem only: there is no Entra equivalent reachable through this app, and Entra's own deleted-items
+    /// view is a different feature with a different lifetime.
+    /// </remarks>
+    [RelayCommand(CanExecute = nameof(IsAdView))]
+    private void ShowDeletedObjects() => _dialogs.ShowDeletedObjects();
 
     /// <summary>
     /// Right-click the toolbar ▸ Customise Toolbar… Opens the same Settings page the menu route opens;
