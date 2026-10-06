@@ -8,7 +8,39 @@ the things ADUC never had: reusable **new-user templates**, GUI **advanced searc
 Built with **WPF on .NET 10**. Ships as a **self-contained, single-file `.exe`** for **win-x64** and
 **win-arm64** — no .NET install required on the target machine (Windows 10 / 11).
 
-> **v2.3.4 — the AD Recycle Bin, and a cloud sign-in that tells you.**
+> **v2.3.5 — wait longer, start from nothing, and open where you want.**
+>
+> **The cloud retries are yours to set.** Exchange Online answering “couldn't find object” for a user
+> that had just been created was ruining new-user flows. The retry was 5 attempts 8 seconds apart; it
+> is now **10 at 10 seconds**, and both numbers are editable under **Settings ▸ Retries**, from 5–50
+> attempts and 5–60 seconds. Entra and Exchange are set **separately**, because their per-attempt cost
+> differs by about ninety times: a Graph failure returns in well under a second, while an Exchange call
+> that *hangs* costs the full 90-second operation budget before the wait even starts. The page shows
+> what the numbers cost in words as you type them, because “50 attempts, 60 seconds apart” is not
+> something anyone can weigh up.
+>
+> **And a Cancel**, without which a longer retry is a trap rather than a setting. It interrupts the
+> *wait* as well as the attempts, and it does not undo the account: cancelling reports that the user
+> exists and which groups were added before the stop, because a flat “cancelled” sends you looking for
+> an account that is already there.
+>
+> **New User can start from nothing.** “No template — start from scratch” is the first entry in the
+> dropdown, and it reveals a Details block — job title, department, company, office, telephone,
+> description — plus **Add attribute…** for the rest of the catalogue. New User used to *require* a
+> template for a narrower reason than it looked: the common name, logon name, display name and UPN were
+> always derived from the names you type, and the template only layered defaults on top.
+>
+> **You choose which template each window opens on.** An **Open new users on** picker in the template
+> editor, honoured by New User, Bulk Create and the Copy user naming picker, and it saves as you choose
+> it. “No template” can be the default too. It says where a window *opens*, not what it keeps —
+> choosing something else stays chosen.
+>
+> **The password and access pass are where you are looking.** Both now appear in a highlighted panel
+> directly above the progress pane, each with its own Copy button. They were already on the form, but
+> in the left scrollable column — so with your eyes on the progress log, the two values that must be
+> captured before the window closes were off screen unless you knew to scroll. The New User progress
+> pane also spans the full width of the window now, as Copy user's already did.
+>> **v2.3.4 — the AD Recycle Bin, and a cloud sign-in that tells you.**
 >
 > Two things the app could not tell you before: what has been deleted, and whether its own cloud
 > sign-in still works.
