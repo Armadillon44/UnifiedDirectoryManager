@@ -8,6 +8,68 @@ the things ADUC never had: reusable **new-user templates**, GUI **advanced searc
 Built with **WPF on .NET 10**. Ships as a **self-contained, single-file `.exe`** for **win-x64** and
 **win-arm64** — no .NET install required on the target machine (Windows 10 / 11).
 
+> **v2.3.4 — the AD Recycle Bin, and a cloud sign-in that tells you.**
+>
+> Two things the app could not tell you before: what has been deleted, and whether its own cloud
+> sign-in still works.
+>
+> **View the AD Recycle Bin.** **Tools ▸ Deleted Objects…** lists what has been deleted from the
+> domain and is still recoverable — what it was called, which container it came out of, and when.
+> Read-only for now. The line above the list distinguishes four situations that all produce an empty
+> grid and mean entirely different things: the Recycle Bin is on, it is off and these are tombstones,
+> you are not allowed to read the container (a **Domain Admin** right by default), or the domain
+> controller refused the request. The control is sent as critical precisely so a DC that will not
+> honour it says so rather than answering “nothing has been deleted”.
+>
+> **The cloud sign-in is checked at startup.** If the saved Entra ID sign-in has stopped working you
+> are told when the app opens, not when the first cloud operation of the day fails. It checks by
+> actually asking for a token rather than by trusting the saved record — the record outlives the token
+> it was saved with, surviving the refresh token ageing out, consent being withdrawn, and the account
+> being disabled. It never opens a sign-in window by itself, stays silent on a machine where Entra ID
+> was never configured, and does not claim you are signed out when it could not tell.
+>
+> **The creation record says what the account was created with.** New User and Copy user now list
+> every attribute, by LDAP name, in the progress pane and the saved log. Passwords and Temporary
+> Access Passes are still never written, and that now covers the attribute list: anything named like a
+> secret shows as `(not recorded)`.
+>
+> **v2.3.3 — where everything lives, decided once.**
+>
+> An audit of where every function in the app could be reached from, and the nine findings it produced.
+> The complaint behind it: some things were only on right-click, some only in the menu bar, some in
+> both, and knowing where one thing lived predicted nothing about the next.
+>
+> **The menu bar is now File / Action / View / Tools / Help**, laid out the way ADUC and every MMC
+> snap-in lay one out. **File** is about the list you are looking at, **Action** about the thing you
+> have selected, **View** about the tree, **Tools** about finding things and about the app itself.
+> **The Edit menu is gone** — everything in it moved to Action, along with the creates that were in
+> File and four things that were previously only on right-click.
+>
+> Three rules now hold, and are enforced by tests rather than by anyone remembering:
+> - **Every command in the app is in the menu bar**, including the cloud list's, which were in no menu
+>   at all. An entry that does not apply greys out rather than vanishing.
+> - **The right-click menu is generous**, and may shorten a label but never swap in a different word.
+> - **The toolbar owns nothing.** Everything on it is also in the menus — which became a safety
+>   requirement the moment buttons could be removed.
+>
+> **Keyboard shortcuts**, which the app had none of: `F5`, `Ctrl+F`, `Ctrl+N`, `F1`, `Del` and
+> `Alt+Enter`. The menus advertise them. Delete is scoped to the object lists, so it cannot act on
+> something you are not looking at while you browse the tree.
+>
+> **A customisable toolbar.** Right-click it ▸ **Customise Toolbar…** to pick from 31 items, arrange
+> them and group them with separators. Per-user, so it follows you between workstations.
+>
+> **One command, one label.** Sixteen commands used different words in different places; opening an
+> object had four names and is **Properties…** everywhere now. **Reset Password…** joined the Action
+> menu.
+>
+> **Fixed: menus opened in mirror image on some machines.** Windows mirrors menus for left-handed pen
+> use, switched on by the Tablet PC handedness setting — so it appears on Surfaces, touchscreen
+> laptops and anything with a digitizer, usually without anyone choosing it.
+>
+> **Also:** export group members to CSV (and append to an existing one), save the steps taken when
+> creating or copying a user, and an empty group is now told apart from one you cannot read.
+>
 > **v2.3.2 — a correctness release. 24 defects found by a full code review, fixed and covered by tests.**
 >
 > No new features. Everything here is something the app was already doing wrong, most of it quietly. The
@@ -209,15 +271,16 @@ Built with **WPF on .NET 10**. Ships as a **self-contained, single-file `.exe`**
 
 ## Download
 
-Grab the latest self-contained executable from the [**Releases**](../../releases/latest) page:
+Two ways, from the [**Releases**](../../releases/latest) page. Either way the .NET runtime is bundled,
+so there is nothing to install first.
 
-| Architecture | File |
-|---|---|
-| 64-bit Intel/AMD (most PCs) | `UnifiedDirectoryManager-<version>-win-x64.exe` |
-| ARM64 (Snapdragon / Surface Pro X) | `UnifiedDirectoryManager-<version>-win-arm64.exe` |
+| | 64-bit Intel/AMD (most PCs) | ARM64 (Snapdragon / Surface Pro X) |
+|---|---|---|
+| **Installer** (per-machine, shows in Apps & Features) | `UnifiedDirectoryManager-x64-<version>.msi` | `UnifiedDirectoryManager-arm64-<version>.msi` |
+| **Portable** (single file, nothing installed) | `UnifiedDirectoryManager-<version>-win-x64.exe` | `UnifiedDirectoryManager-<version>-win-arm64.exe` |
 
-The `.exe` is portable — put it anywhere and run it. It bundles the .NET runtime; your settings,
-templates, and logs live under `%APPDATA%\UnifiedDirectoryManager\` and follow your Windows profile.
+The `.exe` is portable — put it anywhere and run it. Either way your settings, templates, and logs live
+under `%APPDATA%\UnifiedDirectoryManager\` and follow your Windows profile.
 
 ## What it does
 
@@ -228,7 +291,7 @@ templates, and logs live under `%APPDATA%\UnifiedDirectoryManager\` and follow y
   friendly-name UI backed by real `lDAPDisplayName` attributes, and manage group membership. Double-click a
   member to open it in its own window, so the group you are working on stays put. **Every write is confirmed
   with a diff.**
-- **Group management** — **create** groups (tree right-click or File ▸ New Group), **modify** *Group
+- **Group management** — **create** groups (tree right-click or Action ▸ New ▸ Group…), **modify** *Group
   scope*, *Group type* and *Managed by*, and **delete** one or many groups. Deleting several at once
   makes you type the number of objects first, and the confirmation offers — ticked by default — to save
   a full record of each group and its members before anything goes.
@@ -254,6 +317,13 @@ templates, and logs live under `%APPDATA%\UnifiedDirectoryManager\` and follow y
   Graph cannot describe, run mailbox actions (convert, forwarding, delegates), and **edit** a distribution
   group's settings, addresses and recipient lists. Also reachable from the AD **ExOL** tab, which is the path
   for a hybrid user who has no row in the Exchange list.
+- **Deleted objects (AD Recycle Bin)** — **Tools ▸ Deleted Objects…** lists what has been deleted and
+  is still recoverable, with what it was called, where it was deleted from and when. Read-only. It says
+  which of four situations an empty list means, including the likeliest one: reading the Deleted Objects
+  container is a **Domain Admin** right by default.
+- **A menu bar laid out like ADUC's** — File / Action / View / Tools / Help, with **every** command in
+  it, **keyboard shortcuts** the menus advertise, and a **customisable toolbar** whose every item is
+  also in the menus, so removing a button can never remove the only way to do something.
 - **Scenarios** — compose ordered, repeatable multi-step actions (e.g. a Terminate-User flow: disable →
   remove groups → revoke cloud sessions → convert mailbox to shared → forward → delegate to manager →
   move to an OU), run them across many targets, and save a re-addable **operation log**. Licences are
@@ -334,7 +404,9 @@ dotnet run  --project src/UnifiedDirectoryManager                               
 - **[Repository Wiki](../../wiki)** — feature guides, the Exchange Online setup, and the scenario engine.
 - **[docs/](docs/)** — the design plans and the decisions locked into them: the v2.0 Exchange Online plan and
   its engineering spike findings, the Exchange Online navigation and cloud-groups plan, group management,
-  paste-a-list member adds, and pinned favourites.
+  paste-a-list member adds, and pinned favourites. **`ui-placement-audit.md`** is the one behind 2.3.3 —
+  where every function in the app could be reached from, the nine findings, and the three rules that now
+  hold because tests enforce them.
 
 ## License / ownership
 
