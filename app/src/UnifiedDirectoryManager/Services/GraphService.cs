@@ -31,9 +31,25 @@ public sealed class GraphService : IGraphService
     // Named, DPAPI-encrypted MSAL token cache shared across launches.
     private const string TokenCacheName = "UnifiedDirectoryManager.Graph";
 
-    private static readonly string AuthRecordPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "UnifiedDirectoryManager", "graph-auth.bin");
+    /// <summary>
+    /// Where the saved sign-in lives. Per instance, with a seam, because it is <b>destructive state</b>:
+    /// <see cref="SignOut"/> deletes it. A fixed %APPDATA% path with no way to redirect it meant the
+    /// test suite — which exercises SignOut against a real GraphService — deleted the developer's own
+    /// Entra sign-in on every run, and the only visible symptom was having to sign in again after a
+    /// build. Nothing logged it, because a delete that succeeds has nothing to report.
+    /// </summary>
+    private readonly string _authRecordPath;
+
+    /// <summary>The real location, used unless a caller asks for another.</summary>
+    internal static string DefaultDataDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "UnifiedDirectoryManager");
+
+    /// <param name="dataDirectory">
+    /// Where to keep the saved sign-in. Null means the real per-user location; tests pass a scratch
+    /// directory so that running them cannot touch a real one.
+    /// </param>
+    public GraphService(string? dataDirectory = null) =>
+        _authRecordPath = Path.Combine(dataDirectory ?? DefaultDataDirectory, "graph-auth.bin");
 
     private string? _tenantId;
     private string? _clientId;
@@ -119,7 +135,7 @@ public sealed class GraphService : IGraphService
     /// being configured now. A record from another tenant is left on disk rather than deleted: switching
     /// back should sign the operator straight in again, which is the point of persisting it.
     /// </summary>
-    private static AuthenticationRecord? LoadAuthRecordFor(string tenantId, string clientId)
+    private AuthenticationRecord? LoadAuthRecordFor(string tenantId, string clientId)
     {
         var record = TryLoadAuthRecord();
         if (record is null || RecordBelongsTo(record, tenantId, clientId)) return record;
@@ -190,7 +206,7 @@ public sealed class GraphService : IGraphService
     public void SignOut()
     {
         _record = null;
-        try { if (File.Exists(AuthRecordPath)) File.Delete(AuthRecordPath); }
+        try { if (File.Exists(_authRecordPath)) File.Delete(_authRecordPath); }
         catch (Exception ex) { AppLog.Instance.Warn("Could not clear the saved Graph sign-in: " + ex.Message); }
 
         _skuMap = null;
@@ -1311,12 +1327,12 @@ public sealed class GraphService : IGraphService
         finally { _licenseGroupGate.Release(); }
     }
 
-    private static AuthenticationRecord? TryLoadAuthRecord()
+    private AuthenticationRecord? TryLoadAuthRecord()
     {
         try
         {
-            if (!File.Exists(AuthRecordPath)) return null;
-            using var stream = File.OpenRead(AuthRecordPath);
+            if (!File.Exists(_authRecordPath)) return null;
+            using var stream = File.OpenRead(_authRecordPath);
             return AuthenticationRecord.Deserialize(stream);
         }
         catch (Exception ex)
@@ -1326,12 +1342,12 @@ public sealed class GraphService : IGraphService
         }
     }
 
-    private static void TrySaveAuthRecord(AuthenticationRecord record)
+    private void TrySaveAuthRecord(AuthenticationRecord record)
     {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(AuthRecordPath)!);
-            using var stream = File.Create(AuthRecordPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(_authRecordPath)!);
+            using var stream = File.Create(_authRecordPath);
             record.Serialize(stream);
         }
         catch (Exception ex)

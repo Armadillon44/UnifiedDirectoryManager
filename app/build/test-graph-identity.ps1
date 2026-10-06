@@ -61,8 +61,21 @@ function New-Record([string]$user, [string]$tenant, [string]$client) {
 }
 
 # A service configured for one tenant with a completed sign-in already on it.
+# A scratch home for the saved sign-in. SignOut deletes that file, so a service built here must never
+# be pointed at the real one.
+$script:authSandbox = Join-Path ([System.IO.Path]::GetTempPath()) ("udm-graph-" + [guid]::NewGuid())
+[void][System.IO.Directory]::CreateDirectory($script:authSandbox)
+
+# The operator's own saved sign-in, recorded now and checked again at the very end. Nothing in this
+# file may create, change or delete it. Asserted end-to-end rather than by reading the source, because
+# a source regex can prove the constructor TAKES a directory and not that it USES one -- a mutation
+# that ignored the argument deleted a sentinel at the real path with the whole suite still green.
+$script:realRecordPath = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'UnifiedDirectoryManager\graph-auth.bin'
+$script:realRecordBefore = Test-Path $script:realRecordPath
+$script:realRecordSize = if ($script:realRecordBefore) { (Get-Item $script:realRecordPath).Length } else { -1 }
+
 function New-SignedIn([string]$tenant, [string]$client, [string]$user) {
-    $svc = $Graph::new()
+    $svc = $Graph::new($script:authSandbox)
     $svc.Configure($tenant, $client)
     $recordField.SetValue($svc, (New-Record $user $tenant $client))
     return $svc
@@ -124,9 +137,12 @@ Write-Host "`n== signing out does not read the sign-in back off disk ==" -Foregr
 # reason, and it is logged as a warning nobody reads) the operator was signed straight back in, on what may
 # well be a shared workstation.
 #
-# The reload cannot be reproduced from here: the path is a fixed %APPDATA% location with no seam, and this
-# suite will not write to the operator's real saved sign-in. So the ordering is asserted on the source. It
-# is a genuine mutation check -- routing SignOut back through Configure flips it.
+# The reload cannot be reproduced from here even now that the path has a seam: Configure() would need a
+# real credential. So the ordering is asserted on the source. It is a genuine mutation check -- routing
+# SignOut back through Configure flips it.
+#
+# This comment used to claim the suite would not touch the operator's real saved sign-in, two lines above
+# a SignOut() that deleted it. The service below is built against a scratch directory; see New-SignedIn.
 $svc = New-SignedIn 'tenant-A' 'client-1' 'admin.a@contoso.com'
 $svc.SignOut()
 Check 'signing out clears the record'    $null  $recordField.GetValue($svc)
@@ -134,6 +150,39 @@ Check 'and reports signed out'           $false $svc.IsSignedIn
 Check 'while staying configured'         $true  $svc.IsConfigured
 
 $src = Get-Content -Raw (Join-Path $repoRoot 'app\src\UnifiedDirectoryManager\Services\GraphService.cs')
+
+Write-Host "`n== and it signs out of a SANDBOX, not the operator's real record ==" -ForegroundColor Cyan
+# This suite used to delete the real %APPDATA%\UnifiedDirectoryManager\graph-auth.bin every run,
+# because SignOut deletes the saved record and the path was a fixed static with no seam. The symptom
+# reached the operator as "I have to sign in again after every build" and nothing logged it, since a
+# delete that succeeds has nothing to report.
+Check 'the path is per instance'         $true  ($src -match 'private readonly string _authRecordPath')
+Check '  not a fixed static'             $false ($src -match 'static readonly string AuthRecordPath')
+Check '  and the ctor takes a directory' $true  ($src -match 'public GraphService\(string\? dataDirectory = null\)')
+# Everything that touches the file must go through the instance field.
+foreach ($op in 'Delete', 'OpenRead', 'Create') {
+    Check "  File.$op uses the seam"     $true  ($src -match ('File\.' + $op + '\(_authRecordPath\)'))
+}
+# And the suite itself must be pointed away from the real location.
+Check 'the suite uses a sandbox'         $true  ($script:authSandbox -like (Join-Path ([System.IO.Path]::GetTempPath()) 'udm-graph-*'))
+$realRecord = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'UnifiedDirectoryManager\graph-auth.bin'
+Check '  which is not the real path'     $false ($script:authSandbox -eq (Split-Path -Parent $realRecord))
+
+Write-Host "`n== the seam is honoured, not merely declared ==" -ForegroundColor Cyan
+# Proving SignOut deletes the record IN THE DIRECTORY IT WAS GIVEN. The source checks above cannot:
+# they match a constructor signature and a field name, both of which survive a body that ignores the
+# argument and goes on using the real location.
+$seamDir = Join-Path ([System.IO.Path]::GetTempPath()) ("udm-seam-" + [guid]::NewGuid())
+[void][System.IO.Directory]::CreateDirectory($seamDir)
+$seamFile = Join-Path $seamDir 'graph-auth.bin'
+Set-Content -LiteralPath $seamFile -Value 'stand-in for a saved sign-in' -NoNewline
+Check 'a record exists in the sandbox'   $true  (Test-Path $seamFile)
+$seamSvc = $Graph::new($seamDir)
+$seamSvc.Configure('tenant-A', 'client-1')
+$seamSvc.SignOut()
+Check '  and SignOut removes THAT one'   $false (Test-Path $seamFile)
+Remove-Item -LiteralPath $seamDir -Recurse -Force -ErrorAction SilentlyContinue
+
 $signOut = [regex]::Match($src, '(?s)public void SignOut\(\).*?\r?\n    \}').Value
 Check 'SignOut was found'                $true  ($signOut.Length -gt 0)
 Check 'it rebuilds the credential'       $true  ($signOut -match 'BuildCredential\(\)')
@@ -249,6 +298,14 @@ Check 'the bar is in the window'        $true ($mainXamlSrc -match 'CloudWarning
 Check '  with a Sign in button'         $true ($mainXamlSrc -match 'SignInToCloudCommand')
 # Hidden when signing in cannot help, which is the CheckFailed case.
 Check '  that hides when it cannot help' $true ($mainXamlSrc -match 'CanSignInToCloud, Converter=\{StaticResource BoolToVis\}')
+
+Write-Host "`n== and the operator's own saved sign-in was never touched ==" -ForegroundColor Cyan
+# The backstop. Whatever else changes in this file, running it must leave the real record exactly as it
+# was found -- present or absent, same size. This suite used to delete it on every run.
+$realAfter = Test-Path $script:realRecordPath
+$sizeAfter = if ($realAfter) { (Get-Item $script:realRecordPath).Length } else { -1 }
+Check 'still exactly as it was found'    $script:realRecordBefore $realAfter
+Check '  and the same size'              $script:realRecordSize   $sizeAfter
 
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }
