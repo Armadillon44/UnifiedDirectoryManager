@@ -582,6 +582,30 @@ has synced. Both the template editor and the New User wizard are non-modal windo
 If the password cannot be set on the channel in use, the user is still created — **disabled** — and
 the result says so.
 
+### Building a user without a template
+
+*(2.3.5.)* **No template — start from scratch** is the first entry in the template dropdown. Choosing
+it reveals a **Details (optional)** block — job title, department, company, office, telephone,
+description — and an **Add attribute…** button that reaches the rest of the attribute catalogue, the
+same control the template editor uses. Anything left blank is simply not written.
+
+New User used to *require* a template, and the reason was narrower than it looked: everything that
+makes the account — the common name, the logon name, the display name, the UPN — was already being
+derived from the names you type. The template only supplied defaults on top. A one-off account, a
+contractor, a service account that fits no template: all of them had to borrow one.
+
+Rules worth knowing:
+
+- **What you type wins.** Typed values are applied after the template's defaults, the same rule mail
+  and UPN already followed. With no template there is nothing to lose a fight with.
+- **The logon name stays derived.** `sAMAccountName` is not offered as an ad-hoc attribute. It is
+  computed from the names, and setting it by hand here would let the logon name disagree with the
+  common name and UPN computed from the same names.
+- **Nothing is saved.** The from-scratch entry is an absence of a template, not a hidden one, so it
+  cannot be saved, exported or edited by accident. Switching to it clears what the *template* supplied
+  and leaves everything you typed alone.
+
+
 Templates are JSON files in `%APPDATA%\UnifiedDirectoryManager\Templates`. The template editor's
 **New**, **Clone**, **Delete**, **Import…** and **Export…** buttons manage the set; Export writes one
 template out as a `.json` file for someone else to Import.
@@ -595,6 +619,21 @@ Advanced search's **pick OUs** uses the same tree with tick-boxes. *(Fixed in 2.
 nothing ticked and returned nothing, so the search scope you already had was discarded. It now opens
 with your current OUs ticked and keeps them — including ones further down the tree than you have
 expanded, and ones the directory no longer has, which are handed back untouched rather than dropped.)*
+
+### Where the password and access pass end up
+
+*(2.3.5.)* After a create, the **password** and the **Temporary Access Pass** appear in a highlighted
+panel directly above the progress pane, each with its own **Copy** button.
+
+They were already on the form — the password beside the Generate button, the pass under the TAP
+settings — but both sat in the left-hand scrollable column. With your eyes on the progress log, the
+two values that have to be captured before the window closes were off screen unless you knew to
+scroll for them. The panel is an *additional* copy; both stay where they were produced.
+
+The panel appears only when there is something in it, and disappears with the form when you reset it.
+
+*(2.3.5.)* The **Progress** pane now spans the full width of the New User window rather than sharing
+a narrow column with the form. Copy user already did.
 
 ### Keeping a record of a creation
 
@@ -706,10 +745,12 @@ dropped.
 *(New in 2.3.0.)* Appearing in Entra ID is not the same as being usable: Graph, Exchange and the
 tenant's write limiter all catch up at different speeds. The three post-sync cloud steps — **Entra
 group adds**, **Exchange distribution group adds** and the **Temporary Access Pass** — therefore
-retry automatically when the failure means "the directory hasn't caught up yet". Up to four retries,
-eight seconds apart, per item, and the progress log says so while it waits:
-`… <group>: the directory hasn't caught up yet — retrying in 8s (1 of 4)`. This applies to New User,
-Copy User and Bulk Create alike.
+retry automatically when the failure means "the directory hasn't caught up yet". The progress log
+says so while it waits: `… <group>: the directory hasn't caught up yet — retrying in 10s (1 of 10)`.
+This applies to New User, Copy User and Bulk Create alike.
+
+*(2.3.5: ten attempts, ten seconds apart — up from four attempts eight seconds apart — and both
+numbers are now yours to set. See **How long it keeps asking**, below.)*
 
 **Only five wordings are retried**, all of them Microsoft's for "not visible to the service yet" or
 "too many concurrent writes": *queried reference-property objects are not present*, *Couldn't find
@@ -731,6 +772,57 @@ Every line of a progress log — New User, Bulk create, Copy user, Copy groups a
 — can be **selected with the mouse and copied with right-click ▸ Copy** *(New in 2.3.0.)*, and the
 scenario progress window additionally has a **Copy log** button that puts the whole log on the
 clipboard at once. Attach that text to a ticket rather than a screenshot.
+
+### How long it keeps asking
+
+*(2.3.5.)* **Settings ▸ Retries** sets how many attempts each service gets and how long the app waits
+between them. Entra ID and Exchange Online are set **separately**, and the defaults differ from each
+other's history for a reason: a Graph failure comes back in well under a second, so an attempt costs
+little more than the wait, while an Exchange call that *hangs* rather than answering costs the full
+90-second Exchange budget before the wait even starts. One number governing both would be too
+impatient for Exchange or needlessly slow for Entra.
+
+Both start at **10 attempts, 10 seconds apart**. The allowed range is **5–50 attempts, 5–60 seconds
+apart**.
+
+The page shows what the numbers cost **as you type them**, because "50 attempts, 60 seconds apart"
+is not something anyone can decide about:
+
+```
+Entra ID (cloud groups, Temporary Access Pass)
+  Attempts [ 10 ]   waiting [ 10 ] seconds between them
+  → Up to 1 min 30 s of waiting per group. A Graph failure returns almost at once, so this is nearly all of it.
+
+Exchange Online (distribution groups)
+  Attempts [ 10 ]   waiting [ 10 ] seconds between them
+  → Up to 1 min 30 s of waiting per group, or 16 min 30 s if Exchange stops answering.
+```
+
+The gap is capped at a minute rather than the five you might expect. At 50 attempts a five-minute gap
+is over four hours of waiting on a single group, which is not a setting so much as a way to lose an
+afternoon; a minute keeps the worst case under an hour and still rides out the lag this exists for.
+
+A number outside the range is **clamped, not rejected**. These live in a settings file that a newer
+build or a text editor may have put anything into, and refusing to provision a user over a bad number
+would be the worse failure. Zero means "never set" and clamps *up*, so an old settings file does not
+silently switch retries off.
+
+Changes apply to **the very next creation** — the settings are re-read per operation, so you do not
+have to restart the app or close the New User window.
+
+### Cancel cloud steps
+
+*(2.3.5.)* **New User** and **Copy user…** have a **Cancel cloud steps** button beside the progress
+pane, enabled only while the cloud work is running. Without it, a longer retry would be a trap rather
+than a setting: the only way out of a 50-attempt wait would be killing the app.
+
+Cancel interrupts the **wait** as well as the attempts. A cancel that only took effect between
+attempts would leave you watching a full gap finish first, which does not read as cancelling.
+
+**The account is not undone.** Cancelling reports what actually happened — the user exists, and any
+groups added before the stop are still added — because a flat "cancelled" would send you looking for
+an account that is already there. Finish the remaining groups from the user's **Cloud** tab
+(**Member Of ▸ Add to groups…**) rather than recreating the user.
 
 ## The cloud sign-in is checked at startup
 
@@ -1171,8 +1263,8 @@ Everything lives under `%APPDATA%\UnifiedDirectoryManager\` and follows your Win
 - `settings.json` — window size, the edit-pane dock side, tree and pane sizes, the visible columns
   for each list, **favourites** (per domain), the Entra **tenant and client IDs**, the Entra Connect
   server, and the **last successful connection** (domain, the DC actually bound to, fall-backs,
-  LDAPS, username — never the password). The next launch restores your layout and pre-fills the
-  connection dialog with the last DC.
+  LDAPS, username — never the password), and *(2.3.5)* the **cloud retry policies**. The next launch
+  restores your layout and pre-fills the connection dialog with the last DC.
 - `Templates\` — new-user templates.
 - `Searches\` — saved searches.
 - `Scenarios\` — scenarios.
