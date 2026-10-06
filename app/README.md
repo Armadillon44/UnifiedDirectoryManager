@@ -601,10 +601,9 @@ Rules worth knowing:
 - **The logon name stays derived.** `sAMAccountName` is not offered as an ad-hoc attribute. It is
   computed from the names, and setting it by hand here would let the logon name disagree with the
   common name and UPN computed from the same names.
-- **Nothing is saved.** The from-scratch entry is an absence of a template, not a hidden one, so it
-  cannot be saved, exported or edited by accident. Switching to it clears what the *template* supplied
-  and leaves everything you typed alone.
-
+- **Nothing is saved.** The from-scratch entry is a choice, not a template, so it cannot be saved,
+  exported or picked up by the template store by accident. Switching to it clears what the *template*
+  supplied and leaves everything you typed alone.
 
 Templates are JSON files in `%APPDATA%\UnifiedDirectoryManager\Templates`. The template editor's
 **New**, **Clone**, **Delete**, **Import…** and **Export…** buttons manage the set; Export writes one

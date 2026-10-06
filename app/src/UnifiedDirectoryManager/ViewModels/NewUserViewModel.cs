@@ -23,17 +23,26 @@ public partial class NewUserViewModel : ObservableObject
     private readonly AppSettings _settings;
 
     /// <summary>
-    /// The templates, with a null first entry meaning “no template — start from scratch”.
+    /// The dropdown entries: “start from scratch” first, then every saved template.
     /// </summary>
     /// <remarks>
-    /// A null in the list rather than a sentinel UserTemplate object, so there is nothing that can be
-    /// saved, exported or picked up by the template store by accident. The combo renders it through the
-    /// binding's fallback; everything downstream already treats a null SelectedTemplate as from-scratch.
+    /// <see cref="TemplateChoice"/> rather than a nullable UserTemplate, because WPF cannot show a null
+    /// selection — the closed combo renders blank — and because a null is indistinguishable from “not
+    /// found” when the list is rebuilt. See the type for the whole story.
     /// </remarks>
-    public ObservableCollection<UserTemplate?> Templates { get; } = new();
+    public ObservableCollection<TemplateChoice> Templates { get; } = new();
 
-    /// <summary>True when no template is selected, which is what reveals the Details fields.</summary>
-    public bool IsFromScratch => SelectedTemplate is null;
+    /// <summary>The template behind the current choice, or null when building from scratch.</summary>
+    public UserTemplate? SelectedTemplate => SelectedChoice?.Template;
+
+    /// <summary>
+    /// True when “start from scratch” is the current choice, which is what reveals the Details fields.
+    /// </summary>
+    /// <remarks>
+    /// Keyed on the choice rather than on a null template, so that the moment during a list rebuild
+    /// when nothing is selected does not read as from-scratch.
+    /// </remarks>
+    public bool IsFromScratch => SelectedChoice?.IsFromScratch == true;
 
     /// <summary>
     /// True once there is a password or access pass to capture, which is what reveals the panel that
@@ -106,7 +115,7 @@ public partial class NewUserViewModel : ObservableObject
     /// <summary>Live progress lines for the create → sync → wait → add-cloud-groups sequence.</summary>
     public ObservableCollection<string> ProgressSteps { get; } = new();
 
-    [ObservableProperty] private UserTemplate? _selectedTemplate;
+    [ObservableProperty] private TemplateChoice? _selectedChoice;
     [ObservableProperty] private string _firstName = string.Empty;
     [ObservableProperty] private string _lastName = string.Empty;
     [ObservableProperty] private string _middleName = string.Empty;
@@ -315,38 +324,43 @@ public partial class NewUserViewModel : ObservableObject
         return true;
     }
 
-    // Set while ReloadTemplates() rebuilds the template list so the transient SelectedTemplate churn
-    // (Clear() → null, then re-assign a fresh instance of the same template) does NOT re-seed the form
-    // and wipe the operator's in-progress edits. A genuine user template change still re-seeds.
+    // Set while ReloadTemplates() rebuilds the list so the transient SelectedChoice churn (Clear()
+    // → null, then a fresh choice wrapping the same template) does NOT re-seed the form and wipe the
+    // operator's in-progress edits. A genuine change of selection still re-seeds.
     private bool _suppressReseed;
 
     public void ReloadTemplates()
     {
-        var previous = SelectedTemplate?.Name;
+        // Captured BEFORE the rebuild, because clearing the list makes the combo report no selection.
+        // The whole choice, not its name: a name cannot say whether from-scratch was the choice.
+        var previous = SelectedChoice;
+        var previousName = previous?.Template?.Name;
         _suppressReseed = true;
         try
         {
             Templates.Clear();
-            Templates.Add(null); // “no template — start from scratch”
-            foreach (var t in _store.LoadAll()) Templates.Add(t);
-            // Keep what was selected; otherwise the first REAL template, so the usual flow is unchanged
-            // and from-scratch stays something chosen rather than landed on.
-            SelectedTemplate = Templates.FirstOrDefault(t => t?.Name == previous)
-                               ?? Templates.FirstOrDefault(t => t is not null);
+            Templates.Add(new TemplateChoice(null)); // “no template — start from scratch”
+            foreach (var t in _store.LoadAll()) Templates.Add(new TemplateChoice(t));
+            SelectedChoice = TemplateChoice.Resolve(Templates, previous);
         }
         finally { _suppressReseed = false; }
 
-        // Re-seed only when the effective selection actually changed (first load, or the previously
-        // selected template was deleted) — never on a background reload of the same template, which
-        // would otherwise discard edited groups / OU / name fields each time the window reactivates.
-        if (!string.Equals(SelectedTemplate?.Name, previous, StringComparison.OrdinalIgnoreCase))
+        // Re-seed on the first load, and afterwards only when the effective selection really changed
+        // (the selected template was deleted since). NOT on a background reload that kept the same
+        // choice, which would discard edited groups / OU / name fields every time the window
+        // reactivates — the reload that follows choosing “start from scratch” included.
+        if (previous is null || !string.Equals(SelectedTemplate?.Name, previousName, StringComparison.OrdinalIgnoreCase))
             ReseedFromTemplate(SelectedTemplate);
     }
 
-    partial void OnSelectedTemplateChanged(UserTemplate? value)
+    partial void OnSelectedChoiceChanged(TemplateChoice? value)
     {
+        // These track the selection whatever caused it, the transient churn of a rebuild included: a
+        // stale IsFromScratch would leave the Details block showing while a template is selected.
+        OnPropertyChanged(nameof(SelectedTemplate));
+        OnPropertyChanged(nameof(IsFromScratch));
         if (_suppressReseed) return; // background reload — keep the in-progress form intact
-        ReseedFromTemplate(value);
+        ReseedFromTemplate(value?.Template);
     }
 
     /// <summary>Resets the editable form (groups, OU, manager, suggestions) to the template's defaults.</summary>
@@ -954,7 +968,8 @@ public partial class NewUserViewModel : ObservableObject
     /// <summary>Resolves the template defaults + computed cn/sam/upn into a concrete attribute set
     /// (delegated to the shared <see cref="UserAttributeBuilder"/>).</summary>
     private IReadOnlyDictionary<string, string> BuildAttributes() =>
-        SelectedTemplate is null
-            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            : UserAttributeBuilder.Build(BuilderInput()).Attributes;
+        // No short circuit for a missing template. The builder derives cn, sAMAccountName, displayName
+        // and the UPN from the typed names and applies the Details fields on top; returning an empty
+        // set here is what made from-scratch fail at “could not derive a common name”.
+        UserAttributeBuilder.Build(BuilderInput()).Attributes;
 }

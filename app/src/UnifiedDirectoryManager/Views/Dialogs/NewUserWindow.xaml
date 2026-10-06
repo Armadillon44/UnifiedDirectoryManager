@@ -22,15 +22,11 @@
                 <TextBlock Text="Template" Style="{StaticResource FieldLabel}" />
                 <DockPanel>
                     <Button DockPanel.Dock="Right" Content="Manage…" Command="{Binding ManageTemplatesCommand}" Margin="6,0,0,0" />
-                    <ComboBox ItemsSource="{Binding Templates}" SelectedItem="{Binding SelectedTemplate}">
-                        <!-- The list carries a null first entry for "start from scratch". Binding Name on a
-                             null item falls through to the fallback, so no sentinel object is needed. -->
-                        <ComboBox.ItemTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding Name, FallbackValue=(No template — start from scratch), TargetNullValue=(No template — start from scratch)}" />
-                            </DataTemplate>
-                        </ComboBox.ItemTemplate>
-                    </ComboBox>
+                    <!-- Bound to the CHOICE, not the template. A null item cannot be shown: WPF puts
+                         string.Empty in SelectionBoxItem, so the closed box renders blank whatever the
+                         item template says, and "start from scratch" looked like it had not applied. -->
+                    <ComboBox ItemsSource="{Binding Templates}" SelectedItem="{Binding SelectedChoice}"
+                              DisplayMemberPath="Label" />
                 </DockPanel>
 
                 <TextBlock Text="First name" Style="{StaticResource FieldLabel}" Margin="0,8,0,2" />

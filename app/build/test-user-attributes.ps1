@@ -366,11 +366,15 @@ Write-Host "`n== the window exposes it ==" -ForegroundColor Cyan
 $nuVm = Get-Content -Raw (Join-Path $srcDir 'ViewModels\NewUserViewModel.cs')
 $nuXaml = Get-Content -Raw (Join-Path $srcDir 'Views\Dialogs\NewUserWindow.xaml')
 # A null in the list rather than a sentinel template object, so nothing can be saved or exported by accident.
-Check 'the list carries a null entry'   $true ($nuVm -match 'Templates\.Add\(null\)')
-Check '  typed as nullable'             $true ($nuVm -match 'ObservableCollection<UserTemplate\?> Templates')
-Check '  and the combo renders it'      $true ($nuXaml -match 'TargetNullValue=\(No template')
-# The usual flow is unchanged: a real template is still what you land on.
-Check '  a real template is the default' $true ($nuVm -match 'FirstOrDefault\(t => t is not null\)')
+Check 'the entry is a choice, not null' $true ($nuVm -match 'Templates\.Add\(new TemplateChoice\(null\)\)')
+Check '  the list is typed for it'      $true ($nuVm -match 'ObservableCollection<TemplateChoice> Templates')
+Check '  the combo binds the choice'    $true ($nuXaml -match 'SelectedItem="\{Binding SelectedChoice\}"')
+Check '  and shows its own label'       $true ($nuXaml -match 'DisplayMemberPath="Label"')
+# The fallback is gone: the item carrying its own label is what makes the CLOSED box readable.
+Check '  no TargetNullValue hack left'  $false ($nuXaml -match 'TargetNullValue=\(No template')
+# The short circuit that made from-scratch build no attributes at all, so the create failed at
+# "could not derive a common name" -- the very gate this feature was supposed to remove.
+Check 'BuildAttributes has no gate'     $false ($nuVm -match 'SelectedTemplate is null[\s\S]{0,40}new Dictionary')
 # The Details block appears only from scratch: a hidden field overriding a template default would be worse
 # than not offering it.
 Check 'Details are from-scratch only'   $true ($nuXaml -match 'IsFromScratch, Converter=\{StaticResource BoolToVis\}')
@@ -412,5 +416,65 @@ foreach ($vm in 'NewUserViewModel.cs', 'CopyUserViewModel.cs') {
 $nuXaml2 = Get-Content -Raw (Join-Path $srcDir 'Views\Dialogs\NewUserWindow.xaml')
 Check 'the panel says they are not stored' $true ($nuXaml2 -match 'Neither is written to the log')
 
+
+Write-Host "`n== which entry survives a list rebuild ==" -ForegroundColor Cyan
+# This is what broke in the field: choosing "No template" appeared to do nothing, because the window
+# reloads the template list whenever it is activated and the reload put the first template back.
+Add-Type -ReferencedAssemblies @(
+    (Join-Path $repoRoot 'debug\UnifiedDirectoryManager.dll'),
+    'System.Collections', 'System.Runtime', 'netstandard') @'
+using System.Collections.Generic;
+using UnifiedDirectoryManager.Models;
+using UnifiedDirectoryManager.Services;
+public static class ChoiceProbe {
+    // PowerShell cannot build the generic list of choices, so the names come in as strings, and
+    // the previous selection as a mode: it binds $null to a string parameter as "", which would
+    // read as a template named nothing rather than as "no previous selection".
+    //   mode "none"    -> the window is opening, nothing selected yet
+    //   mode "scratch" -> the operator chose "no template"
+    //   anything else  -> the name of the template that was selected
+    public static string Resolve(string[] names, string mode) {
+        var choices = new List<TemplateChoice> { new TemplateChoice(null) };
+        foreach (var n in names) choices.Add(new TemplateChoice(new UserTemplate { Name = n }));
+        TemplateChoice previous =
+            mode == "none"    ? null :
+            mode == "scratch" ? new TemplateChoice(null)
+                              : new TemplateChoice(new UserTemplate { Name = mode });
+        var picked = TemplateChoice.Resolve(choices, previous);
+        return picked.IsFromScratch ? "<scratch>" : picked.Template.Name;
+    }
+    public static string ScratchLabel() => new TemplateChoice(null).Label;
+    public static string LabelOf(string name) => new TemplateChoice(new UserTemplate { Name = name }).Label;
+}
+'@
+if (-not ('ChoiceProbe' -as [type])) { throw 'the choice probe did not compile -- everything below would be a false pass' }
+
+$all = [string[]]@('CRC Consumer Sales Specialist', 'Seasonal CRC', 'Standard HQ User')
+
+# The bug, stated as a test. From scratch was CHOSEN, so a reload must leave it chosen.
+Check 'from scratch survives a reload'  '<scratch>' ([ChoiceProbe]::Resolve($all, 'scratch'))
+# ...and keeps surviving. A reload fires on every activation, so once is not enough.
+Check '  and a second reload'           '<scratch>' ([ChoiceProbe]::Resolve($all, 'scratch'))
+
+# The usual flow is unchanged: opening the window lands on a real template, so from-scratch stays
+# something chosen rather than something defaulted into.
+Check 'the first load picks a template' 'CRC Consumer Sales Specialist' ([ChoiceProbe]::Resolve($all, 'none'))
+
+# A selected template is kept across the rebuild, which is the whole point of the reload.
+Check 'a chosen template is kept'       'Seasonal CRC' ([ChoiceProbe]::Resolve($all, 'Seasonal CRC'))
+Check '  matched without case'          'Seasonal CRC' ([ChoiceProbe]::Resolve($all, 'SEASONAL crc'))
+
+# Deleted in the template editor while New User was open: fall back rather than selecting nothing.
+Check 'a deleted template falls back'   'CRC Consumer Sales Specialist' ([ChoiceProbe]::Resolve($all, 'Gone'))
+
+# A tenant with no templates at all still has to select something, and from scratch is all there is.
+$none2 = [string[]]@()
+Check 'no templates -> from scratch'    '<scratch>' ([ChoiceProbe]::Resolve($none2, 'none'))
+Check '  even chasing a deleted one'    '<scratch>' ([ChoiceProbe]::Resolve($none2, 'Gone'))
+
+# The label is on the item, which is what makes the CLOSED combo readable -- a null item would show
+# blank there however the item template is written.
+Check 'the scratch entry has a label'   '(No template - start from scratch)' ([ChoiceProbe]::ScratchLabel().Replace([char]0x2014, '-'))
+Check '  a template shows its name'     'Seasonal CRC' ([ChoiceProbe]::LabelOf('Seasonal CRC'))
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }
