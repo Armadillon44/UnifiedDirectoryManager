@@ -41,7 +41,8 @@ public partial class CopyUserViewModel : ObservableObject
     [ObservableProperty] private string _email = string.Empty;
 
     // Naming-convention patterns from the chosen template (fall back to sensible defaults). The operator
-    // picks which template's naming convention to apply via SelectedNamingTemplate (defaults to "Standard User").
+    // picks which template's naming convention to apply via SelectedNamingChoice (the operator's
+    // default template, or "Standard User" when none is set).
     private string _samPattern = "{first}.{last}";
     private string _displayPattern = "{first} {last}";
     private string _upnPattern = "{sam}@{upnSuffix}";
@@ -50,9 +51,16 @@ public partial class CopyUserViewModel : ObservableObject
     private string _sourceUpnDomain = string.Empty; // source user's UPN domain — fallback suffix when a template has none
     private string _lastSam = string.Empty, _lastUpn = string.Empty, _lastEmail = string.Empty, _lastDisplay = string.Empty;
 
-    /// <summary>The templates the operator can choose a naming convention from (sAM / UPN / email / display patterns).</summary>
-    public ObservableCollection<UserTemplate> NamingTemplates { get; } = new();
-    [ObservableProperty] private UserTemplate? _selectedNamingTemplate;
+    /// <summary>
+    /// The naming conventions on offer, “no template” first. Choices rather than templates so that the
+    /// default can be from-scratch, and because a null item cannot be shown in a WPF combo — see
+    /// <see cref="TemplateChoice"/>.
+    /// </summary>
+    public ObservableCollection<TemplateChoice> NamingTemplates { get; } = new();
+
+    /// <summary>The template behind the chosen convention, or null for the built-in patterns.</summary>
+    public UserTemplate? SelectedNamingTemplate => SelectedNamingChoice?.Template;
+    [ObservableProperty] private TemplateChoice? _selectedNamingChoice;
 
     // Copied, editable detail fields (prefilled from the source user).
     [ObservableProperty] private string _street = string.Empty;
@@ -125,17 +133,25 @@ public partial class CopyUserViewModel : ObservableObject
         _sourceDn = sourceDn;
         _entraConnectServer = settings.EntraConnectServer ?? string.Empty;
 
-        // Offer every template as a naming-convention choice; default to "Standard User" (the prior behavior).
-        try { foreach (var t in _store.LoadAll()) NamingTemplates.Add(t); }
+        // Offer every template as a naming-convention choice, plus “no template”, which means the
+        // built-in {first}.{last} patterns and the source user's own UPN domain.
+        NamingTemplates.Add(new TemplateChoice(null));
+        try { foreach (var t in _store.LoadAll()) NamingTemplates.Add(new TemplateChoice(t)); }
         catch (Exception ex) { AppLog.Instance.Warn("Could not load templates for the Copy User naming picker: " + ex.Message); }
-        SelectedNamingTemplate = NamingTemplates.FirstOrDefault(t => string.Equals(t.Name, "Standard User", StringComparison.OrdinalIgnoreCase))
-            ?? NamingTemplates.FirstOrDefault();
+        // The operator's default, then "Standard User", which is what this picked before the setting
+        // existed and is still the right landing place for anyone who has not set one.
+        SelectedNamingChoice =
+            TemplateChoice.MatchDefault(NamingTemplates, settings.DefaultTemplateName)
+            ?? NamingTemplates.FirstOrDefault(c => string.Equals(c.Template?.Name, "Standard User", StringComparison.OrdinalIgnoreCase))
+            ?? NamingTemplates.FirstOrDefault(c => !c.IsFromScratch)
+            ?? NamingTemplates[0];
     }
 
     /// <summary>Switching the naming template re-applies its sAM / UPN / email / display patterns to the entered name.</summary>
-    partial void OnSelectedNamingTemplateChanged(UserTemplate? value)
+    partial void OnSelectedNamingChoiceChanged(TemplateChoice? value)
     {
-        ApplyNamingFromTemplate(value);
+        OnPropertyChanged(nameof(SelectedNamingTemplate));
+        ApplyNamingFromTemplate(value?.Template);
         ApplySuggestions(force: true); // the operator explicitly chose this convention — apply it even over autofilled values
     }
 

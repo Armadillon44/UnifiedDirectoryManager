@@ -22,6 +22,16 @@ public sealed class TemplateChoice
 {
     public const string FromScratchLabel = "(No template — start from scratch)";
 
+    /// <summary>
+    /// What <see cref="AppSettings.DefaultTemplateName"/> holds when the default is “start from scratch”.
+    /// </summary>
+    /// <remarks>
+    /// The empty string, which is safe as a marker because the template store refuses to save a template
+    /// whose name is blank — so no real template can ever collide with it. It is also distinct from null,
+    /// which means “no default chosen” and must keep behaving as it did before defaults existed.
+    /// </remarks>
+    public const string FromScratchSetting = "";
+
     public TemplateChoice(UserTemplate? template) => Template = template;
 
     /// <summary>The template, or null for “start from scratch”.</summary>
@@ -40,6 +50,11 @@ public sealed class TemplateChoice
     /// What was selected before the rebuild, or null if nothing was — which happens only on the very
     /// first load.
     /// </param>
+    /// <param name="defaultName">
+    /// <see cref="AppSettings.DefaultTemplateName"/>: null for none chosen,
+    /// <see cref="FromScratchSetting"/> for from-scratch, otherwise a template name. Consulted ONLY on
+    /// the first load — a default is where the window opens, not a selection it keeps re-imposing.
+    /// </param>
     /// <remarks>
     /// <para>
     /// Out here rather than inside the view model because the rule has three cases that look alike,
@@ -52,14 +67,15 @@ public sealed class TemplateChoice
     /// straight back to the first template in the list on the next reload.
     /// </para>
     /// </remarks>
-    public static TemplateChoice Resolve(IReadOnlyList<TemplateChoice> choices, TemplateChoice? previous)
+    public static TemplateChoice Resolve(
+        IReadOnlyList<TemplateChoice> choices, TemplateChoice? previous, string? defaultName = null)
     {
         ArgumentNullException.ThrowIfNull(choices);
         if (choices.Count == 0) throw new ArgumentException("The list always carries the from-scratch entry.", nameof(choices));
 
-        // The window is opening. Land on a real template, so that from-scratch stays something chosen
-        // rather than something defaulted into.
-        if (previous is null) return FirstReal(choices) ?? FromScratchIn(choices);
+        // The window is opening: honour the operator's default. With none set, the first real template,
+        // so that from-scratch stays something chosen rather than something defaulted into.
+        if (previous is null) return MatchDefault(choices, defaultName) ?? FirstReal(choices) ?? FromScratchIn(choices);
 
         // From scratch was chosen. A reload refreshes the LIST; it is not a decision about the selection.
         if (previous.IsFromScratch) return FromScratchIn(choices);
@@ -70,6 +86,25 @@ public sealed class TemplateChoice
                ?? FirstReal(choices)
                ?? FromScratchIn(choices);
     }
+
+    /// <summary>
+    /// The stored default, or null when none is set or it names a template that no longer exists.
+    /// </summary>
+    /// <remarks>
+    /// A deleted default falls back rather than throwing. Templates are files an operator can remove at
+    /// any time, and refusing to open New User because a setting is stale would be the worse failure.
+    /// </remarks>
+    public static TemplateChoice? MatchDefault(IReadOnlyList<TemplateChoice> choices, string? defaultName)
+    {
+        ArgumentNullException.ThrowIfNull(choices);
+        if (defaultName is null) return null;
+        if (defaultName.Length == 0) return choices.FirstOrDefault(c => c.IsFromScratch);
+        return choices.FirstOrDefault(c =>
+            string.Equals(c.Template?.Name, defaultName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>What to store in settings so this choice is the default next time.</summary>
+    public string SettingValue => Template?.Name ?? FromScratchSetting;
 
     private static TemplateChoice? FirstReal(IReadOnlyList<TemplateChoice> choices) =>
         choices.FirstOrDefault(c => !c.IsFromScratch);

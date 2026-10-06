@@ -434,15 +434,31 @@ public static class ChoiceProbe {
     //   mode "scratch" -> the operator chose "no template"
     //   anything else  -> the name of the template that was selected
     public static string Resolve(string[] names, string mode) {
+        return Pick(names, mode, null, false);
+    }
+    // defaultMode: "unset" -> no default has ever been chosen (null in settings)
+    //              "scratch" -> the stored default is "start from scratch" (the empty string)
+    //              anything else -> a template name
+    public static string WithDefault(string[] names, string mode, string defaultMode) {
+        return Pick(names, mode, defaultMode, true);
+    }
+    private static string Pick(string[] names, string mode, string defaultMode, bool useDefault) {
         var choices = new List<TemplateChoice> { new TemplateChoice(null) };
         foreach (var n in names) choices.Add(new TemplateChoice(new UserTemplate { Name = n }));
         TemplateChoice previous =
             mode == "none"    ? null :
             mode == "scratch" ? new TemplateChoice(null)
                               : new TemplateChoice(new UserTemplate { Name = mode });
-        var picked = TemplateChoice.Resolve(choices, previous);
+        string def = !useDefault || defaultMode == "unset" ? null
+                   : defaultMode == "scratch" ? TemplateChoice.FromScratchSetting
+                   : defaultMode;
+        var picked = TemplateChoice.Resolve(choices, previous, def);
         return picked.IsFromScratch ? "<scratch>" : picked.Template.Name;
     }
+    // What gets written to settings for a choice -- "" for from-scratch, the name otherwise.
+    public static string StoredFor(string name) =>
+        new TemplateChoice(name == null ? null : new UserTemplate { Name = name }).SettingValue;
+    public static string StoredForScratch() => new TemplateChoice(null).SettingValue;
     public static string ScratchLabel() => new TemplateChoice(null).Label;
     public static string LabelOf(string name) => new TemplateChoice(new UserTemplate { Name = name }).Label;
 }
@@ -476,5 +492,72 @@ Check '  even chasing a deleted one'    '<scratch>' ([ChoiceProbe]::Resolve($non
 # blank there however the item template is written.
 Check 'the scratch entry has a label'   '(No template - start from scratch)' ([ChoiceProbe]::ScratchLabel().Replace([char]0x2014, '-'))
 Check '  a template shows its name'     'Seasonal CRC' ([ChoiceProbe]::LabelOf('Seasonal CRC'))
+
+Write-Host "`n== the default template the windows open on ==" -ForegroundColor Cyan
+# Settings holds three states and they are NOT interchangeable: null means no default has been
+# chosen (land on the first template, as before the setting existed), the empty string means start
+# from scratch, anything else is a template name.
+
+Check 'no default -> first by name'     'CRC Consumer Sales Specialist' ([ChoiceProbe]::WithDefault($all, 'none', 'unset'))
+Check 'a default is honoured'           'Standard HQ User'              ([ChoiceProbe]::WithDefault($all, 'none', 'Standard HQ User'))
+Check '  matched without case'          'Seasonal CRC'                  ([ChoiceProbe]::WithDefault($all, 'none', 'seasonal crc'))
+Check '  from scratch can be default'   '<scratch>'                     ([ChoiceProbe]::WithDefault($all, 'none', 'scratch'))
+
+# A template can be deleted or renamed after being made the default. Falling back beats refusing to
+# open the window over a stale setting.
+Check 'a deleted default falls back'    'CRC Consumer Sales Specialist' ([ChoiceProbe]::WithDefault($all, 'none', 'Gone'))
+$none3 = [string[]]@()
+Check '  with no templates at all'      '<scratch>'                     ([ChoiceProbe]::WithDefault($none3, 'none', 'Gone'))
+
+# The default says where a window OPENS. It must not re-impose itself on every reload, or choosing
+# anything else would be undone the next time the window was activated -- the bug that was just fixed.
+Check 'a reload keeps the choice'       'Seasonal CRC' ([ChoiceProbe]::WithDefault($all, 'Seasonal CRC', 'Standard HQ User'))
+Check '  from scratch over a default'   '<scratch>'    ([ChoiceProbe]::WithDefault($all, 'scratch', 'Standard HQ User'))
+
+# What gets written to settings. The empty string is only safe as the from-scratch marker because the
+# store refuses to save a template with a blank name -- asserted below, since the marker rests on it.
+Check 'a template stores its name'      'Seasonal CRC' ([ChoiceProbe]::StoredFor('Seasonal CRC'))
+Check '  from scratch stores empty'     ''             ([ChoiceProbe]::StoredForScratch())
+
+# The empty string is only usable as the from-scratch marker because no real template can carry it.
+# That rests on the store, so assert the store rather than assuming it.
+$blankStore = New-Object UnifiedDirectoryManager.Services.TemplateStore ([System.IO.Path]::GetTempPath())
+$blankTpl = New-Object UnifiedDirectoryManager.Models.UserTemplate
+$refused = $false
+foreach ($bad in '', '   ') {
+    $blankTpl.Name = $bad
+    try { $blankStore.Save($blankTpl); $refused = $false; break }
+    catch { $refused = $true }
+}
+Check 'the store refuses a blank name'  $true $refused
+
+Write-Host "`n== all three windows are wired to it ==" -ForegroundColor Cyan
+$bcVm = Get-Content -Raw (Join-Path $srcDir 'ViewModels\BulkCreateUsersViewModel.cs')
+$cuVm = Get-Content -Raw (Join-Path $srcDir 'ViewModels\CopyUserViewModel.cs')
+$teVm = Get-Content -Raw (Join-Path $srcDir 'ViewModels\TemplateEditorViewModel.cs')
+$teXaml = Get-Content -Raw (Join-Path $srcDir 'Views\Dialogs\TemplateEditorWindow.xaml')
+$cuXaml = Get-Content -Raw (Join-Path $srcDir 'Views\Dialogs\CopyUserWindow.xaml')
+
+Check 'New User consults the default'   $true ($nuVm -match 'Resolve\(Templates, previous, _settings\.DefaultTemplateName\)')
+Check 'Bulk Create consults it'         $true ($bcVm -match 'DefaultTemplateName')
+Check 'Copy user consults it'           $true ($cuVm -match 'MatchDefault\(NamingTemplates, settings\.DefaultTemplateName\)')
+# Copy user keeps "Standard User" as the landing place for anyone who has not set a default.
+Check '  still falls back to Standard User' $true ($cuVm -match 'Standard User')
+
+# The editor is where it is set, and it writes on change rather than behind a Save button.
+Check 'the editor offers the picker'    $true ($teXaml -match 'ItemsSource="\{Binding DefaultChoices\}"')
+Check '  showing each label'            $true ($teXaml -match 'SelectedDefaultChoice[\s\S]{0,120}DisplayMemberPath="Label"')
+Check '  and saves on change'           $true ($teVm -match 'OnSelectedDefaultChoiceChanged[\s\S]{0,600}_settingsStore\.Save')
+Check '  storing the choice, not label' $true ($teVm -match 'DefaultTemplateName = value\.SettingValue')
+# The picker must show what the windows will DO, not merely what is stored. Resolve is the call New
+# User makes as it opens, so using it here means the two cannot disagree -- it matters when the stored
+# default names a template that has since been renamed, where a bare MatchDefault yields nothing and
+# the box would claim "no template" while New User opened on the first one.
+Check '  the picker shows the truth'    $true ($teVm -match 'SelectedDefaultChoice = TemplateChoice\.Resolve\(DefaultChoices, null, _settings\.DefaultTemplateName\)')
+
+# Copy user must show the choice label too, or its "no template" row renders blank -- the same WPF
+# trap that made New User look like it had ignored the selection.
+Check 'Copy user binds the choice'      $true ($cuXaml -match 'SelectedItem="\{Binding SelectedNamingChoice\}"')
+Check '  and shows its label'           $true ($cuXaml -match 'NamingTemplates[\s\S]{0,160}DisplayMemberPath="Label"')
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

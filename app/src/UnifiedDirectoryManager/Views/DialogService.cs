@@ -284,7 +284,7 @@ public sealed class DialogService : IDialogService
 
     public void ShowTemplateEditor()
     {
-        var vm = new TemplateEditorViewModel(_templates, this);
+        var vm = new TemplateEditorViewModel(_templates, this, _settingsStore, _settings);
         new TemplateEditorWindow { DataContext = vm, Owner = Owner }.Show(); // non-modal
     }
 

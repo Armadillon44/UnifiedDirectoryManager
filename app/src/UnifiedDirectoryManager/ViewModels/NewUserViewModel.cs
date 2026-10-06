@@ -341,7 +341,7 @@ public partial class NewUserViewModel : ObservableObject
             Templates.Clear();
             Templates.Add(new TemplateChoice(null)); // “no template — start from scratch”
             foreach (var t in _store.LoadAll()) Templates.Add(new TemplateChoice(t));
-            SelectedChoice = TemplateChoice.Resolve(Templates, previous);
+            SelectedChoice = TemplateChoice.Resolve(Templates, previous, _settings.DefaultTemplateName);
         }
         finally { _suppressReseed = false; }
 

@@ -582,6 +582,28 @@ has synced. Both the template editor and the New User wizard are non-modal windo
 If the password cannot be set on the channel in use, the user is still created — **disabled** — and
 the result says so.
 
+### Which template a window opens on
+
+*(2.3.5.)* The template editor has an **Open new users on** picker under the template list. Whatever
+you choose there is where **New User**, **Bulk Create Users** and **Copy user**'s naming picker land
+when they open. It saves as you choose it — there is no Save button for one dropdown.
+
+**“(No template — start from scratch)” can be the default**, for anyone whose work is mostly one-offs.
+
+Three things worth knowing:
+
+- **It says where a window OPENS, not what it keeps.** Choosing something else in New User stays
+  chosen; the default is not re-imposed when the window reloads its template list.
+- **Bulk Create always needs a template.** Every batch row builds from one, so when the default is
+  “no template” Bulk Create uses the first template by name instead. It declines the setting rather
+  than selecting nothing and leaving the rows pointing at a template no longer shown.
+- **A deleted or renamed default falls back** to the first template by name, and the windows still
+  open. The setting is left alone rather than rewritten, so renaming a template and renaming it back
+  does not lose your default in between.
+
+Until you set one, every window behaves as it always did: New User and Bulk Create open on the first
+template by name, and Copy user on **Standard User** — which used to be hardcoded and is now just the
+fallback when no default is set.
 ### Building a user without a template
 
 *(2.3.5.)* **No template — start from scratch** is the first entry in the template dropdown. Choosing
@@ -603,7 +625,7 @@ Rules worth knowing:
   common name and UPN computed from the same names.
 - **Nothing is saved.** The from-scratch entry is a choice, not a template, so it cannot be saved,
   exported or picked up by the template store by accident. Switching to it clears what the *template*
-  supplied and leaves everything you typed alone.
+  supplied and leaves everything you typed alone. It can still be made the **default** — see above.
 
 Templates are JSON files in `%APPDATA%\UnifiedDirectoryManager\Templates`. The template editor's
 **New**, **Clone**, **Delete**, **Import…** and **Export…** buttons manage the set; Export writes one
@@ -1262,7 +1284,8 @@ Everything lives under `%APPDATA%\UnifiedDirectoryManager\` and follows your Win
 - `settings.json` — window size, the edit-pane dock side, tree and pane sizes, the visible columns
   for each list, **favourites** (per domain), the Entra **tenant and client IDs**, the Entra Connect
   server, and the **last successful connection** (domain, the DC actually bound to, fall-backs,
-  LDAPS, username — never the password), and *(2.3.5)* the **cloud retry policies**. The next launch
+  LDAPS, username — never the password), and *(2.3.5)* the **cloud retry policies** and the **default
+  template**. The next launch
   restores your layout and pre-fills the connection dialog with the last DC.
 - `Templates\` — new-user templates.
 - `Searches\` — saved searches.

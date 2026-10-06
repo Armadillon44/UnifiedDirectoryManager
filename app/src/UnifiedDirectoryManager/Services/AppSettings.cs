@@ -76,6 +76,23 @@ public sealed class AppSettings
     public RetryPolicy ExchangeRetry => new RetryPolicy(ExchangeRetryAttempts, ExchangeRetryWaitSeconds).Clamped();
 
     /// <summary>
+    /// Which template New User, Bulk Create and Copy user open on. Set in the template editor.
+    /// </summary>
+    /// <remarks>
+    /// <para>Three states, and the difference between the first two matters:</para>
+    /// <list type="bullet">
+    ///   <item><c>null</c> — nothing chosen. The windows land on the first template by name, which is what
+    ///   they did before this existed, so an existing settings file needs no migration.</item>
+    ///   <item><see cref="TemplateChoice.FromScratchSetting"/> (the empty string) — start from scratch.
+    ///   It cannot collide with a template, because the store refuses to save one whose name is blank.</item>
+    ///   <item>anything else — a template name. A name rather than an id because that is what the store
+    ///   keys on and what the operator sees; a default naming a template that has since been deleted
+    ///   falls back rather than failing.</item>
+    /// </list>
+    /// </remarks>
+    public string? DefaultTemplateName { get; set; }
+
+    /// <summary>
     /// Ids of the toolbar items the operator has chosen, in order (audit T1). Empty or absent means the
     /// default set, so an existing settings file needs no migration and a new install looks as it did.
     /// Ids this build does not recognise are dropped on load rather than rejected — see

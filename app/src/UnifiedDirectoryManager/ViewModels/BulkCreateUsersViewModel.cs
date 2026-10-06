@@ -83,7 +83,17 @@ public partial class BulkCreateUsersViewModel : ObservableObject
         var previous = SelectedTemplate?.Name;
         Templates.Clear();
         foreach (var t in _store.LoadAll()) Templates.Add(t);
-        SelectedTemplate = Templates.FirstOrDefault(t => t.Name == previous) ?? Templates.FirstOrDefault();
+        // Keep what was selected; otherwise the operator's default; otherwise the first by name.
+        //
+        // A default of “start from scratch” is deliberately NOT honoured here, and falls through to the
+        // first template instead. Every batch row builds from a template — the row carries one, and the
+        // CSV columns fill it in — so there is nothing for a batch to build from scratch. Honouring it
+        // would mean selecting nothing and leaving the rows pointing at a template that is no longer
+        // shown, which reads as the window ignoring the setting rather than declining it.
+        SelectedTemplate = Templates.FirstOrDefault(t => t.Name == previous)
+                           ?? Templates.FirstOrDefault(t => string.Equals(
+                                  t.Name, _settings.DefaultTemplateName, StringComparison.OrdinalIgnoreCase))
+                           ?? Templates.FirstOrDefault();
     }
 
     partial void OnSelectedTemplateChanged(UserTemplate? value)

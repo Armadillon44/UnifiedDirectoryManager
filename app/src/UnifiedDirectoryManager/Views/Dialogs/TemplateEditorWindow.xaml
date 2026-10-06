@@ -20,6 +20,18 @@
                 <Button Content="Import…" Command="{Binding ImportCommand}" />
                 <Button Content="Export…" Command="{Binding ExportCommand}" />
             </WrapPanel>
+
+            <!-- Its own picker rather than a "Set as default" button on the list above, because the
+                 default can be "no template", which is not a template and so has no row up there. -->
+            <StackPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
+                <TextBlock Text="Open new users on" Style="{StaticResource FieldLabel}" />
+                <ComboBox ItemsSource="{Binding DefaultChoices}" SelectedItem="{Binding SelectedDefaultChoice}"
+                          DisplayMemberPath="Label" MaxDropDownHeight="320" />
+                <TextBlock Text="{Binding DefaultStatus}" Foreground="#0A7" FontSize="11"
+                           TextWrapping="Wrap" Margin="0,4,0,0" />
+                <TextBlock Foreground="#999" FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0"
+                           Text="Saved as you choose it. Bulk Create always needs a template, so it uses the first one by name when this is set to no template." />
+            </StackPanel>
             <ListBox ItemsSource="{Binding Templates}" DisplayMemberPath="Name" SelectedItem="{Binding SelectedTemplate}" />
         </DockPanel>
 

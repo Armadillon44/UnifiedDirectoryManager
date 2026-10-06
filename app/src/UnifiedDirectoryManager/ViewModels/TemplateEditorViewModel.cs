@@ -22,16 +22,29 @@ public partial class TemplateEditorViewModel : ObservableObject
 {
     private readonly ITemplateStore _store;
     private readonly IDialogService _dialogs;
+    private readonly ISettingsStore _settingsStore;
+    private readonly AppSettings _settings;
     private string? _originalName;
 
     public ObservableCollection<UserTemplate> Templates { get; } = new();
     public ObservableCollection<TemplateAttributeRow> AttributeRows { get; } = new();
+
+    /// <summary>
+    /// Everything New User can open on: “no template” first, then every saved template.
+    /// </summary>
+    /// <remarks>
+    /// A second list beside <see cref="Templates"/> because the two answer different questions — that one
+    /// is “which am I editing”, this one is “which do the windows start on” — and because the default can
+    /// be from-scratch, which is not a template and so is not in the editable list.
+    /// </remarks>
+    public ObservableCollection<TemplateChoice> DefaultChoices { get; } = new();
 
     /// <summary>One combined bucket of groups spanning on-prem AD, Entra ID (Graph), and Exchange Online
     /// distribution groups. Split back into the template's typed lists (by <see cref="GroupRef.Channel"/>) on save.</summary>
     public ObservableCollection<GroupRef> Groups { get; } = new();
 
     [ObservableProperty] private UserTemplate? _selectedTemplate;
+    [ObservableProperty] private TemplateChoice? _selectedDefaultChoice;
     [ObservableProperty] private string _name = string.Empty;
     [ObservableProperty] private string _description = string.Empty;
     [ObservableProperty] private string _targetOu = string.Empty;
@@ -39,6 +52,11 @@ public partial class TemplateEditorViewModel : ObservableObject
     [ObservableProperty] private bool _enabledByDefault = true;
     [ObservableProperty] private bool _mustChangePassword;
     [ObservableProperty] private string _status = string.Empty;
+    [ObservableProperty] private string _defaultStatus = string.Empty;
+
+    // Set while DefaultChoices is rebuilt, so re-selecting the same default during a reload does not
+    // write the settings file again or flash “Saved” at an operator who changed nothing.
+    private bool _loadingDefault;
     [ObservableProperty] private string _managerDisplay = "(none)";
     private string? _managerDn; // template default manager DN (null = none)
 
@@ -56,10 +74,13 @@ public partial class TemplateEditorViewModel : ObservableObject
 
     public string TemplatesDirectory => _store.TemplatesDirectory;
 
-    public TemplateEditorViewModel(ITemplateStore store, IDialogService dialogs)
+    public TemplateEditorViewModel(
+        ITemplateStore store, IDialogService dialogs, ISettingsStore settingsStore, AppSettings settings)
     {
         _store = store;
         _dialogs = dialogs;
+        _settingsStore = settingsStore;
+        _settings = settings;
         ReloadTemplates();
         // Guard the initial form setup so it isn't seen as an unsaved-changes "switch".
         _loadingForm = true;
@@ -359,5 +380,54 @@ public partial class TemplateEditorViewModel : ObservableObject
             foreach (var t in _store.LoadAll()) Templates.Add(t);
         }
         finally { _loadingForm = wasLoading; }
+
+        RebuildDefaultChoices();
+    }
+
+    /// <summary>
+    /// Rebuilds the default picker and re-selects the stored default.
+    /// </summary>
+    /// <remarks>
+    /// A default naming a template that has since been renamed or deleted shows the template the windows
+    /// would actually fall back to, not a blank box and not “no template” — the picker's whole job is to
+    /// say where they open. The setting itself is left alone rather than quietly rewritten: an operator
+    /// who renames a template and renames it back should not have lost their default in between.
+    /// </remarks>
+    private void RebuildDefaultChoices()
+    {
+        _loadingDefault = true;
+        try
+        {
+            DefaultChoices.Clear();
+            DefaultChoices.Add(new TemplateChoice(null));
+            foreach (var t in Templates) DefaultChoices.Add(new TemplateChoice(t));
+            // Resolve, not MatchDefault: this is the same call New User makes as it opens, so the
+            // picker cannot disagree with the windows it configures. It matters when the stored
+            // default names a template that has since been renamed -- MatchDefault alone returns null
+            // there, and showing the from-scratch row would claim a behaviour the windows do not have.
+            SelectedDefaultChoice = TemplateChoice.Resolve(DefaultChoices, null, _settings.DefaultTemplateName);
+            DefaultStatus = string.Empty;
+        }
+        finally { _loadingDefault = false; }
+    }
+
+    partial void OnSelectedDefaultChoiceChanged(TemplateChoice? value)
+    {
+        if (_loadingDefault || value is null) return;
+        // Written the moment it changes rather than behind a Save button: there is one value, the
+        // dropdown already shows what it is, and a Save for a single dropdown is a step to forget.
+        _settings.DefaultTemplateName = value.SettingValue;
+        try
+        {
+            _settingsStore.Save(_settings);
+            DefaultStatus = value.IsFromScratch
+                ? "New User will open with no template."
+                : $"New User, Bulk Create and Copy user will open on “{value.Label}”.";
+        }
+        catch (Exception ex)
+        {
+            AppLog.Instance.Warn("Could not save the default template: " + ex.Message);
+            DefaultStatus = "Could not save that: " + ex.Message;
+        }
     }
 }
