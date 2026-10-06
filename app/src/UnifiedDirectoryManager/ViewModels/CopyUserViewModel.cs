@@ -95,6 +95,16 @@ public partial class CopyUserViewModel : ObservableObject
     /// <summary>The issued pass — shown read-only with a Copy button; visible only once (never persisted).</summary>
     [ObservableProperty] private string _tapCode = string.Empty;
 
+    /// <summary>
+    /// True once there is a password or access pass to capture, which reveals the panel that shows them.
+    /// Both are held only in memory, so the panel is the last chance to copy either.
+    /// </summary>
+    public bool HasSecrets => GeneratedPassword.Length > 0 || TapCode.Length > 0;
+
+    // Without these the panel never appears: HasSecrets is computed, so it has to be told.
+    partial void OnGeneratedPasswordChanged(string value) => OnPropertyChanged(nameof(HasSecrets));
+    partial void OnTapCodeChanged(string value) => OnPropertyChanged(nameof(HasSecrets));
+
     public ObservableCollection<TemplateCopyGroupRow> Groups { get; } = new();       // on-prem memberships to copy
     public ObservableCollection<TemplateCopyGroupRow> CloudGroups { get; } = new();  // cloud-only memberships to copy
     public ObservableCollection<string> ProgressSteps { get; } = new();
@@ -446,7 +456,55 @@ public partial class CopyUserViewModel : ObservableObject
 
     // --- Post-create cloud provisioning (Entra Connect sync → wait for the user → add cloud groups) ---
 
+    /// <summary>
+    /// Cancels the cloud phase — the waiting for Entra to catch up, and the group adds that follow.
+    /// </summary>
+    /// <remarks>
+    /// The on-prem account is already created by the time any of this runs, so cancelling never undoes
+    /// anything; it stops waiting. Without it a retry tuned for a slow tenant has no exit but killing the
+    /// app — the very failure the Entra Connect sync timeout was added to prevent.
+    /// </remarks>
+    private CancellationTokenSource? _cloudCts;
+
+    /// <summary>True while the cloud phase is running and can still be stopped.</summary>
+    [ObservableProperty] private bool _canCancelCloud;
+
+    [RelayCommand(CanExecute = nameof(CanCancelCloud))]
+    private void CancelCloud()
+    {
+        Step("• Cancelling… the account is already created; this stops the cloud steps only.");
+        _cloudCts?.Cancel();
+    }
+
+    /// <summary>
+    /// Owns the cancellation, so the phase itself keeps its shape and its early returns. A cancel reports
+    /// what DID happen: the account exists, and whichever groups were added before the stop are still
+    /// added — a flat “cancelled” would send someone looking for a user that is already there.
+    /// </summary>
     private async Task RunPostCreateCloudAsync(IReadOnlyList<TemplateCopyGroupRow> cloudGroups)
+    {
+        _cloudCts?.Dispose();
+        _cloudCts = new CancellationTokenSource();
+        CanCancelCloud = true;
+        CancelCloudCommand.NotifyCanExecuteChanged();
+        try
+        {
+            await RunPostCreateCloudCoreAsync(cloudGroups, _cloudCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            Status = "Cancelled. The user was created; some cloud steps may not have run.";
+            Step("✗ Cancelled. The account exists. Add cloud / Exchange groups or issue a TAP from its Cloud tab.");
+        }
+        finally
+        {
+            CanCancelCloud = false;
+            CancelCloudCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    private async Task RunPostCreateCloudCoreAsync(
+        IReadOnlyList<TemplateCopyGroupRow> cloudGroups, CancellationToken ct)
     {
         var sync = await _cloudProvisioning.RunDeltaSyncAsync(
             EntraConnectServer, SyncSpecifyCredentials ? SyncUsername : null,
@@ -476,7 +534,7 @@ public partial class CopyUserViewModel : ObservableObject
         {
             Step("• Adding cloud groups…");
             var refs = graphGroups.Select(g => new CloudGroupRef { Id = g.Id, Name = g.Name });
-            (ok, failed) = await _cloudProvisioning.AddUserToGroupsAsync(cloudUser.Id, refs, Step);
+            (ok, failed) = await _cloudProvisioning.AddUserToGroupsAsync(cloudUser.Id, refs, Step, ct);
         }
 
         int dok = 0, dfailed = 0;
@@ -484,13 +542,13 @@ public partial class CopyUserViewModel : ObservableObject
         {
             Step("• Adding Exchange distribution groups…");
             var refs = distributionGroups.Select(g => new DistributionGroupRef { Id = g.Id, Name = g.Name, Smtp = g.Smtp ?? string.Empty });
-            (dok, dfailed) = await _cloudProvisioning.AddUserToDistributionGroupsAsync(Upn.Trim(), refs, Step);
+            (dok, dfailed) = await _cloudProvisioning.AddUserToDistributionGroupsAsync(Upn.Trim(), refs, Step, ct);
         }
 
         if (IssueTap)
         {
             Step("• Issuing a Temporary Access Pass…");
-            var tap = await _cloudProvisioning.IssueTemporaryAccessPassAsync(cloudUser.Id, TapLifetimeMinutes, TapOneTimeUse, Step);
+            var tap = await _cloudProvisioning.IssueTemporaryAccessPassAsync(cloudUser.Id, TapLifetimeMinutes, TapOneTimeUse, Step, ct);
             if (tap is { Pass.Length: > 0 }) TapCode = tap.Pass;
         }
 

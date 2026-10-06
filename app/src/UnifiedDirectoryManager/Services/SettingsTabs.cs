@@ -15,7 +15,10 @@ public static class SettingsTabs
     public const string Cloud = "Cloud (Entra ID)";
     public const string EntraConnect = "Entra Connect";
     public const string Logs = "Logs";
+
+    /// <summary>How patiently to wait for Entra ID and Exchange Online after an on-prem create.</summary>
+    public const string Retries = "Retries";
     public const string Toolbar = "Toolbar";
 
-    public static IReadOnlyList<string> All { get; } = new[] { OnPremAd, Cloud, EntraConnect, Logs, Toolbar };
+    public static IReadOnlyList<string> All { get; } = new[] { OnPremAd, Cloud, EntraConnect, Logs, Retries, Toolbar };
 }

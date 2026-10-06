@@ -53,6 +53,28 @@ public sealed class AppSettings
     public List<string> VisibleCloudGroupColumns { get; set; } = new();
     public List<string> VisibleCloudDeviceColumns { get; set; } = new();
 
+    // --- How patiently to wait for the cloud to catch up after an on-prem create ---
+    // Separate for the two services because their per-attempt cost differs by roughly ninety times: a
+    // Graph failure returns in well under a second, while an Exchange call that hangs costs the full
+    // 90-second operation budget before the wait even starts. Zero means “never set” and clamps up to
+    // the minimum — see RetryPolicy.Clamped.
+
+    /// <summary>Attempts when Entra (Graph) says the object is not visible yet.</summary>
+    public int EntraRetryAttempts { get; set; }
+
+    /// <summary>Seconds between those attempts.</summary>
+    public int EntraRetryWaitSeconds { get; set; }
+
+    /// <summary>Attempts when Exchange Online has not provisioned the recipient yet.</summary>
+    public int ExchangeRetryAttempts { get; set; }
+
+    /// <summary>Seconds between those attempts.</summary>
+    public int ExchangeRetryWaitSeconds { get; set; }
+
+    /// <summary>The two policies, with anything out of range clamped into it.</summary>
+    public RetryPolicy EntraRetry => new RetryPolicy(EntraRetryAttempts, EntraRetryWaitSeconds).Clamped();
+    public RetryPolicy ExchangeRetry => new RetryPolicy(ExchangeRetryAttempts, ExchangeRetryWaitSeconds).Clamped();
+
     /// <summary>
     /// Ids of the toolbar items the operator has chosen, in order (audit T1). Empty or absent means the
     /// default set, so an existing settings file needs no migration and a new install looks as it did.

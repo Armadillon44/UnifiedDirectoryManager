@@ -29,6 +29,7 @@ $support = Join-Path $repoRoot 'debug\UnifiedDirectoryManager.TestSupport.dll'
 if (-not (Test-Path $dll)) { throw "Build first — could not find $dll" }
 if (-not (Test-Path $support)) { throw "Build the test-support project first — could not find $support" }
 [System.Reflection.Assembly]::LoadFrom($dll) | Out-Null
+$srcDir = Join-Path $repoRoot 'app\src\UnifiedDirectoryManager'
 [System.Reflection.Assembly]::LoadFrom($support) | Out-Null
 
 $pass = 0; $fail = 0
@@ -171,6 +172,108 @@ Check 'and an Include toggle re-runs it' $true ($src -match 'nameof\(TemplateCop
 }
 finally {
     Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host "`n== how patiently to wait for the cloud to catch up ==" -ForegroundColor Cyan
+# Creating a user on-prem then using it in the cloud is a race against replication. Until Entra and
+# Exchange catch up they answer "cannot find it", meaning NOT YET rather than never. These numbers decide
+# how long the app keeps asking, and an operator can now change them.
+$Policy = [UnifiedDirectoryManager.Services.RetryPolicy]
+function Pol([int]$attempts, [int]$wait) { return $Policy::new($attempts, $wait) }
+
+Check 'the default is 10 attempts'      10 $Policy::Default.Attempts
+Check '  10 seconds apart'              10 $Policy::Default.WaitSeconds
+Check '  which is 90s of waiting'       90 $Policy::Default.TotalWait.TotalSeconds
+
+# One gap FEWER than the attempt count: the last attempt is allowed to fail rather than being followed by
+# another pause. Getting this off by one adds a whole wait to every failure.
+Check 'waits are attempts minus one'    40 ((Pol 5 10).TotalWait.TotalSeconds)
+Check '  and the floor holds'           20 ((Pol 5 5).TotalWait.TotalSeconds)
+
+Write-Host "`n== out-of-range values are corrected, not rejected ==" -ForegroundColor Cyan
+# These come from a settings file a newer build, a text editor or a bad merge may have put anything into.
+# Refusing to provision a user because a number is wrong would be a worse failure than using a sane one.
+Check 'too few attempts clamps up'      $Policy::MinAttempts ((Pol 1 10).Clamped().Attempts)
+Check 'too many clamps down'            $Policy::MaxAttempts ((Pol 9999 10).Clamped().Attempts)
+Check 'too short a wait clamps up'      $Policy::MinWaitSeconds ((Pol 10 1).Clamped().WaitSeconds)
+Check 'too long clamps down'            $Policy::MaxWaitSeconds ((Pol 10 9999).Clamped().WaitSeconds)
+# Zero means "never set" -- a fresh settings.json has no value at all. It must not disable retries.
+Check 'zero means unset, not none'      $Policy::MinAttempts ((Pol 0 0).Clamped().Attempts)
+Check '  for the wait too'              $Policy::MinWaitSeconds ((Pol 0 0).Clamped().WaitSeconds)
+Check 'a negative cannot get through'   $Policy::MinAttempts ((Pol ([int]-5) ([int]-5)).Clamped().Attempts)
+Check 'a value in range is untouched'   12 ((Pol 12 20).Clamped().Attempts)
+
+Write-Host "`n== the ceiling is a deliberate number ==" -ForegroundColor Cyan
+# 50 attempts was asked for; a five-minute gap was not kept. At the maximum attempt count that would be
+# over four hours of waiting on a single group, which is not a setting so much as a way to lose an
+# afternoon. A minute keeps the worst case under an hour and still rides out the lag this exists for.
+Check 'the wait tops out at a minute'   60 $Policy::MaxWaitSeconds
+Check '  so the worst case is under an hour' $true (((Pol 50 60).TotalWait.TotalMinutes) -lt 60)
+Check '  and is 49 minutes exactly'     49 ((Pol 50 60).TotalWait.TotalMinutes)
+
+Write-Host "`n== the cost in words, not in arithmetic ==" -ForegroundColor Cyan
+# "50 attempts, 60 seconds apart" means nothing to read. Shown live as the numbers are typed, so a choice
+# is never made without its consequence visible.
+$h = $Policy.GetMethod('Humanise')
+function Say([int]$seconds) { $b = [object[]]::new(1); $b[0] = [timespan]::FromSeconds($seconds); return $h.Invoke($null, $b) }
+Check 'seconds read as seconds'         '45 seconds' (Say 45)
+Check '  and one is singular'           '1 second' (Say 1)
+Check '  zero is not negative'          '0 seconds' (Say 0)
+Check 'a round minute has no seconds'   '2 min' (Say 120)
+Check '  a ragged one does'             '1 min 30 s' (Say 90)
+Check 'hours read as hours'             '1 hr 5 min' (Say 3900)
+Check '  and a round hour is bare'      '2 hr' (Say 7200)
+
+Write-Host "`n== Exchange is not Graph, and the figures say so ==" -ForegroundColor Cyan
+# A Graph failure returns in well under a second, so an attempt costs only the wait. An Exchange call that
+# HANGS costs the full 90-second operation budget first. One number for both would be too impatient for
+# Exchange or needlessly slow for Entra, which is why they are separate settings.
+Check 'a fast service costs the waits'  90 ((Pol 10 10).WorstCase(0).TotalSeconds)
+Check '  a hanging one costs far more'  990 ((Pol 10 10).WorstCase(90).TotalSeconds)
+Check '  which is 16 and a half minutes' '16 min 30 s' (Say 990)
+
+Write-Host "`n== the settings carry it, and the services read it ==" -ForegroundColor Cyan
+$Settings = [UnifiedDirectoryManager.Services.AppSettings]
+$fresh = $Settings::new()
+# A settings.json from before this feature has no values at all, and must not come back as zero retries.
+Check 'a fresh settings file is valid'  $Policy::MinAttempts $fresh.EntraRetry.Attempts
+Check '  for Exchange too'              $Policy::MinAttempts $fresh.ExchangeRetry.Attempts
+$fresh.EntraRetryAttempts = 10; $fresh.EntraRetryWaitSeconds = 10
+$fresh.ExchangeRetryAttempts = 25; $fresh.ExchangeRetryWaitSeconds = 30
+Check 'Entra reads its own values'      10 $fresh.EntraRetry.Attempts
+Check '  and Exchange its own'          25 $fresh.ExchangeRetry.Attempts
+Check '  they do not share a knob'      $false ($fresh.EntraRetry.WaitSeconds -eq $fresh.ExchangeRetry.WaitSeconds)
+
+$provSrc = Get-Content -Raw (Join-Path $srcDir 'Services\CloudProvisioningService.cs')
+Check 'Entra groups use the Entra policy' $true ($provSrc -match 'var policy = CurrentSettings\.EntraRetry')
+Check 'distribution groups use Exchange' $true ($provSrc -match 'var policy = CurrentSettings\.ExchangeRetry')
+Check 'the TAP is a Graph write'        $true ($provSrc -match 'CurrentSettings\.EntraRetry, cancellationToken')
+# Re-read per call, so changing the setting affects the very next creation with no restart.
+Check 'settings are read per call'      $true ($provSrc -match 'private AppSettings CurrentSettings => _settingsStore\.Load\(\)')
+Check '  and not cached in a field'     $false ($provSrc -match 'private readonly AppSettings')
+
+Write-Host "`n== and the operator can stop it ==" -ForegroundColor Cyan
+# A longer retry with no exit is a trap, not a setting. This is the failure the Entra Connect sync timeout
+# was added to prevent: the only escape from a hung call was killing the app.
+$retryBlock = [regex]::Match($provSrc, '(?s)private static async Task RetryWhileCatchingUpAsync.*?\n    \}').Value
+Check 'the retry takes a token'         $true ($retryBlock -match 'CancellationToken cancellationToken')
+Check '  it checks before each attempt' $true ($retryBlock -match 'cancellationToken\.ThrowIfCancellationRequested\(\)')
+# A token covering only the attempts would leave someone who pressed Cancel watching a minute of delay.
+Check '  and the WAIT is cancellable'   $true ($retryBlock -match 'Task\.Delay\(policy\.Wait, cancellationToken\)')
+Check '  cancellation is never swallowed' $true ($retryBlock -match 'catch \(OperationCanceledException\) \{ throw; \}')
+
+foreach ($vm in 'NewUserViewModel.cs', 'CopyUserViewModel.cs') {
+    $src = Get-Content -Raw (Join-Path $srcDir (Join-Path 'ViewModels' $vm))
+    Check "  $vm offers Cancel"          $true ($src -match '\[RelayCommand\(CanExecute = nameof\(CanCancelCloud\)\)\]')
+    # Cancelling must report what DID happen: the account exists and earlier groups are still added.
+    Check "  $vm says the account exists" $true ($src -match 'Cancelled\. The user was created')
+    Check "  and clears the flag after"  $true ($src -match 'finally\s*\{\s*\r?\n\s*CanCancelCloud = false;')
+}
+foreach ($w in 'NewUserWindow.xaml', 'CopyUserWindow.xaml') {
+    $x = Get-Content -Raw (Join-Path $srcDir (Join-Path 'Views\Dialogs' $w))
+    Check "  $w has the button"          $true ($x -match 'CancelCloudCommand')
+    # Hidden when there is nothing to stop.
+    Check "  which hides when idle"      $true ($x -match 'CanCancelCloud, Converter=\{StaticResource BoolToVis\}')
 }
 
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })

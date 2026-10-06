@@ -23,6 +23,84 @@ public partial class SettingsViewModel : ObservableObject
     /// <summary>The Toolbar page (audit T1).</summary>
     public ToolbarEditorViewModel Toolbar { get; }
 
+    // --- Retries: how long to keep asking a service that has answered “not yet” ---
+    [ObservableProperty] private int _entraRetryAttempts;
+    [ObservableProperty] private int _entraRetryWaitSeconds;
+    [ObservableProperty] private int _exchangeRetryAttempts;
+    [ObservableProperty] private int _exchangeRetryWaitSeconds;
+    [ObservableProperty] private string _retryStatus = string.Empty;
+
+    public string RetryLimits =>
+        $"{RetryPolicy.MinAttempts}–{RetryPolicy.MaxAttempts} attempts, " +
+        $"{RetryPolicy.MinWaitSeconds}–{RetryPolicy.MaxWaitSeconds} seconds apart.";
+
+    /// <summary>
+    /// The cost of the current numbers, in words, recomputed as they are typed.
+    /// </summary>
+    /// <remarks>
+    /// “50 attempts, 60 seconds apart” means nothing to read. “Up to 49 min of waiting per group” is the
+    /// thing an operator can actually decide about, and seeing it move while typing is what stops a
+    /// number being chosen without its consequence.
+    /// </remarks>
+    public string EntraRetrySummary
+    {
+        get
+        {
+            var p = new RetryPolicy(EntraRetryAttempts, EntraRetryWaitSeconds).Clamped();
+            return $"→ Up to {RetryPolicy.Humanise(p.TotalWait)} of waiting per group. " +
+                   "A Graph failure returns almost at once, so this is nearly all of it.";
+        }
+    }
+
+    public string ExchangeRetrySummary
+    {
+        get
+        {
+            var p = new RetryPolicy(ExchangeRetryAttempts, ExchangeRetryWaitSeconds).Clamped();
+            // 90s is ExchangeService.OpTimeout -- what one attempt costs when Exchange HANGS rather than
+            // answering “not found yet”. The fast answer costs nothing, so both figures are shown.
+            return $"→ Up to {RetryPolicy.Humanise(p.TotalWait)} of waiting per group, or " +
+                   $"{RetryPolicy.Humanise(p.WorstCase(90))} if Exchange stops answering.";
+        }
+    }
+
+    partial void OnEntraRetryAttemptsChanged(int value) => OnPropertyChanged(nameof(EntraRetrySummary));
+    partial void OnEntraRetryWaitSecondsChanged(int value) => OnPropertyChanged(nameof(EntraRetrySummary));
+    partial void OnExchangeRetryAttemptsChanged(int value) => OnPropertyChanged(nameof(ExchangeRetrySummary));
+    partial void OnExchangeRetryWaitSecondsChanged(int value) => OnPropertyChanged(nameof(ExchangeRetrySummary));
+
+    [RelayCommand]
+    private void SaveRetrySettings()
+    {
+        // Clamped on the way in, so a value typed outside the range is corrected on screen rather than
+        // saved and quietly ignored later.
+        var entra = new RetryPolicy(EntraRetryAttempts, EntraRetryWaitSeconds).Clamped();
+        var exchange = new RetryPolicy(ExchangeRetryAttempts, ExchangeRetryWaitSeconds).Clamped();
+        LoadRetry(entra, exchange);
+
+        _settings.EntraRetryAttempts = entra.Attempts;
+        _settings.EntraRetryWaitSeconds = entra.WaitSeconds;
+        _settings.ExchangeRetryAttempts = exchange.Attempts;
+        _settings.ExchangeRetryWaitSeconds = exchange.WaitSeconds;
+        _settingsStore.Save(_settings);
+        RetryStatus = "Saved. The next user you create or copy uses these.";
+    }
+
+    [RelayCommand]
+    private void ResetRetrySettings()
+    {
+        LoadRetry(RetryPolicy.Default, RetryPolicy.Default);
+        RetryStatus = "Back to the defaults. Save to keep them.";
+    }
+
+    private void LoadRetry(RetryPolicy entra, RetryPolicy exchange)
+    {
+        EntraRetryAttempts = entra.Attempts;
+        EntraRetryWaitSeconds = entra.WaitSeconds;
+        ExchangeRetryAttempts = exchange.Attempts;
+        ExchangeRetryWaitSeconds = exchange.WaitSeconds;
+    }
+
     /// <summary>Operation-log folder override; blank means use the default shown in <see cref="DefaultLogDirectory"/>.</summary>
     [ObservableProperty] private string _operationLogDirectory = string.Empty;
     [ObservableProperty] private string _logStatus = string.Empty;
@@ -54,6 +132,7 @@ public partial class SettingsViewModel : ObservableObject
         _onReconnected = onReconnected;
         _operationLogDirectory = settings.OperationLogDirectory ?? string.Empty;
         Toolbar = new ToolbarEditorViewModel(settingsStore, settings);
+        LoadRetry(settings.EntraRetry, settings.ExchangeRetry);
         Connection.ConnectionSucceeded += (_, _) => _onReconnected();
 
         // Prefill the sync account from the server's saved credential, if any.

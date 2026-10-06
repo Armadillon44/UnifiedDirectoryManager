@@ -209,7 +209,9 @@ public sealed class DialogService : IDialogService
         vm.ReloadTemplates();
         var tpl = existing?.Template ?? defaultTemplate;
         if (tpl is not null)
-            vm.SelectedTemplate = vm.Templates.FirstOrDefault(t => t.Name == tpl.Name) ?? vm.SelectedTemplate;
+            // The list now carries a null first entry meaning “no template”, so the name match has to
+            // tolerate it rather than assume every row is a template.
+            vm.SelectedTemplate = vm.Templates.FirstOrDefault(t => t?.Name == tpl.Name) ?? vm.SelectedTemplate;
         if (!string.IsNullOrWhiteSpace(upnSuffix)) vm.UpnSuffix = upnSuffix!;
         if (existing is not null) SeedNewUserFromRow(vm, existing);
 

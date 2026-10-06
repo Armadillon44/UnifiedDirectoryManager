@@ -17,7 +17,22 @@ public static class UserAttributeBuilder
     /// (already containing any suggestion the caller chose to seed); blank means "not specified".</summary>
     public sealed record Input
     {
-        public required UserTemplate Template { get; init; }
+    /// <summary>
+    /// The template to layer the per-user values over, or null for a user built from scratch.
+    /// </summary>
+    /// <remarks>
+    /// Null is a supported shape, not a degenerate one. Everything below the template loop already
+    /// derives cn, sAMAccountName, displayName and the UPN from the typed names alone — the template only
+    /// ever supplied DEFAULTS over the top. So “no template” needed the loop skipped and nothing else.
+    /// </remarks>
+        public UserTemplate? Template { get; init; }
+
+        /// <summary>
+        /// Attributes typed for this user directly, rather than coming from a template. Applied AFTER the
+        /// template defaults, so an explicit value wins — the same rule the mail / UPN / employee-ID fields
+        /// already follow.
+        /// </summary>
+        public IReadOnlyDictionary<string, string>? ExtraAttributes { get; init; }
         public string FirstName { get; init; } = string.Empty;
         public string MiddleName { get; init; } = string.Empty;
         public string LastName { get; init; } = string.Empty;
@@ -65,7 +80,7 @@ public static class UserAttributeBuilder
     {
         var samPattern = i.SamOverride;
         if (string.IsNullOrWhiteSpace(samPattern))
-            i.Template.AttributeDefaults.TryGetValue("sAMAccountName", out samPattern);
+            i.Template?.AttributeDefaults.TryGetValue("sAMAccountName", out samPattern);
         if (string.IsNullOrWhiteSpace(samPattern)) samPattern = "{first}.{last}";
         return SanitizeSam(Resolve(i, samPattern, sam: string.Empty));
     }
@@ -75,13 +90,17 @@ public static class UserAttributeBuilder
     {
         var sam = ComputeSam(i);
 
-        var email = i.Template.AttributeDefaults.TryGetValue("mail", out var mailPat)
+        // Without a template there are no patterns, so the suggestions fall back to what can be derived
+        // from the typed name: a UPN from the logon name and suffix, and nothing for mail or proxies.
+        var defaults = i.Template?.AttributeDefaults;
+        var email = defaults is not null && defaults.TryGetValue("mail", out var mailPat)
             ? Resolve(i, mailPat, sam) : string.Empty;
-        var upn = i.Template.AttributeDefaults.TryGetValue("userPrincipalName", out var upnPat)
+        var upn = defaults is not null && defaults.TryGetValue("userPrincipalName", out var upnPat)
             ? Resolve(i, upnPat, sam)
             : (!string.IsNullOrWhiteSpace(i.UpnSuffix) && !string.IsNullOrWhiteSpace(sam) ? $"{sam}@{i.UpnSuffix.Trim()}" : string.Empty);
         var proxy = string.Join(Environment.NewLine,
-            i.Template.ProxyAddressPatterns.Select(p => Resolve(i, p, sam)).Where(s => !string.IsNullOrWhiteSpace(s)));
+            (i.Template?.ProxyAddressPatterns ?? new List<string>())
+                .Select(p => Resolve(i, p, sam)).Where(s => !string.IsNullOrWhiteSpace(s)));
 
         return new Suggestions(email, upn, proxy);
     }
@@ -92,11 +111,20 @@ public static class UserAttributeBuilder
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var sam = ComputeSam(i);
 
-        foreach (var (ldap, pattern) in i.Template.AttributeDefaults)
+        foreach (var (ldap, pattern) in i.Template?.AttributeDefaults ?? new Dictionary<string, string>())
         {
             if (ldap.Equals("sAMAccountName", StringComparison.OrdinalIgnoreCase)) continue;
             var value = Resolve(i, pattern, sam);
             if (!string.IsNullOrWhiteSpace(value)) result[ldap] = value;
+        }
+
+        // Typed for this user, so they beat the template's defaults. sAMAccountName is excluded for the
+        // same reason it is above: it is computed, and letting it be set here would let the logon name
+        // disagree with the UPN and cn derived from it.
+        foreach (var (ldap, value) in i.ExtraAttributes ?? new Dictionary<string, string>())
+        {
+            if (ldap.Equals("sAMAccountName", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!string.IsNullOrWhiteSpace(value)) result[ldap] = value.Trim();
         }
 
         // Ensure the essentials exist.

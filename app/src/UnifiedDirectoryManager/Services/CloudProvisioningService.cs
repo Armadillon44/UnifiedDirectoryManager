@@ -97,30 +97,40 @@ public sealed class CloudProvisioningService
     }
 
     /// <summary>Adds the (already-synced) user to each Entra (Graph) group, reporting per-group success/failure.</summary>
+    /// <param name="cancellationToken">
+    /// The operator's Cancel. Without it a long retry has no exit but killing the app, which is the very
+    /// failure the Entra Connect sync timeout was added to prevent.
+    /// </param>
     public async Task<(int Ok, int Failed)> AddUserToGroupsAsync(
-        string userId, IEnumerable<CloudGroupRef> groups, Action<string> report)
+        string userId, IEnumerable<CloudGroupRef> groups, Action<string> report,
+        CancellationToken cancellationToken = default)
     {
+        var policy = CurrentSettings.EntraRetry;
         int ok = 0, failed = 0;
         foreach (var g in groups)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             // Appearing in Entra ID is not the same as being usable as a membership target: the directory
             // answers "does not exist or one of its queried reference-property objects are not present" for a
             // few more moments after the object itself is readable.
             try
             {
-                await RetryWhileCatchingUpAsync(() => _graph.AddMemberToGroupAsync(g.Id, userId), g.Name, report);
+                await RetryWhileCatchingUpAsync(
+                    _ => _graph.AddMemberToGroupAsync(g.Id, userId), g.Name, report, policy, cancellationToken);
                 ok++; report($"   ✓ {g.Name}");
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex) { failed++; report($"   ✗ {g.Name}: {GraphErrors.Friendly(ex)}"); }
         }
         return (ok, failed);
     }
 
-    // How long to keep trying an operation that failed only because the directory has not caught up. Four
-    // waits of eight seconds is about half a minute per item — long enough for the usual lag, short enough
-    // that a genuinely missing object does not hold the run up.
-    private const int CatchUpAttempts = 5;
-    private static readonly TimeSpan CatchUpWait = TimeSpan.FromSeconds(8);
+    /// <summary>
+    /// Settings as they stand right now, rather than as they stood when this service was built. Re-read
+    /// per call so that changing the retry on the Settings page affects the very next creation, with no
+    /// restart and nothing to invalidate.
+    /// </summary>
+    private AppSettings CurrentSettings => _settingsStore.Load();
 
     /// <summary>
     /// Runs an operation, retrying ONLY the failures that mean "not visible yet" or "the tenant is busy".
@@ -128,16 +138,25 @@ public sealed class CloudProvisioningService
     /// because a broad retry turns a real, permanent failure into a long wait ending in the same error.
     /// The last attempt is allowed to throw, so a failure still surfaces exactly as it did before.
     /// </summary>
-    private static async Task RetryWhileCatchingUpAsync(Func<Task> action, string what, Action<string> report)
+    /// <remarks>
+    /// The cancellation token reaches both halves: the attempt itself, and the wait between attempts. A
+    /// token that only covered the attempts would leave an operator who pressed Cancel watching a minute
+    /// of Task.Delay finish first.
+    /// </remarks>
+    private static async Task RetryWhileCatchingUpAsync(
+        Func<CancellationToken, Task> action, string what, Action<string> report,
+        RetryPolicy policy, CancellationToken cancellationToken)
     {
         for (var attempt = 1; ; attempt++)
         {
-            try { await action(); return; }
-            catch (Exception ex) when (attempt < CatchUpAttempts && IsStillCatchingUp(ex))
+            cancellationToken.ThrowIfCancellationRequested();
+            try { await action(cancellationToken); return; }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) when (attempt < policy.Attempts && IsStillCatchingUp(ex))
             {
-                report($"   … {what}: the directory hasn't caught up yet — retrying in {CatchUpWait.TotalSeconds:0}s "
-                       + $"({attempt} of {CatchUpAttempts - 1})");
-                await Task.Delay(CatchUpWait);
+                report($"   … {what}: the directory hasn't caught up yet — retrying in {policy.Wait.TotalSeconds:0}s "
+                       + $"({attempt} of {policy.Attempts - 1})");
+                await Task.Delay(policy.Wait, cancellationToken);
             }
         }
     }
@@ -164,11 +183,14 @@ public sealed class CloudProvisioningService
     /// not yet be provisioned as an Exchange recipient, so a failure here is often transient and worth a retry.
     /// </summary>
     public async Task<(int Ok, int Failed)> AddUserToDistributionGroupsAsync(
-        string memberIdentity, IEnumerable<DistributionGroupRef> groups, Action<string> report)
+        string memberIdentity, IEnumerable<DistributionGroupRef> groups, Action<string> report,
+        CancellationToken cancellationToken = default)
     {
+        var policy = CurrentSettings.ExchangeRetry;
         int ok = 0, failed = 0;
         foreach (var g in groups)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var groupId = !string.IsNullOrWhiteSpace(g.Smtp) ? g.Smtp
                         : !string.IsNullOrWhiteSpace(g.Id) ? g.Id : g.Name;
             // Exchange provisions a recipient for a freshly-synced user some time after Entra ID has the
@@ -176,9 +198,11 @@ public sealed class CloudProvisioningService
             try
             {
                 await RetryWhileCatchingUpAsync(
-                    () => _exchange.AddDistributionGroupMemberAsync(groupId, memberIdentity), g.Name, report);
+                    ct => _exchange.AddDistributionGroupMemberAsync(groupId, memberIdentity, ct),
+                    g.Name, report, policy, cancellationToken);
                 ok++; report($"   ✓ {g.Name} (Exchange)");
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex) { failed++; report($"   ✗ {g.Name} (Exchange): {ex.Message}"); }
         }
         return (ok, failed);
@@ -190,7 +214,8 @@ public sealed class CloudProvisioningService
     /// derails the rest of provisioning). The pass code is never echoed to <paramref name="report"/>.
     /// </summary>
     public async Task<TemporaryAccessPassResult?> IssueTemporaryAccessPassAsync(
-        string userId, int lifetimeMinutes, bool isUsableOnce, Action<string> report)
+        string userId, int lifetimeMinutes, bool isUsableOnce, Action<string> report,
+        CancellationToken cancellationToken = default)
     {
         try
         {
@@ -198,11 +223,12 @@ public sealed class CloudProvisioningService
             // the group adds just before this were doing to it.
             TemporaryAccessPassResult? tap = null;
             await RetryWhileCatchingUpAsync(
-                async () => tap = await _graph.CreateTemporaryAccessPassAsync(userId, lifetimeMinutes, isUsableOnce),
-                "Temporary Access Pass", report);
+                async _ => tap = await _graph.CreateTemporaryAccessPassAsync(userId, lifetimeMinutes, isUsableOnce),
+                "Temporary Access Pass", report, CurrentSettings.EntraRetry, cancellationToken);
             report($"   ✓ Temporary Access Pass issued (valid {lifetimeMinutes} min, {(isUsableOnce ? "one-time use" : "multi-use")}).");
             return tap;
         }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex) { report("   ✗ Temporary Access Pass failed: " + GraphErrors.Friendly(ex)); return null; }
     }
 }

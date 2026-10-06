@@ -19,6 +19,9 @@ $root = Split-Path -Parent $PSScriptRoot
 $dll = Join-Path (Split-Path -Parent $root) 'debug\UnifiedDirectoryManager.dll'
 if (-not (Test-Path $dll)) { throw "Build first — could not find $dll" }
 [System.Reflection.Assembly]::LoadFrom($dll) | Out-Null
+# This suite names the app folder $root; the repository root is its parent.
+$repoRoot = Split-Path -Parent $root
+$srcDir = Join-Path $repoRoot 'app\src\UnifiedDirectoryManager'
 
 $B = [UnifiedDirectoryManager.Services.UserAttributeBuilder]
 
@@ -280,5 +283,134 @@ Check 'nor its own initial helper'          $false ($copySrc -match 'private sta
 $builderSrc = Get-Content -Raw (Join-Path (Split-Path -Parent $root) 'app\src\UnifiedDirectoryManager\Services\UserAttributeBuilder.cs')
 $resolvers = ([regex]::Matches($builderSrc, 'firstInitial\|lastInitial\|middleInitial')).Count
 Check 'exactly one resolver exists'         1 $resolvers
+Write-Host "`n== a user built from scratch, with no template ==" -ForegroundColor Cyan
+# New User used to REQUIRE a template: with none selected BuildAttributes returned an empty dictionary and
+# the create failed at "could not derive a common name". Everything below the template loop already
+# derived cn, sAMAccountName, displayName and the UPN from the typed names, so no-template needed the loop
+# skipped and nothing else.
+$Builder = [UnifiedDirectoryManager.Services.UserAttributeBuilder]
+
+# The record is init-only, so it is built through its initialiser the way C# would.
+# Dictionary<,> lives in System.Collections; a using directive does not reference the assembly.
+Add-Type -ReferencedAssemblies @(
+    (Join-Path $repoRoot 'debug\UnifiedDirectoryManager.dll'),
+    'System.Collections', 'System.Runtime', 'netstandard') @'
+using System.Collections.Generic;
+using UnifiedDirectoryManager.Models;
+using UnifiedDirectoryManager.Services;
+public static class ScratchProbe {
+    public static UserAttributeBuilder.Built Build(
+        UserTemplate template, string first, string last, string upnSuffix,
+        string[] extraKeys, string[] extraValues) {
+        var extras = new Dictionary<string, string>();
+        for (var i = 0; i < extraKeys.Length; i++) extras[extraKeys[i]] = extraValues[i];
+        return UserAttributeBuilder.Build(new UserAttributeBuilder.Input {
+            Template = template, FirstName = first, LastName = last,
+            UpnSuffix = upnSuffix, ExtraAttributes = extras,
+        });
+    }
+    public static string Sam(UserTemplate template, string first, string last) =>
+        UserAttributeBuilder.ComputeSam(new UserAttributeBuilder.Input {
+            Template = template, FirstName = first, LastName = last });
+    public static UserAttributeBuilder.Suggestions Suggest(UserTemplate template, string first, string last, string suffix) =>
+        UserAttributeBuilder.Suggest(new UserAttributeBuilder.Input {
+            Template = template, FirstName = first, LastName = last, UpnSuffix = suffix });
+}
+'@
+if (-not ('ScratchProbe' -as [type])) { throw 'the probe did not compile -- everything below would be a false pass' }
+
+$none = [string[]]@()
+$built = [ScratchProbe]::Build($null, 'Jane', 'Doe', 'contoso.net', $none, $none)
+Check 'a cn is derived with no template' 'Jane Doe' $built.Attributes['cn']
+Check '  and a logon name'               'jane.doe' $built.Attributes['sAMAccountName']
+Check '  and a display name'             'Jane Doe' $built.Attributes['displayName']
+Check '  and a UPN from the suffix'      'jane.doe@contoso.net' $built.Attributes['userPrincipalName']
+Check '  givenName and sn too'           'Jane' $built.Attributes['givenName']
+Check '  '                               'Doe' $built.Attributes['sn']
+# The sam pattern lived in the template; without one it falls back rather than producing nothing.
+Check 'the sam falls back to first.last' 'jane.doe' ([ScratchProbe]::Sam($null, 'Jane', 'Doe'))
+
+# Suggest used to be skipped entirely with no template, so the UPN box stayed empty.
+$sug = [ScratchProbe]::Suggest($null, 'Jane', 'Doe', 'contoso.net')
+Check 'the UPN is still suggested'       'jane.doe@contoso.net' $sug.Upn
+Check '  mail has nothing to suggest'    '' $sug.Email
+Check '  nor do proxies'                 '' $sug.ProxyText
+
+Write-Host "`n== the Details fields reach the attribute set ==" -ForegroundColor Cyan
+$keys = [string[]]@('title', 'department', 'company')
+$vals = [string[]]@('Buyer', 'Merchandising', 'LaCrosse')
+$withExtras = [ScratchProbe]::Build($null, 'Jane', 'Doe', 'contoso.net', $keys, $vals)
+Check 'a job title is written'          'Buyer' $withExtras.Attributes['title']
+Check '  a department'                  'Merchandising' $withExtras.Attributes['department']
+Check '  a company'                     'LaCrosse' $withExtras.Attributes['company']
+Check '  and the derived ones survive'  'jane.doe' $withExtras.Attributes['sAMAccountName']
+
+# An explicit value beats a template default -- the same rule mail, UPN and employee ID already follow.
+$tpl = [UnifiedDirectoryManager.Models.UserTemplate]::new()
+$tpl.AttributeDefaults['department'] = 'Warehouse'
+$tpl.AttributeDefaults['company'] = 'LaCrosse'
+$over = [ScratchProbe]::Build($tpl, 'Jane', 'Doe', 'contoso.net', [string[]]@('department'), [string[]]@('Merchandising'))
+Check 'an explicit value overrides'     'Merchandising' $over.Attributes['department']
+Check '  and leaves the rest alone'     'LaCrosse' $over.Attributes['company']
+
+# sAMAccountName is computed from the names; letting it be set here would let the logon name disagree
+# with the cn and UPN derived from it.
+$samAttempt = [ScratchProbe]::Build($null, 'Jane', 'Doe', 'contoso.net', [string[]]@('sAMAccountName'), [string[]]@('hijacked'))
+Check 'sAMAccountName cannot be hijacked' 'jane.doe' $samAttempt.Attributes['sAMAccountName']
+
+# A blank field writes nothing rather than an empty attribute.
+$blank = [ScratchProbe]::Build($null, 'Jane', 'Doe', 'contoso.net', [string[]]@('title'), [string[]]@('   '))
+Check 'a blank field is not written'    $false ($blank.Attributes.ContainsKey('title'))
+
+Write-Host "`n== the window exposes it ==" -ForegroundColor Cyan
+$nuVm = Get-Content -Raw (Join-Path $srcDir 'ViewModels\NewUserViewModel.cs')
+$nuXaml = Get-Content -Raw (Join-Path $srcDir 'Views\Dialogs\NewUserWindow.xaml')
+# A null in the list rather than a sentinel template object, so nothing can be saved or exported by accident.
+Check 'the list carries a null entry'   $true ($nuVm -match 'Templates\.Add\(null\)')
+Check '  typed as nullable'             $true ($nuVm -match 'ObservableCollection<UserTemplate\?> Templates')
+Check '  and the combo renders it'      $true ($nuXaml -match 'TargetNullValue=\(No template')
+# The usual flow is unchanged: a real template is still what you land on.
+Check '  a real template is the default' $true ($nuVm -match 'FirstOrDefault\(t => t is not null\)')
+# The Details block appears only from scratch: a hidden field overriding a template default would be worse
+# than not offering it.
+Check 'Details are from-scratch only'   $true ($nuXaml -match 'IsFromScratch, Converter=\{StaticResource BoolToVis\}')
+Check '  and so is the attribute set'   $true ($nuVm -match 'if \(!IsFromScratch\) return extras;')
+foreach ($f in 'JobTitle', 'Department', 'Company', 'Office', 'Telephone', 'UserDescription') {
+    Check "  the form binds $f"         $true ($nuXaml -match ("Binding " + $f + ","))
+}
+Check 'anything else is reachable'      $true ($nuXaml -match 'AddExtraAttributeCommand')
+# Validation no longer demands a template; the cn and sam checks are the real requirement.
+Check 'a template is not required'      $false ($nuVm -match 'Select a template first')
+
+Write-Host "`n== the password and the pass are where you are looking ==" -ForegroundColor Cyan
+# Both were in the LEFT scrollable column -- the password beside Generate, the pass inside the TAP
+# settings. After a create the operator watches the progress log, and the two values they have to capture
+# were off screen.
+foreach ($w in 'NewUserWindow.xaml', 'CopyUserWindow.xaml') {
+    $x = Get-Content -Raw (Join-Path $srcDir (Join-Path 'Views\Dialogs' $w))
+    Check "  $w has the panel"           $true ($x -match 'Shown once — copy these now')
+    Check "  spanning both columns"      $true ($x -match '<Border Grid\.Row="1" Grid\.ColumnSpan="2"')
+    Check "  with both values"           $true (($x -match 'Binding GeneratedPassword, Mode=OneWay') -and ($x -match 'Binding TapCode, Mode=OneWay'))
+    # Four in the window, not two: the originals stay beside the Generate button and the TAP settings,
+    # and the panel adds its own. Scoped to the panel so it counts the ones being asserted about.
+    $panel = [regex]::Match($x, '(?s)<Border Grid\.Row="1" Grid\.ColumnSpan="2".*?</Border>').Value
+    Check "  the panel was found"        $true ($panel.Length -gt 0)
+    Check "  with a Copy for each"       2 ([regex]::Matches($panel, 'Content="Copy"').Count)
+    # It appears only once there is something to copy.
+    Check "  hidden until there is one"  $true ($x -match 'HasSecrets, Converter=\{StaticResource BoolToVis\}')
+    # The progress pane spans the window rather than a 340px column.
+    Check "  progress spans the window"  $true ($x -match '<DockPanel Grid\.Row="2" Grid\.ColumnSpan="2"')
+}
+foreach ($vm in 'NewUserViewModel.cs', 'CopyUserViewModel.cs') {
+    $v = Get-Content -Raw (Join-Path $srcDir (Join-Path 'ViewModels' $vm))
+    Check "  $vm computes HasSecrets"    $true ($v -match 'public bool HasSecrets =>')
+    # Computed, so it has to be told -- without these the panel never appears.
+    Check "  and notifies on both"       $true (($v -match 'OnGeneratedPasswordChanged\(string value\) => OnPropertyChanged\(nameof\(HasSecrets\)\)') -and ($v -match 'OnTapCodeChanged\(string value\) => OnPropertyChanged\(nameof\(HasSecrets\)\)'))
+}
+# The panel shows them; it must not be what WRITES them. The creation-log suite owns that rule, and this
+# checks the new markup did not quietly break it.
+$nuXaml2 = Get-Content -Raw (Join-Path $srcDir 'Views\Dialogs\NewUserWindow.xaml')
+Check 'the panel says they are not stored' $true ($nuXaml2 -match 'Neither is written to the log')
+
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

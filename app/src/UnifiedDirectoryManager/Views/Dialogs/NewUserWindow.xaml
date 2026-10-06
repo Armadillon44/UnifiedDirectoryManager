@@ -10,6 +10,8 @@
         </Grid.ColumnDefinitions>
         <Grid.RowDefinitions>
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />   <!-- secrets, spanning both columns -->
+            <RowDefinition Height="Auto" />   <!-- progress, spanning both columns -->
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
@@ -20,7 +22,15 @@
                 <TextBlock Text="Template" Style="{StaticResource FieldLabel}" />
                 <DockPanel>
                     <Button DockPanel.Dock="Right" Content="Manage…" Command="{Binding ManageTemplatesCommand}" Margin="6,0,0,0" />
-                    <ComboBox ItemsSource="{Binding Templates}" DisplayMemberPath="Name" SelectedItem="{Binding SelectedTemplate}" />
+                    <ComboBox ItemsSource="{Binding Templates}" SelectedItem="{Binding SelectedTemplate}">
+                        <!-- The list carries a null first entry for "start from scratch". Binding Name on a
+                             null item falls through to the fallback, so no sentinel object is needed. -->
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Name, FallbackValue=(No template — start from scratch), TargetNullValue=(No template — start from scratch)}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
                 </DockPanel>
 
                 <TextBlock Text="First name" Style="{StaticResource FieldLabel}" Margin="0,8,0,2" />
@@ -56,6 +66,63 @@
                     <Button DockPanel.Dock="Right" Content="Pick…" Command="{Binding PickManagerCommand}" Margin="6,2,0,2" />
                     <TextBox Text="{Binding ManagerDisplay, Mode=OneWay}" IsReadOnly="True" />
                 </DockPanel>
+
+                <!--
+                  The attributes a template would otherwise have supplied. Visible only with no template:
+                  with one selected these are hidden, because a hidden field silently overriding a
+                  template default would be worse than not offering them at all.
+                -->
+                <StackPanel Visibility="{Binding IsFromScratch, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="Details (optional)" FontWeight="SemiBold" Margin="0,12,0,2" />
+                    <TextBlock Text="Without a template these are blank. Anything left empty is simply not written."
+                               Foreground="#888" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,4" />
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="10" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Job title" Style="{StaticResource FieldLabel}" />
+                        <TextBox   Grid.Row="1" Grid.Column="0" Text="{Binding JobTitle, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Grid.Row="0" Grid.Column="2" Text="Department" Style="{StaticResource FieldLabel}" />
+                        <TextBox   Grid.Row="1" Grid.Column="2" Text="{Binding Department, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Company" Style="{StaticResource FieldLabel}" />
+                        <TextBox   Grid.Row="3" Grid.Column="0" Text="{Binding Company, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Grid.Row="2" Grid.Column="2" Text="Office" Style="{StaticResource FieldLabel}" />
+                        <TextBox   Grid.Row="3" Grid.Column="2" Text="{Binding Office, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Telephone" Style="{StaticResource FieldLabel}" />
+                        <TextBox   Grid.Row="5" Grid.Column="0" Text="{Binding Telephone, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Grid.Row="4" Grid.Column="2" Text="Description" Style="{StaticResource FieldLabel}" />
+                        <TextBox   Grid.Row="5" Grid.Column="2" Text="{Binding UserDescription, UpdateSourceTrigger=PropertyChanged}" />
+                    </Grid>
+
+                    <!-- Anything else in the catalogue. Same control as the template editor uses, so there
+                         is one way to set an arbitrary attribute rather than two that can drift. -->
+                    <DockPanel Margin="0,10,0,0">
+                        <Button DockPanel.Dock="Right" Content="Add attribute…" Command="{Binding AddExtraAttributeCommand}" Margin="6,0,0,0" />
+                        <TextBlock Text="Other attributes" Style="{StaticResource FieldLabel}" VerticalAlignment="Center" />
+                    </DockPanel>
+                    <ItemsControl ItemsSource="{Binding ExtraAttributeRows}" Margin="0,4,0,0">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <DockPanel Margin="0,2">
+                                    <Button DockPanel.Dock="Right" Content="✕" Width="22" MinWidth="22" Padding="0" Margin="6,0,0,0"
+                                            Command="{Binding DataContext.RemoveExtraAttributeCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            CommandParameter="{Binding}" />
+                                    <ComboBox DockPanel.Dock="Left" Width="170" ItemsSource="{Binding Attributes}"
+                                              DisplayMemberPath="Friendly" SelectedValuePath="Ldap"
+                                              SelectedValue="{Binding LdapName}" />
+                                    <TextBox Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}" Margin="6,0,0,0" />
+                                </DockPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
 
                 <TextBlock Text="Target OU" Style="{StaticResource FieldLabel}" />
                 <DockPanel>
@@ -210,28 +277,60 @@
                 </Border>
             </DockPanel>
 
-            <DockPanel Grid.Row="2" Margin="0,8,0,0"
-                       Visibility="{Binding ShowProgress, Converter={StaticResource BoolToVis}}">
-                <TextBlock DockPanel.Dock="Top" Text="Progress" FontWeight="SemiBold" Margin="0,0,0,4" />
-                <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,4,0,0">
-                    <Button Content="Copy log" Click="OnCopyLog" MinWidth="84" Margin="0,0,6,0"
-                            IsEnabled="{Binding HasLog}"
-                            ToolTip="Copy every progress line, with a header, to the clipboard." />
-                    <Button Content="Save log…" Command="{Binding SaveLogCommand}" MinWidth="84"
-                            ToolTip="Write these steps to a file, alongside scenario logs and deleted-group records." />
-                </StackPanel>
-                <Border BorderBrush="#DDD" BorderThickness="1" MaxHeight="220">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <ItemsControl ItemsSource="{Binding ProgressSteps}" Margin="4"
-                                      ItemTemplate="{StaticResource ProgressLine}" />
-                    </ScrollViewer>
-                </Border>
-            </DockPanel>
         </Grid>
 
-        <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding Status}" Foreground="#666" Margin="0,10,0,0" TextWrapping="Wrap" />
+        <!--
+          Shown once, and easy to miss: the password sits beside the Generate button and the TAP inside
+          the TAP settings, both in the left column, both scrollable. After a create the operator is
+          watching the progress log, and the two values they actually have to capture were off screen.
+          This is an additional, unmissable copy of them, not a move — both stay where they were produced.
+        -->
+        <Border Grid.Row="1" Grid.ColumnSpan="2" Margin="0,10,0,0" Padding="10,8"
+                Background="#FFF8E1" BorderBrush="#E0C36A" BorderThickness="1" CornerRadius="3"
+                Visibility="{Binding HasSecrets, Converter={StaticResource BoolToVis}}">
+            <StackPanel>
+                <TextBlock Text="Shown once — copy these now" FontWeight="SemiBold" Foreground="#5C4700" Margin="0,0,0,6" />
+                <DockPanel Margin="0,0,0,4" Visibility="{Binding GeneratedPassword, Converter={StaticResource NonEmptyToVis}}">
+                    <TextBlock DockPanel.Dock="Left" Text="Password" Width="92" VerticalAlignment="Center" Foreground="#5C4700" />
+                    <Button DockPanel.Dock="Right" Content="Copy" Click="OnCopyPassword" Margin="6,0,0,0" MinWidth="70" />
+                    <TextBox Text="{Binding GeneratedPassword, Mode=OneWay}" IsReadOnly="True" FontFamily="Consolas"
+                             FontSize="14" Background="White" Padding="4,3" />
+                </DockPanel>
+                <DockPanel Visibility="{Binding TapCode, Converter={StaticResource NonEmptyToVis}}">
+                    <TextBlock DockPanel.Dock="Left" Text="Access pass" Width="92" VerticalAlignment="Center" Foreground="#5C4700" />
+                    <Button DockPanel.Dock="Right" Content="Copy" Click="OnCopyTap" Margin="6,0,0,0" MinWidth="70" />
+                    <TextBox Text="{Binding TapCode, Mode=OneWay}" IsReadOnly="True" FontFamily="Consolas"
+                             FontSize="14" Background="White" Padding="4,3" />
+                </DockPanel>
+                <TextBlock Text="Neither is written to the log, the saved record, or anywhere on disk. Close this window and they are gone."
+                           Foreground="#5C4700" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0" />
+            </StackPanel>
+        </Border>
+        <DockPanel Grid.Row="2" Grid.ColumnSpan="2" Margin="0,10,0,0"
+                   Visibility="{Binding ShowProgress, Converter={StaticResource BoolToVis}}">
+            <TextBlock DockPanel.Dock="Top" Text="Progress" FontWeight="SemiBold" Margin="0,0,0,4" />
+            <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,4,0,0">
+                <Button Content="Cancel cloud steps" Command="{Binding CancelCloudCommand}" MinWidth="120"
+                        Margin="0,0,12,0" HorizontalAlignment="Left"
+                        Visibility="{Binding CanCancelCloud, Converter={StaticResource BoolToVis}}"
+                        ToolTip="Stop waiting for Entra ID and Exchange Online. The account is already created; this does not undo it, and groups already added stay added." />
+                <Button Content="Copy log" Click="OnCopyLog" MinWidth="84" Margin="0,0,6,0"
+                        IsEnabled="{Binding HasLog}"
+                        ToolTip="Copy every progress line, with a header, to the clipboard." />
+                <Button Content="Save log…" Command="{Binding SaveLogCommand}" MinWidth="84"
+                        ToolTip="Write these steps to a file, alongside scenario logs and deleted-group records." />
+            </StackPanel>
+            <Border BorderBrush="#DDD" BorderThickness="1" MaxHeight="260">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding ProgressSteps}" Margin="4"
+                                  ItemTemplate="{StaticResource ProgressLine}" />
+                </ScrollViewer>
+            </Border>
+        </DockPanel>
 
-        <StackPanel Grid.Row="2" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+        <TextBlock Grid.Row="3" Grid.ColumnSpan="2" Text="{Binding Status}" Foreground="#666" Margin="0,10,0,0" TextWrapping="Wrap" />
+
+        <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button Content="Create" IsDefault="True" Click="OnCreate"
                     Visibility="{Binding ShowCreateButton, Converter={StaticResource BoolToVis}}"
                     IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" MinWidth="90" />

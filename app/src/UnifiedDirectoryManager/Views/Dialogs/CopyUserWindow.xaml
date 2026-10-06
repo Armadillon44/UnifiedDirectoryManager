@@ -11,7 +11,8 @@
         </Grid.ColumnDefinitions>
         <Grid.RowDefinitions>
             <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />   <!-- secrets, spanning both columns -->
+            <RowDefinition Height="Auto" />   <!-- progress, already full width -->
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
@@ -182,9 +183,41 @@
             </DockPanel>
         </Grid>
 
-<DockPanel Grid.Row="1" Grid.ColumnSpan="2" Margin="0,10,0,0"
+
+        <!--
+          Shown once, and easy to miss: the password sits in the left column and the access pass inside
+          the TAP settings, both scrollable. After a create the operator is watching the progress log,
+          and the two values they actually have to capture were off screen. An additional copy of them,
+          not a move — both stay where they were produced.
+        -->
+        <Border Grid.Row="1" Grid.ColumnSpan="2" Margin="0,10,0,0" Padding="10,8"
+                Background="#FFF8E1" BorderBrush="#E0C36A" BorderThickness="1" CornerRadius="3"
+                Visibility="{Binding HasSecrets, Converter={StaticResource BoolToVis}}">
+            <StackPanel>
+                <TextBlock Text="Shown once — copy these now" FontWeight="SemiBold" Foreground="#5C4700" Margin="0,0,0,6" />
+                <DockPanel Margin="0,0,0,4" Visibility="{Binding GeneratedPassword, Converter={StaticResource NonEmptyToVis}}">
+                    <TextBlock DockPanel.Dock="Left" Text="Password" Width="92" VerticalAlignment="Center" Foreground="#5C4700" />
+                    <Button DockPanel.Dock="Right" Content="Copy" Click="OnCopyPassword" Margin="6,0,0,0" MinWidth="70" />
+                    <TextBox Text="{Binding GeneratedPassword, Mode=OneWay}" IsReadOnly="True" FontFamily="Consolas"
+                             FontSize="14" Background="White" Padding="4,3" />
+                </DockPanel>
+                <DockPanel Visibility="{Binding TapCode, Converter={StaticResource NonEmptyToVis}}">
+                    <TextBlock DockPanel.Dock="Left" Text="Access pass" Width="92" VerticalAlignment="Center" Foreground="#5C4700" />
+                    <Button DockPanel.Dock="Right" Content="Copy" Click="OnCopyTap" Margin="6,0,0,0" MinWidth="70" />
+                    <TextBox Text="{Binding TapCode, Mode=OneWay}" IsReadOnly="True" FontFamily="Consolas"
+                             FontSize="14" Background="White" Padding="4,3" />
+                </DockPanel>
+                <TextBlock Text="Neither is written to the log, the saved record, or anywhere on disk. Close this window and they are gone."
+                           Foreground="#5C4700" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0" />
+            </StackPanel>
+        </Border>
+<DockPanel Grid.Row="2" Grid.ColumnSpan="2" Margin="0,10,0,0"
                    Visibility="{Binding ShowProgress, Converter={StaticResource BoolToVis}}">
             <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,4,0,0">
+                <Button Content="Cancel cloud steps" Command="{Binding CancelCloudCommand}" MinWidth="120"
+                        Margin="0,0,12,0" HorizontalAlignment="Left"
+                        Visibility="{Binding CanCancelCloud, Converter={StaticResource BoolToVis}}"
+                        ToolTip="Stop waiting for Entra ID and Exchange Online. The account is already created; this does not undo it, and groups already added stay added." />
                 <Button Content="Copy log" Click="OnCopyLog" MinWidth="84" Margin="0,0,6,0"
                         IsEnabled="{Binding HasLog}"
                         ToolTip="Copy every progress line, with a header, to the clipboard." />
@@ -199,9 +232,9 @@
             </Border>
         </DockPanel>
 
-        <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Text="{Binding Status}" Foreground="#666" Margin="0,10,0,0" TextWrapping="Wrap" />
+        <TextBlock Grid.Row="3" Grid.ColumnSpan="2" Text="{Binding Status}" Foreground="#666" Margin="0,10,0,0" TextWrapping="Wrap" />
 
-        <StackPanel Grid.Row="3" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+        <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button Content="Create" IsDefault="True" Click="OnCreate"
                     IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" MinWidth="90" Margin="0,0,6,0" />
             <Button Content="Close" IsCancel="True" Click="OnClose" MinWidth="90" />

@@ -22,7 +22,79 @@ public partial class NewUserViewModel : ObservableObject
     private readonly CloudProvisioningService _cloudProvisioning;
     private readonly AppSettings _settings;
 
-    public ObservableCollection<UserTemplate> Templates { get; } = new();
+    /// <summary>
+    /// The templates, with a null first entry meaning “no template — start from scratch”.
+    /// </summary>
+    /// <remarks>
+    /// A null in the list rather than a sentinel UserTemplate object, so there is nothing that can be
+    /// saved, exported or picked up by the template store by accident. The combo renders it through the
+    /// binding's fallback; everything downstream already treats a null SelectedTemplate as from-scratch.
+    /// </remarks>
+    public ObservableCollection<UserTemplate?> Templates { get; } = new();
+
+    /// <summary>True when no template is selected, which is what reveals the Details fields.</summary>
+    public bool IsFromScratch => SelectedTemplate is null;
+
+    /// <summary>
+    /// True once there is a password or access pass to capture, which is what reveals the panel that
+    /// shows them. Both are shown once and held only in memory, so the panel is the last chance to copy.
+    /// </summary>
+    public bool HasSecrets => GeneratedPassword.Length > 0 || TapCode.Length > 0;
+
+    // --- Details: the attributes a template would otherwise have supplied -------------------------
+    // The handful a new hire normally needs, as ordinary fields. Anything else goes through
+    // ExtraAttributeRows, which reaches the whole catalogue — the same mechanism the template editor
+    // uses, so there is one way to set an arbitrary attribute rather than two.
+    [ObservableProperty] private string _jobTitle = string.Empty;
+    [ObservableProperty] private string _department = string.Empty;
+    [ObservableProperty] private string _company = string.Empty;
+    [ObservableProperty] private string _office = string.Empty;
+    [ObservableProperty] private string _telephone = string.Empty;
+    [ObservableProperty] private string _userDescription = string.Empty;
+
+    /// <summary>Any other attribute, picked from the catalogue. Empty unless the operator adds one.</summary>
+    public ObservableCollection<TemplateAttributeRow> ExtraAttributeRows { get; } = new();
+
+    [RelayCommand] private void AddExtraAttribute() => ExtraAttributeRows.Add(new TemplateAttributeRow());
+
+    [RelayCommand]
+    private void RemoveExtraAttribute(TemplateAttributeRow? row)
+    {
+        if (row is not null) { ExtraAttributeRows.Remove(row); RefreshPreview(); }
+    }
+
+    /// <summary>
+    /// The Details fields and any ad-hoc rows, as an attribute set. Only in from-scratch mode: with a
+    /// template selected these fields are hidden, and a hidden field silently overriding a template
+    /// default would be worse than not having them.
+    /// </summary>
+    private IReadOnlyDictionary<string, string> ExtraAttributes()
+    {
+        var extras = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (!IsFromScratch) return extras;
+
+        void Put(string ldap, string value)
+        {
+            if (!string.IsNullOrWhiteSpace(value)) extras[ldap] = value.Trim();
+        }
+        Put("title", JobTitle);
+        Put("department", Department);
+        Put("company", Company);
+        Put("physicalDeliveryOfficeName", Office);
+        Put("telephoneNumber", Telephone);
+        Put("description", UserDescription);
+
+        // Last one wins for a duplicated attribute, which is what the row order implies on screen.
+        foreach (var row in ExtraAttributeRows) Put(row.LdapName, row.Value);
+        return extras;
+    }
+
+    partial void OnJobTitleChanged(string value) => RefreshPreview();
+    partial void OnDepartmentChanged(string value) => RefreshPreview();
+    partial void OnCompanyChanged(string value) => RefreshPreview();
+    partial void OnOfficeChanged(string value) => RefreshPreview();
+    partial void OnTelephoneChanged(string value) => RefreshPreview();
+    partial void OnUserDescriptionChanged(string value) => RefreshPreview();
     public ObservableCollection<PreviewRow> Preview { get; } = new();
 
     /// <summary>Editable group memberships — auto-filled from the template, then the operator can add/remove.
@@ -232,7 +304,7 @@ public partial class NewUserViewModel : ObservableObject
     public bool ValidateForCapture(out string error)
     {
         error = string.Empty;
-        if (SelectedTemplate is null) { error = "Select a template first."; return false; }
+        // No template needed: the checks below are the real requirement, and they hold either way.
         if (string.IsNullOrWhiteSpace(TargetOu)) { error = "A target OU (DN) is required."; return false; }
         var attrs = BuildAttributes();
         if (!attrs.TryGetValue("cn", out var cn) || string.IsNullOrWhiteSpace(cn)) { error = "Could not derive a common name (cn)."; return false; }
@@ -255,8 +327,12 @@ public partial class NewUserViewModel : ObservableObject
         try
         {
             Templates.Clear();
+            Templates.Add(null); // “no template — start from scratch”
             foreach (var t in _store.LoadAll()) Templates.Add(t);
-            SelectedTemplate = Templates.FirstOrDefault(t => t.Name == previous) ?? Templates.FirstOrDefault();
+            // Keep what was selected; otherwise the first REAL template, so the usual flow is unchanged
+            // and from-scratch stays something chosen rather than landed on.
+            SelectedTemplate = Templates.FirstOrDefault(t => t?.Name == previous)
+                               ?? Templates.FirstOrDefault(t => t is not null);
         }
         finally { _suppressReseed = false; }
 
@@ -274,11 +350,23 @@ public partial class NewUserViewModel : ObservableObject
     }
 
     /// <summary>Resets the editable form (groups, OU, manager, suggestions) to the template's defaults.</summary>
+    /// <remarks>
+    /// Switching to “no template” clears what the TEMPLATE supplied — its groups, and the manager it
+    /// defaulted — and leaves everything typed alone. Names, logon name, email and the target OU survive,
+    /// because losing a half-filled form to a dropdown is not something to make anyone risk.
+    /// </remarks>
     private void ReseedFromTemplate(UserTemplate? value)
     {
         OnPremGroups.Clear();
         CloudGroups.Clear();
         DistributionGroups.Clear();
+        OnPropertyChanged(nameof(IsFromScratch));
+        if (value is null)
+        {
+            // The manager came from the template, so it goes with it. Everything else stays.
+            _managerDn = null;
+            ManagerDisplay = "(none)";
+        }
         if (value is not null)
         {
             TargetOu = string.IsNullOrWhiteSpace(value.TargetOu) ? (DefaultOu ?? string.Empty) : value.TargetOu;
@@ -314,6 +402,10 @@ public partial class NewUserViewModel : ObservableObject
     partial void OnEmployeeIdChanged(string value) => RefreshPreview();
     partial void OnSamOverrideChanged(string value) { ApplySuggestions(force: false); RefreshPreview(); }
     partial void OnUpnSuffixChanged(string value) { ApplySuggestions(force: false); RefreshPreview(); }
+    // Without these the secrets panel never appears: HasSecrets is computed, so it has to be told.
+    partial void OnGeneratedPasswordChanged(string value) => OnPropertyChanged(nameof(HasSecrets));
+    partial void OnTapCodeChanged(string value) => OnPropertyChanged(nameof(HasSecrets));
+
     partial void OnEmailChanged(string value) => RefreshPreview();
     partial void OnUpnChanged(string value) => RefreshPreview();
     partial void OnProxyAddressesTextChanged(string value) => RefreshPreview();
@@ -321,7 +413,8 @@ public partial class NewUserViewModel : ObservableObject
     /// <summary>Snapshots the current entry fields into the shared builder's input.</summary>
     private UserAttributeBuilder.Input BuilderInput() => new()
     {
-        Template = SelectedTemplate!,
+        Template = SelectedTemplate,
+        ExtraAttributes = ExtraAttributes(),
         FirstName = FirstName, MiddleName = MiddleName, LastName = LastName, Initials = Initials,
         SamOverride = SamOverride, UpnSuffix = UpnSuffix,
         Email = Email, Upn = Upn, ManagerDn = _managerDn, ProxyAddressesText = ProxyAddressesText,
@@ -335,7 +428,8 @@ public partial class NewUserViewModel : ObservableObject
     /// </summary>
     private void ApplySuggestions(bool force)
     {
-        if (SelectedTemplate is null) return;
+        // Runs with no template too: the UPN still follows from the logon name and suffix, and mail and
+        // proxies simply have nothing to suggest.
         var s = UserAttributeBuilder.Suggest(BuilderInput());
         if (force || Email == _lastEmailSuggestion) { Email = s.Email; _lastEmailSuggestion = s.Email; }
         if (force || Upn == _lastUpnSuggestion) { Upn = s.Upn; _lastUpnSuggestion = s.Upn; }
@@ -424,7 +518,8 @@ public partial class NewUserViewModel : ObservableObject
     [RelayCommand]
     private async Task CreateAsync()
     {
-        if (SelectedTemplate is null) { Status = "Select a template first."; return; }
+        // No template needed: the cn and logon-name checks below are the real requirement, and they
+        // hold whether the values came from a template or were typed.
         if (string.IsNullOrWhiteSpace(TargetOu)) { Status = "A target OU (DN) is required."; return; }
 
         var attributes = BuildAttributes();
@@ -582,9 +677,61 @@ public partial class NewUserViewModel : ObservableObject
         finally { IsBusy = false; }
     }
 
+    /// <summary>
+    /// Cancels the cloud phase — the waiting for Entra to catch up, and the group adds that follow.
+    /// </summary>
+    /// <remarks>
+    /// The on-prem account is already created by the time any of this runs, so cancelling never undoes
+    /// anything; it stops waiting. Without it a retry tuned for a slow tenant has no exit but killing the
+    /// app — the very failure the Entra Connect sync timeout was added to prevent.
+    /// </remarks>
+    private CancellationTokenSource? _cloudCts;
+
+    /// <summary>True while the cloud phase is running and can still be stopped.</summary>
+    [ObservableProperty] private bool _canCancelCloud;
+
+    [RelayCommand(CanExecute = nameof(CanCancelCloud))]
+    private void CancelCloud()
+    {
+        Step("• Cancelling… the account is already created; this stops the cloud steps only.");
+        _cloudCts?.Cancel();
+    }
+
+    /// <summary>
+    /// Owns the cancellation for the cloud phase, so the phase itself keeps its shape and its early
+    /// returns. A cancel reports what DID happen: the account exists, and whichever groups were added
+    /// before the stop are still added — a flat “cancelled” would send someone looking for a user that is
+    /// already there.
+    /// </summary>
+    private async Task RunPostCreateCloudAsync(IReadOnlyList<CloudGroupRef> cloudGroups, IReadOnlyList<DistributionGroupRef> distributionGroups)
+    {
+        _cloudCts?.Dispose();
+        _cloudCts = new CancellationTokenSource();
+        CanCancelCloud = true;
+        CancelCloudCommand.NotifyCanExecuteChanged();
+        try
+        {
+            await RunPostCreateCloudCoreAsync(cloudGroups, distributionGroups, _cloudCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            Status = "Cancelled. The user was created; some cloud steps may not have run.";
+            Step("✗ Cancelled. The account exists. Add cloud / Exchange groups or issue a TAP from its Cloud tab.");
+            _pendingCloudGroups = cloudGroups;
+            _pendingDistributionGroups = distributionGroups;
+            CanRetrySync = true;
+        }
+        finally
+        {
+            CanCancelCloud = false;
+            CancelCloudCommand.NotifyCanExecuteChanged();
+        }
+    }
     /// <summary>Runs the Entra Connect delta sync, waits for the new user to appear in Entra, then adds cloud
     /// (Graph) groups and Exchange Online distribution groups.</summary>
-    private async Task RunPostCreateCloudAsync(IReadOnlyList<CloudGroupRef> cloudGroups, IReadOnlyList<DistributionGroupRef> distributionGroups)
+    private async Task RunPostCreateCloudCoreAsync(
+        IReadOnlyList<CloudGroupRef> cloudGroups, IReadOnlyList<DistributionGroupRef> distributionGroups,
+        CancellationToken ct)
     {
         // A fresh attempt: clear any prior retry offer; it's re-enabled below if this attempt doesn't complete.
         CanRetrySync = false;
@@ -633,7 +780,7 @@ public partial class NewUserViewModel : ObservableObject
         if (cloudGroups.Count > 0)
         {
             Step("• Adding cloud groups…");
-            (ok, failed) = await _cloudProvisioning.AddUserToGroupsAsync(cloudUser.Id, cloudGroups, Step);
+            (ok, failed) = await _cloudProvisioning.AddUserToGroupsAsync(cloudUser.Id, cloudGroups, Step, ct);
         }
 
         // 3b. Add the user to each Exchange Online distribution group (Graph can't; member identity = the UPN).
@@ -641,14 +788,14 @@ public partial class NewUserViewModel : ObservableObject
         if (distributionGroups.Count > 0)
         {
             Step("• Adding Exchange distribution groups…");
-            (dok, dfailed) = await _cloudProvisioning.AddUserToDistributionGroupsAsync(Upn.Trim(), distributionGroups, Step);
+            (dok, dfailed) = await _cloudProvisioning.AddUserToDistributionGroupsAsync(Upn.Trim(), distributionGroups, Step, ct);
         }
 
         // 4. Issue a Temporary Access Pass, if requested. The pass is captured into TapCode (shown once + copyable).
         if (IssueTap)
         {
             Step("• Issuing a Temporary Access Pass…");
-            var tap = await _cloudProvisioning.IssueTemporaryAccessPassAsync(cloudUser.Id, TapLifetimeMinutes, TapOneTimeUse, Step);
+            var tap = await _cloudProvisioning.IssueTemporaryAccessPassAsync(cloudUser.Id, TapLifetimeMinutes, TapOneTimeUse, Step, ct);
             if (tap is { Pass.Length: > 0 }) TapCode = tap.Pass;
         }
 

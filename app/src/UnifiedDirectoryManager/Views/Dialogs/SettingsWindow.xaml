@@ -132,6 +132,55 @@
                 </DockPanel>
             </TabItem>
 
+            <!--
+              How patiently to wait for the cloud after an on-prem create. Entra and Exchange are
+              separate because their per-attempt cost differs by roughly ninety times: a Graph failure
+              returns in well under a second, while an Exchange call that HANGS costs the full 90-second
+              operation budget before the wait even starts.
+            -->
+            <TabItem Header="Retries">
+                <DockPanel Margin="12">
+                    <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,12"
+                               Text="Creating a user on-prem and then using it in the cloud is a race against replication. Until Entra ID and Exchange Online catch up they answer &quot;cannot find it&quot;, which means not yet rather than never. These control how long the app keeps asking." />
+
+                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,12,0,0">
+                        <Button Content="Save" Command="{Binding SaveRetrySettingsCommand}" MinWidth="90" />
+                        <Button Content="Reset to defaults" Command="{Binding ResetRetrySettingsCommand}" MinWidth="120" />
+                        <TextBlock Text="{Binding RetryStatus}" Foreground="#0A7" Margin="12,0,0,0"
+                                   VerticalAlignment="Center" TextWrapping="Wrap" />
+                    </StackPanel>
+
+                    <StackPanel DockPanel.Dock="Top">
+                        <TextBlock Text="Entra ID (cloud groups, Temporary Access Pass)" Style="{StaticResource FieldLabel}" />
+                        <WrapPanel Margin="0,0,0,2">
+                            <TextBlock Text="Attempts" VerticalAlignment="Center" Margin="0,0,6,0" />
+                            <TextBox Width="60" Text="{Binding EntraRetryAttempts, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBlock Text="waiting" VerticalAlignment="Center" Margin="12,0,6,0" />
+                            <TextBox Width="60" Text="{Binding EntraRetryWaitSeconds, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBlock Text="seconds between them" VerticalAlignment="Center" Margin="6,0,0,0" />
+                        </WrapPanel>
+                        <!-- Recomputed as the numbers are typed, so the cost of a choice is never abstract. -->
+                        <TextBlock Text="{Binding EntraRetrySummary}" Foreground="#666" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,14" />
+
+                        <TextBlock Text="Exchange Online (distribution groups)" Style="{StaticResource FieldLabel}" />
+                        <WrapPanel Margin="0,0,0,2">
+                            <TextBlock Text="Attempts" VerticalAlignment="Center" Margin="0,0,6,0" />
+                            <TextBox Width="60" Text="{Binding ExchangeRetryAttempts, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBlock Text="waiting" VerticalAlignment="Center" Margin="12,0,6,0" />
+                            <TextBox Width="60" Text="{Binding ExchangeRetryWaitSeconds, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBlock Text="seconds between them" VerticalAlignment="Center" Margin="6,0,0,0" />
+                        </WrapPanel>
+                        <TextBlock Text="{Binding ExchangeRetrySummary}" Foreground="#666" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,14" />
+
+                        <TextBlock Text="{Binding RetryLimits, StringFormat=Allowed: {0}}" Foreground="#999" FontSize="11" />
+                        <TextBlock Foreground="#999" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"
+                                   Text="Only the failures that mean &quot;not visible yet&quot; or &quot;the tenant is busy&quot; are retried. A permissions error or a group that genuinely does not exist still fails on the first attempt. While the app is waiting, Cancel cloud steps on the New User and Copy user windows stops it; the account itself is already created by then and is never undone." />
+                    </StackPanel>
+
+                    <Border /><!-- filler so the fields stay top-aligned -->
+                </DockPanel>
+            </TabItem>
+
             <!-- Toolbar customisation (audit T1). Only commands that are also in the menu bar are
                  offered, so no amount of customising can leave a feature with no route to it. -->
             <TabItem Header="Toolbar">
