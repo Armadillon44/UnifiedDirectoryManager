@@ -22,6 +22,21 @@ public partial class ObjectListView : UserControl
 
     private Point _dragStart;
     private bool _maybeDrag;
+
+    /// <summary>
+    /// The rows to drag, captured at mouse-DOWN rather than read when the drag threshold is crossed.
+    /// </summary>
+    /// <remarks>
+    /// WPF's ListBoxItem collapses a multi-selection to the clicked row during the <b>bubbling</b>
+    /// mouse-down, not on mouse-up as Explorer does. By the time the pointer has moved far enough to
+    /// start a drag, <c>List.SelectedItems</c> holds one row — so selecting fifty objects and dragging
+    /// them onto an OU moved exactly one, the one under the cursor.
+    ///
+    /// Tunnelling handlers run before any bubbling handler for the same input, so
+    /// PreviewMouseLeftButtonDown is the last moment the whole selection still exists. Measured, not
+    /// assumed: 3 selected before the press, 3 visible in the tunnelling phase, 1 afterwards.
+    /// </remarks>
+    private List<AdObjectRow>? _dragRows;
     private bool _pushingSelection; // true while a view→VM selection push is in flight (blocks the mirror back)
 
     public ObjectListView()
@@ -148,12 +163,14 @@ public partial class ObjectListView : UserControl
         _dragStart = e.GetPosition(null);
         // Only arm a move-drag when the press lands on a row that is ALREADY selected and no selection
         // modifier is held. This keeps plain clicks, empty-space clicks, and Ctrl/Shift range-selection
-        // working, and prevents dragging a stale/empty selection. (WPF defers collapsing a multi-selection
-        // until mouse-up, so pressing a selected row still lets us drag the whole selection.)
+        // working, and prevents dragging a stale/empty selection.
         var row = RowFrom(e.OriginalSource as DependencyObject);
         _maybeDrag = row is not null
                      && List.SelectedItems.Contains(row)
                      && Keyboard.Modifiers == ModifierKeys.None;
+
+        // Snapshot now. See _dragRows: the selection is gone by the time the drag starts.
+        _dragRows = _maybeDrag ? List.SelectedItems.OfType<AdObjectRow>().ToList() : null;
     }
 
     private void OnListMouseMove(object sender, MouseEventArgs e)
@@ -166,11 +183,27 @@ public partial class ObjectListView : UserControl
             return;
 
         _maybeDrag = false;
-        var rows = List.SelectedItems.OfType<AdObjectRow>().ToList();
-        if (rows.Count == 0) return;
+        // The snapshot from mouse-down, NOT List.SelectedItems — which by now holds only the clicked row.
+        var rows = _dragRows;
+        _dragRows = null;
+        if (rows is null || rows.Count == 0) return;
 
         try { DragDrop.DoDragDrop(List, new DataObject(MoveDataFormat, rows), DragDropEffects.Move); }
         catch { /* a drag that the OS aborts is harmless */ }
+    }
+
+    /// <summary>
+    /// Drops the snapshot when the press ends without a drag.
+    /// </summary>
+    /// <remarks>
+    /// A click that never crosses the drag threshold leaves the snapshot behind, and the next press
+    /// would overwrite it anyway — but only if that press arms a drag. Clearing here keeps a list of
+    /// rows from outliving the gesture that captured it.
+    /// </remarks>
+    private void OnListPreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        _maybeDrag = false;
+        _dragRows = null;
     }
 
     /// <summary>Right-click selects the row under the cursor (unless it's already part of the selection),

@@ -1161,5 +1161,65 @@ $e = NewEditor @('refresh')
 $e.Vm.SaveCommand.Execute($null)
 Check 'a one-button toolbar survives'   'refresh' (($e.Settings.ToolbarItemIds) -join ',')
 
+
+Write-Host "`n== dragging a multi-selection moves all of it ==" -ForegroundColor Cyan
+# Reported: select several objects, drag them onto an OU, and only the row under the cursor moves.
+#
+# The cause was a WPF behaviour the code had a confident comment ASSERTING THE OPPOSITE of: that WPF
+# "defers collapsing a multi-selection until mouse-up". It does not. ListBoxItem collapses to the
+# clicked row during the BUBBLING mouse-down, so by the time the pointer has moved far enough to start
+# a drag, SelectedItems holds one row.
+#
+# Measured here against a real ListView rather than asserted in a comment, so that a future WPF which
+# does defer tells us instead of leaving a now-pointless snapshot in place.
+$lv = [System.Windows.Controls.ListView]::new()
+$lv.SelectionMode = [System.Windows.Controls.SelectionMode]::Extended
+$lv.ItemsSource = [string[]]@('alpha', 'bravo', 'charlie', 'delta')
+$probeWin = [System.Windows.Window]::new()
+$probeWin.Content = $lv; $probeWin.Width = 300; $probeWin.Height = 220
+$probeWin.ShowActivated = $false; $probeWin.Left = -4000
+$probeWin.Show(); $probeWin.UpdateLayout()
+$probeWin.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Loaded)
+
+$lv.SelectedItems.Clear()
+foreach ($i in 'alpha', 'bravo', 'charlie') { [void]$lv.SelectedItems.Add($i) }
+$probeWin.UpdateLayout()
+Check 'three rows are selected'          3 $lv.SelectedItems.Count
+
+$item = $lv.ItemContainerGenerator.ContainerFromItem('bravo')
+Check '  and a container was realised'   $true ($null -ne $item)
+# What the tunnelling (Preview) handler sees -- the last moment the whole selection exists.
+$seenWhileTunnelling = -1
+$item.add_PreviewMouseLeftButtonDown({ $script:seenWhileTunnelling = $lv.SelectedItems.Count })
+
+# The real gesture: tunnel, then bubble. Pressing a row that is ALREADY selected, no modifiers.
+foreach ($evt in @([System.Windows.UIElement]::PreviewMouseLeftButtonDownEvent,
+                   [System.Windows.UIElement]::MouseLeftButtonDownEvent)) {
+    $a = [System.Windows.Input.MouseButtonEventArgs]::new(
+        [System.Windows.Input.Mouse]::PrimaryDevice, 0, [System.Windows.Input.MouseButton]::Left)
+    $a.RoutedEvent = $evt
+    $item.RaiseEvent($a)
+}
+$probeWin.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Background)
+
+Check 'tunnelling still sees all three'  3 $script:seenWhileTunnelling
+Check '  but the press collapses it'     1 $lv.SelectedItems.Count
+$probeWin.Close()
+
+# So the drag must carry a SNAPSHOT taken while tunnelling. These are source checks because the
+# handlers cannot be driven from here -- ObjectListView needs App.xaml resources to construct, and
+# DoDragDrop would enter a real modal drag loop. They are wiring with no return value to assert.
+$olv = Get-Content -Raw (Join-Path $src 'Views\Controls\ObjectListView.xaml.cs')
+Check 'the press snapshots the rows'     $true ($olv -match '_dragRows = _maybeDrag \? List\.SelectedItems')
+Check '  and the drag uses the snapshot' $true ($olv -match '(?s)OnListMouseMove.{0,900}var rows = _dragRows;')
+# The whole point: by MouseMove, SelectedItems is wrong. Reading it there is the bug.
+$moveBody = [regex]::Match($olv, '(?s)private void OnListMouseMove.*?\r?\n    \}').Value
+Check '  the move body was found'        $true ($moveBody.Length -gt 0)
+# Comments stripped first: the body carries a comment SAYING not to read SelectedItems, and matching
+# that would fail on the explanation rather than on the code.
+$moveCode = [regex]::Replace($moveBody, '//.*?(\r?\n|$)', '')
+Check '  and never reads SelectedItems'  $false ($moveCode -match 'List\.SelectedItems')
+# The stale comment that caused this is gone.
+Check 'the wrong claim is not restated'  $false ($olv -match 'defers collapsing')
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

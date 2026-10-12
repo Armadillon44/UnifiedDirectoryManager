@@ -46,6 +46,7 @@
                   KeyDown="OnListKeyDown"
                   GridViewColumnHeader.Click="OnHeaderClick"
                   PreviewMouseLeftButtonDown="OnListPreviewMouseLeftButtonDown"
+                  PreviewMouseLeftButtonUp="OnListPreviewMouseLeftButtonUp"
                   PreviewMouseRightButtonDown="OnListPreviewMouseRightButtonDown"
                   MouseMove="OnListMouseMove"
                   Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Window}}"
