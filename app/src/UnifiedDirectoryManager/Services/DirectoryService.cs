@@ -1584,11 +1584,44 @@ public sealed class DirectoryService : IDirectoryService
         {
             case DirectoryServicesCOMException com:
                 var detail = string.IsNullOrWhiteSpace(com.ExtendedErrorMessage) ? com.Message : com.ExtendedErrorMessage;
-                return detail.Trim();
+                return Explain(detail.Trim());
             case Protocols.LdapException ldap:
-                return string.IsNullOrWhiteSpace(ldap.ServerErrorMessage) ? ldap.Message : ldap.ServerErrorMessage;
+                return Explain(string.IsNullOrWhiteSpace(ldap.ServerErrorMessage) ? ldap.Message : ldap.ServerErrorMessage);
             default:
                 return ex.Message;
         }
+    }
+
+    /// <summary>
+    /// Puts a sentence in front of the directory's own wording for the failures an operator actually meets.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The server text is kept, never replaced — it is what gets pasted into a ticket, and a DSID is how
+    /// Microsoft support locates a failure. This only adds the sentence that says what to do about it.
+    /// </para>
+    /// <para>
+    /// Matched on the numeric problem code rather than the English, which is localised on a non-English DC.
+    /// “NO_OBJECT” in particular reached the status bar verbatim after deleting an OU, where all it means
+    /// is that the tree is showing something the directory no longer has.
+    /// </para>
+    /// </remarks>
+    internal static string Explain(string serverMessage)
+    {
+        if (string.IsNullOrWhiteSpace(serverMessage)) return serverMessage;
+
+        var lead = serverMessage switch
+        {
+            _ when serverMessage.Contains("problem 2001", StringComparison.Ordinal) =>
+                "That object no longer exists in the directory — it may have been deleted or moved. Press F5 to refresh.",
+            _ when serverMessage.Contains("problem 5003", StringComparison.Ordinal) =>
+                "The directory rejected that name as malformed.",
+            _ when serverMessage.Contains("problem 6005", StringComparison.Ordinal) =>
+                "An object with that name already exists there.",
+            _ when serverMessage.Contains("problem 4003", StringComparison.Ordinal) =>
+                "An object with that name already exists there.",
+            _ => null,
+        };
+        return lead is null ? serverMessage : lead + "\n\n" + serverMessage;
     }
 }

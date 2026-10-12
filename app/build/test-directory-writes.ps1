@@ -352,5 +352,116 @@ $Filter = [UnifiedDirectoryManager.Models.LdapFilter]
 Check 'a backslash is escaped'  'CN=Sales\5c, West,DC=x' ($Filter::EscapeValue('CN=Sales\, West,DC=x'))
 Check 'parentheses are escaped' 'CN=R&D \28EU\29,DC=x'  ($Filter::EscapeValue('CN=R&D (EU),DC=x'))
 Check 'and an asterisk'         'CN=a\2ab,DC=x'          ($Filter::EscapeValue('CN=a*b,DC=x'))
+
+Write-Host "`n== a deleted OU leaves the tree, and says so in English ==" -ForegroundColor Cyan
+# Reported: delete an OU, the tree keeps showing it, and seconds later the status bar reads
+#   0000208D: NameErr: DSID-0310028C, problem 2001 (NO_OBJECT), data 0, best match of: ...
+# The log showed the delete at 09:54:19 and the error at 09:54:25 -- six seconds later, i.e. the
+# operator clicking the node that should already have gone.
+
+$explain = [UnifiedDirectoryManager.Services.DirectoryService].GetMethod(
+    'Explain', [System.Reflection.BindingFlags]'NonPublic,Static')
+Check 'Explain exists'                  $true ($null -ne $explain)
+
+# The exact message from the report.
+$noObject = "0000208D: NameErr: DSID-0310028C, problem 2001 (NO_OBJECT), data 0, best match of:`n   'OU=Users,OU=Disabled,DC=lacrossefootwear,DC=net'"
+$explained = $explain.Invoke($null, @([object]$noObject))
+Check 'it leads with plain English'      $true ($explained -like 'That object no longer exists*')
+Check '  and says what to do'            $true ($explained -like '*F5*')
+# The server text is what gets pasted into a ticket, and the DSID is how Microsoft locates a failure.
+# It must be kept, not replaced.
+Check '  while keeping the server text'  $true ($explained -like '*DSID-0310028C*')
+Check '  including the best match'       $true ($explained -like '*OU=Users,OU=Disabled*')
+
+# Matched on the numeric problem code, not the English: a non-English DC localises the words.
+$localised = 'problem 2001 (irgendwas), data 0'
+Check 'the code is what is matched'      $true ($explain.Invoke($null, @([object]$localised)) -like 'That object no longer exists*')
+
+# Anything unrecognised passes through untouched rather than being guessed at.
+$unknown = 'something the directory said that we have no sentence for'
+Check 'an unknown error is untouched'    $unknown ($explain.Invoke($null, @([object]$unknown)))
+Check '  and empty stays empty'          '' ($explain.Invoke($null, @([object]'')))
+
+Write-Host "`n== and the node itself is removed, wherever it is held ==" -ForegroundColor Cyan
+# The delete used to do:   FindNodeByDn(ParentDn(dn))?.Children.Remove(node)
+# which removes from the parent whose DN matches -- not from whatever is actually HOLDING the node.
+# When those differ the call silently does nothing and the deleted OU stays in the tree.
+
+$mv = [UnifiedDirectoryManager.ViewModels.MainViewModel]
+$removeByDn = $mv.GetMethod(
+    'RemoveNodeByDn',
+    [System.Reflection.BindingFlags]'NonPublic,Static',
+    $null,
+    @([UnifiedDirectoryManager.ViewModels.TreeNodeViewModel], [string]),
+    $null)
+Check 'RemoveNodeByDn(node, dn) exists'  $true ($null -ne $removeByDn)
+
+$onErr = [Action[string]]{ param($m) }
+function New-Node([string]$dn, [string]$name) {
+    $n = New-Object UnifiedDirectoryManager.Models.AdNode
+    $n.DistinguishedName = $dn
+    $n.Name = $name
+    $n.HasChildren = $false
+    return [UnifiedDirectoryManager.ViewModels.TreeNodeViewModel]::new($n, $null, $onErr, $null, $false, $null)
+}
+
+$dnTest  = 'OU=TEST,OU=Users,OU=Disabled,DC=lacrossefootwear,DC=net'
+$dnChild = 'CN=Someone,OU=TEST,OU=Users,OU=Disabled,DC=lacrossefootwear,DC=net'
+
+# The ordinary shape: the node sits under the parent its DN names.
+$root   = New-Node 'DC=lacrossefootwear,DC=net' 'lacrossefootwear.net'
+$users  = New-Node 'OU=Users,OU=Disabled,DC=lacrossefootwear,DC=net' 'Users'
+$test   = New-Node $dnTest 'TEST'
+$inside = New-Node $dnChild 'Someone'
+$test.Children.Add($inside)
+$users.Children.Add($test)
+$root.Children.Add($users)
+Check 'the OU is in the tree'            1 $users.Children.Count
+Check "  removing it reports true"       $true $removeByDn.Invoke($null, @([object]$root, [object]$dnTest))
+Check '  and it is gone'                 0 $users.Children.Count
+
+# The case that broke: the node is held by something whose DN is NOT ParentDn(dn). A pinned
+# favourite is exactly this -- it is its own root. Removing from the DN-matched parent would miss it.
+$favRoot = New-Node 'fav:root' 'Favourites'
+$test2   = New-Node $dnTest 'TEST'
+$favRoot.Children.Add($test2)
+Check 'held by a non-DN parent'          1 $favRoot.Children.Count
+Check "  it is still removed"            $true $removeByDn.Invoke($null, @([object]$favRoot, [object]$dnTest))
+Check '  and that one is gone too'       0 $favRoot.Children.Count
+
+# Two instances of the same DN under one parent: BOTH must go. Mutation testing found this hole --
+# stopping at the first match passed every test above, because each tree there held exactly one.
+$dupParent = New-Node 'OU=Holder,DC=lacrossefootwear,DC=net' 'Holder'
+$dupParent.Children.Add((New-Node $dnTest 'TEST'))
+$dupParent.Children.Add((New-Node $dnTest 'TEST'))
+$dupParent.Children.Add((New-Node 'OU=Other,DC=lacrossefootwear,DC=net' 'Other'))
+Check 'two instances of one DN'          3 $dupParent.Children.Count
+Check "  removing takes both"            $true $removeByDn.Invoke($null, @([object]$dupParent, [object]$dnTest))
+Check '  leaving only the other'         1 $dupParent.Children.Count
+Check '  which is untouched'             'OU=Other,DC=lacrossefootwear,DC=net' $dupParent.Children[0].DistinguishedName
+
+# A DN nothing holds changes nothing, and says so.
+$root2 = New-Node 'DC=lacrossefootwear,DC=net' 'lacrossefootwear.net'
+$keep  = New-Node 'OU=Keep,DC=lacrossefootwear,DC=net' 'Keep'
+$root2.Children.Add($keep)
+Check "an absent DN reports false"       $false $removeByDn.Invoke($null, @([object]$root2, [object]$dnTest))
+Check '  and removes nothing'            1 $root2.Children.Count
+
+# Both delete paths must call it. Source checks: MainViewModel cannot be constructed from here, and
+# mutation testing showed that without these, reverting either call site passed the whole suite.
+$mvSrc = Get-Content -Raw (Join-Path $repoRoot 'app\src\UnifiedDirectoryManager\ViewModels\MainViewModel.cs')
+$ouBody = [regex]::Match($mvSrc, '(?s)public async Task DeleteOuAsync.*?\r?\n    \}').Value
+Check 'the OU delete body was found'     $true ($ouBody.Length -gt 0)
+Check '  it removes the node by DN'      $true ($ouBody -match 'RemoveNodeByDn\(dn\)')
+# The line this replaced, which silently did nothing whenever the holder was not the DN-matched parent.
+# Comments stripped first: the body carries a comment NAMING the line this replaced, and matching
+# that would fail on the explanation rather than on the code. Same trap as the drag-selection fix.
+$ouCode = [regex]::Replace($ouBody, '//.*?(\r?\n|$)', '')
+Check '  not via the DN-matched parent'  $false ($ouCode -match 'parent\?\.Children\.Remove')
+
+$rowBody = [regex]::Match($mvSrc, '(?s)private async Task DeleteSelectedAsync.*?\r?\n    \}').Value
+Check 'the row delete body was found'    $true ($rowBody.Length -gt 0)
+# An OU reaches this path from advanced-search results, and it used to reload the list and stop.
+Check '  containers leave the tree too'  $true ($rowBody -match 'IsContainerLike\(\)\) RemoveNodeByDn')
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

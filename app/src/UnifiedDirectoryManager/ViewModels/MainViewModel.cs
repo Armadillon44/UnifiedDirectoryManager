@@ -1172,7 +1172,9 @@ public partial class MainViewModel : ObservableObject
             try
             {
                 await _directory.DeleteObjectAsync(dn);
-                parent?.Children.Remove(node);
+                // By DN rather than parent?.Children.Remove(node): see RemoveNodeByDn. The old line did
+                // nothing whenever the node was not held by the DN-matched parent.
+                RemoveNodeByDn(dn);
                 Edit.Clear();
                 if (selectionInSubtree && parent is not null)
                     SelectedNode = parent; // OnSelectedNodeChanged re-points the object list to the (live) parent
@@ -1215,6 +1217,46 @@ public partial class MainViewModel : ObservableObject
     }
 
     /// <summary>Finds a tree node by distinguished name (case-insensitive) across all roots; null if not present.</summary>
+    /// <summary>
+    /// Drops the tree node for <paramref name="dn"/>, and its whole subtree, from wherever it is held.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Searches for the node's OWNING parent rather than resolving <c>ParentDn(dn)</c> and removing from
+    /// that. The two are not the same thing: a pinned favourite is its own root, so the node an operator
+    /// right-clicked can sit somewhere whose DN is not the parent DN. Removing from the DN-matched parent
+    /// then silently does nothing, and the deleted OU stays in the tree — which is what was reported.
+    /// </para>
+    /// <para>
+    /// Every match is removed, not the first: the same DN can legitimately appear more than once.
+    /// </para>
+    /// </remarks>
+    private bool RemoveNodeByDn(string dn)
+    {
+        if (string.IsNullOrWhiteSpace(dn)) return false;
+        var removed = false;
+        foreach (var root in RootNodes) removed |= RemoveNodeByDn(root, dn);
+        return removed;
+    }
+
+    private static bool RemoveNodeByDn(TreeNodeViewModel node, string dn)
+    {
+        var removed = false;
+        // Backwards: removing shifts everything after it down.
+        for (var i = node.Children.Count - 1; i >= 0; i--)
+        {
+            var child = node.Children[i];
+            if (string.Equals(child.DistinguishedName, dn, StringComparison.OrdinalIgnoreCase))
+            {
+                node.Children.RemoveAt(i);
+                removed = true;
+                continue;
+            }
+            removed |= RemoveNodeByDn(child, dn);
+        }
+        return removed;
+    }
+
     private TreeNodeViewModel? FindNodeByDn(string dn)
     {
         if (string.IsNullOrWhiteSpace(dn)) return null;
@@ -1770,7 +1812,15 @@ public partial class MainViewModel : ObservableObject
                 }
             }
 
-            try { await _directory.DeleteObjectAsync(row.DistinguishedName); ok++; }
+            try
+            {
+                await _directory.DeleteObjectAsync(row.DistinguishedName);
+                ok++;
+                // An OU or container can reach this path from advanced-search results, and this used to
+                // reload the list and stop. The tree kept the node, and clicking it asked the DC for a DN
+                // that no longer existed — which is how a delete produced "NO_OBJECT" seconds later.
+                if (row.Type.IsContainerLike()) RemoveNodeByDn(row.DistinguishedName);
+            }
             catch (Exception ex) { errors.Add($"{row.Name}: {DirectoryService.Friendly(ex)}"); }
         }
 
