@@ -8,7 +8,23 @@ the things ADUC never had: reusable **new-user templates**, GUI **advanced searc
 Built with **WPF on .NET 10**. Ships as a **self-contained, single-file `.exe`** for **win-x64** and
 **win-arm64** — no .NET install required on the target machine (Windows 10 / 11).
 
-> **v2.3.5 — wait longer, start from nothing, and open where you want.**
+> **v2.3.6 — two fixes where the app disagreed with what you had selected.**
+>
+> **Dragging a multi-selection moves all of it.** Selecting several objects and dragging them onto an
+> OU moved exactly one — the row under the cursor. The drag read the selection when the pointer had
+> moved far enough to start, by which point WPF had already collapsed it to the clicked row. It now
+> takes the selection at the moment of the press, which is the last point the whole thing still exists.
+>
+> **Deleting an OU removes it from the tree.** The tree kept showing the deleted OU, and clicking it
+> then produced a raw LDAP error — `0000208D: NameErr: ... problem 2001 (NO_OBJECT)`. The delete had
+> been removing the node from the parent whose *DN matched* rather than from whatever was actually
+> holding it, so when those differed it silently did nothing. Deleting an OU from advanced-search
+> results never touched the tree at all. Both now do.
+>
+> **And that error says what it means.** `NO_OBJECT` now reads “That object no longer exists in the
+> directory — it may have been deleted or moved. Press F5 to refresh.”, with the server's own text kept
+> underneath: the DSID is what Microsoft support needs from a ticket, so it is added to, never replaced.
+>> **v2.3.5 — wait longer, start from nothing, and open where you want.**
 >
 > **The cloud retries are yours to set.** Exchange Online answering “couldn't find object” for a user
 > that had just been created was ruining new-user flows. The retry was 5 attempts 8 seconds apart; it

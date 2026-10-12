@@ -125,7 +125,10 @@ it has to reach you verbatim to be diagnosable.
   with Users / Groups / Devices, and **Exchange Online** with Mailboxes / Distribution groups. The
   two cloud roots appear only while you are signed in to Entra ID. Drag objects from the list onto an
   **OU or container** here to move them; cloud nodes are not drop targets, because they have no
-  distinguished name to move anything into.
+  distinguished name to move anything into. *(Fixed in 2.3.6: dragging a multi-selection moved only the
+  row under the cursor. WPF collapses a multi-selection to the clicked row on mouse-DOWN — unlike
+  Explorer, which waits for mouse-up — so by the time a drag started, one row was left. The selection
+  is now taken at the press.)*
 - **Center** — the object list. Which toolbar you get depends on which section you are in.
   - **On-prem:** a Users / Computers / **Groups** / All filter, **Include sub-OUs**, a quick-filter
     box, **header-click sorting**, and a **"Columns ▾"** chooser (friendly labels; choices persist
@@ -368,6 +371,18 @@ Right-click an OU or the domain root in the tree:
   description, and the protection flag.
 - **Delete** — behind a two-step guard: the menu item opens onto **Yes, I'm sure…**, and then a
   type-to-confirm phrase.
+
+*(Fixed in 2.3.6.)* A deleted OU now leaves the tree. It used to stay, and clicking it asked the domain
+controller for a distinguished name that no longer existed — which surfaced as a raw
+`0000208D: NameErr: … problem 2001 (NO_OBJECT)`. The same applies to an OU deleted from
+**advanced-search results**, which never refreshed the tree at all.
+
+That error also reads in English now: **“That object no longer exists in the directory — it may have
+been deleted or moved. Press F5 to refresh.”** The directory's own text is kept underneath rather than
+replaced, because the `DSID` in it is what Microsoft support asks for.
+
+> A node can still go stale if the OU is deleted **somewhere else** — in ADUC, or by a colleague —
+> while your tree is open. Clicking it then says the above; **F5** refreshes the tree.
 
 ## Groups: create, modify, delete
 
