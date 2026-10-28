@@ -118,6 +118,9 @@ public interface IDirectoryService
     /// <summary>Reads whether an object is protected from accidental deletion (Everyone:Deny Delete/DeleteTree).</summary>
     Task<bool> GetDeletionProtectionAsync(string distinguishedName, CancellationToken cancellationToken = default);
 
+    /// <summary>The Account tab's two password options: the userAccountControl flag and the DACL permission.</summary>
+    Task<PasswordOptions> GetPasswordOptionsAsync(string distinguishedName, CancellationToken cancellationToken = default);
+
     /// <summary>Searches objects of a given type by name (Unknown = users, groups and computers).</summary>
     Task<IReadOnlyList<AdObjectRow>> SearchByNameAsync(string text, AdObjectType type, CancellationToken cancellationToken = default);
 

@@ -146,6 +146,26 @@ public partial class EditPaneViewModel : ObservableObject
     [ObservableProperty] private bool _isProtectedFromDeletion;
     private bool _originalProtected;
 
+    // Password options (users only). Applied on Save. Stored in different places -- one is a
+    // userAccountControl flag, the other a DACL permission -- see PasswordOptions.
+    [ObservableProperty] private bool _passwordNeverExpires;
+    [ObservableProperty] private bool _cannotChangePassword;
+    private bool _originalPasswordNeverExpires;
+    private bool _originalCannotChangePassword;
+
+    /// <summary>
+    /// False until the password options have actually been read.
+    /// </summary>
+    /// <remarks>
+    /// The two checkboxes start unticked, and unticked is also a legitimate value. Without this a failed
+    /// read would leave them looking like a real "no", and saving would then actively CLEAR a never-expires
+    /// flag or a cannot-change permission that the account really has.
+    /// </remarks>
+    [ObservableProperty] private bool _passwordOptionsKnown;
+
+    /// <summary>True only when the read was attempted and FAILED -- not while it is still in flight.</summary>
+    [ObservableProperty] private bool _passwordOptionsUnreadable;
+
     // Account expiration (accountExpires is an INTEGER8 FILETIME, written via LDAP).
     [ObservableProperty] private bool _accountNeverExpires = true;
     [ObservableProperty] private DateTime _accountExpiresDate = DateTime.Today.AddMonths(1);
@@ -197,6 +217,10 @@ public partial class EditPaneViewModel : ObservableObject
         ShowGroupType = false;
         _originalProtected = false;
         IsProtectedFromDeletion = false;
+        _originalPasswordNeverExpires = _originalCannotChangePassword = false;
+        PasswordNeverExpires = CannotChangePassword = false;
+        PasswordOptionsKnown = false;
+        PasswordOptionsUnreadable = false;
         ShowCloudTab = false;
         ShowExchangeTab = false;
         _cloudUpn = _cloudSid = _cloudComputerName = null;
@@ -323,6 +347,25 @@ public partial class EditPaneViewModel : ObservableObject
             if (token != _loadToken) return; // superseded — must not touch the shared baseline below
             _originalProtected = protectedNow;
             IsProtectedFromDeletion = _originalProtected;
+
+            // Password options -- users only. A failed read leaves PasswordOptionsKnown false, which keeps
+            // the checkboxes disabled and out of the save: see PasswordOptionsKnown.
+            if (IsUser)
+            {
+                PasswordOptions? options = null;
+                try { options = await _directory.GetPasswordOptionsAsync(distinguishedName); }
+                catch (Exception ex) { AppLog.Instance.Warn("Could not read the password options: " + DirectoryService.Friendly(ex)); }
+                if (token != _loadToken) return; // superseded
+                if (options is not null)
+                {
+                    _originalPasswordNeverExpires = options.NeverExpires;
+                    _originalCannotChangePassword = options.CannotChange;
+                    PasswordNeverExpires = options.NeverExpires;
+                    CannotChangePassword = options.CannotChange;
+                    PasswordOptionsKnown = true;
+                }
+                else PasswordOptionsUnreadable = true;
+            }
 
             Title = map.TryGetValue("displayName", out var dn0) && dn0.DisplayValues.Count > 0
                 ? dn0.DisplayValues[0]
@@ -464,6 +507,9 @@ public partial class EditPaneViewModel : ObservableObject
                 Op = IsProtectedFromDeletion ? ChangeOp.Protect : ChangeOp.Unprotect,
             };
 
+        foreach (var change in BuildPasswordOptionChanges())
+            byLdap[change.LdapName] = change;
+
         var changes = byLdap.Values.ToList();
         if (changes.Count == 0)
         {
@@ -497,6 +543,7 @@ public partial class EditPaneViewModel : ObservableObject
         if (BuildAccountExpiresChange() is not null) return true;
         if (BuildCountryChanges().Any()) return true;
         if (IsProtectedFromDeletion != _originalProtected) return true;
+        if (BuildPasswordOptionChanges().Any()) return true;
         return false;
     }
 
@@ -1115,6 +1162,39 @@ public partial class EditPaneViewModel : ObservableObject
             yield return new PendingChange { Op = ChangeOp.Set, LdapName = "c", FriendlyName = "Country code", Values = { selected.Alpha2 } };
             yield return new PendingChange { Op = ChangeOp.Set, LdapName = "countryCode", FriendlyName = "Country code (numeric)", Values = { selected.Numeric.ToString() } };
         }
+    }
+
+    /// <summary>
+    /// The password-option changes to save, one per checkbox that differs from what was loaded.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Nothing at all unless the options were actually read (<see cref="PasswordOptionsKnown"/>): an
+    /// unticked box from a failed read is not a decision, and saving it would clear a real setting.
+    /// </para>
+    /// <para>
+    /// Synthetic keys, as deletion protection uses, so neither can collide with a real attribute.
+    /// "Password never expires" is NOT keyed on userAccountControl: that would let a raw edit of the
+    /// attribute in the Attribute Editor silently replace it, or be replaced by it.
+    /// </para>
+    /// </remarks>
+    private IEnumerable<PendingChange> BuildPasswordOptionChanges()
+    {
+        if (!IsUser || !PasswordOptionsKnown) yield break;
+
+        if (PasswordNeverExpires != _originalPasswordNeverExpires)
+            yield return new PendingChange
+            {
+                Op = PasswordNeverExpires ? ChangeOp.SetPasswordNeverExpires : ChangeOp.UnsetPasswordNeverExpires,
+                LdapName = "__passwordNeverExpires__",
+            };
+
+        if (CannotChangePassword != _originalCannotChangePassword)
+            yield return new PendingChange
+            {
+                Op = CannotChangePassword ? ChangeOp.SetCannotChangePassword : ChangeOp.UnsetCannotChangePassword,
+                LdapName = "__cannotChangePassword__",
+            };
     }
 
     /// <summary>Builds an accountExpires change if the expiry differs from what was loaded; else null.</summary>

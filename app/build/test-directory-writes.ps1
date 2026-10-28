@@ -463,5 +463,114 @@ $rowBody = [regex]::Match($mvSrc, '(?s)private async Task DeleteSelectedAsync.*?
 Check 'the row delete body was found'    $true ($rowBody.Length -gt 0)
 # An OU reaches this path from advanced-search results, and it used to reload the list and stop.
 Check '  containers leave the tree too'  $true ($rowBody -match 'IsContainerLike\(\)\) RemoveNodeByDn')
+
+Write-Host "`n== password never expires: one flag, and nothing else ==" -ForegroundColor Cyan
+# userAccountControl carries a dozen unrelated flags in one integer. Setting this checkbox must change
+# exactly one bit -- a disable or a smartcard requirement set elsewhere has to survive it.
+$bfStatic = [System.Reflection.BindingFlags]'NonPublic,Static'
+$DS = [UnifiedDirectoryManager.Services.DirectoryService]
+$applyNe = $DS.GetMethod('ApplyPasswordNeverExpires', $bfStatic)
+Check 'the UAC seam exists'              $true ($null -ne $applyNe)
+
+$normal = 0x200; $disabled = 0x2; $smartcard = 0x40000; $neverExp = 0x10000
+Check 'on sets 0x10000'                  ($normal -bor $neverExp) ($applyNe.Invoke($null, @([int]$normal, $true)))
+Check '  and off clears it'              $normal ($applyNe.Invoke($null, @([int]($normal -bor $neverExp), $false)))
+$busy = $normal -bor $disabled -bor $smartcard
+$on = $applyNe.Invoke($null, @([int]$busy, $true))
+Check 'a disabled flag survives'         $disabled ($on -band $disabled)
+Check '  and a smartcard flag'           $smartcard ($on -band $smartcard)
+Check '  with ours added'                $neverExp ($on -band $neverExp)
+$off = $applyNe.Invoke($null, @([int]$on, $false))
+Check 'clearing leaves them too'         $busy $off
+Check 'setting twice is setting once'    $on ($applyNe.Invoke($null, @([int]$on, $true)))
+
+Write-Host "`n== user cannot change password: a permission, not a flag ==" -ForegroundColor Cyan
+# Microsoft: ADS_UF_PASSWD_CANT_CHANGE "cannot be assigned by directly modifying the UserAccountControl
+# attribute" -- it reflects a permission on the user object. So this is tested on a security descriptor,
+# built in memory, which needs no domain controller.
+$applyCcp = $DS.GetMethod('ApplyCannotChangePassword', $bfStatic)
+$hasCcp   = $DS.GetMethod('HasCannotChangePassword', $bfStatic)
+Check 'the DACL seams exist'             $true (($null -ne $applyCcp) -and ($null -ne $hasCcp))
+
+$sidType  = [System.Security.Principal.SecurityIdentifier]
+$everyone = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$self     = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-10')
+$changePw = [guid]'AB721A53-1E2F-11D0-9819-00AA0040529B'
+$resetPw  = [guid]'00299570-246D-11D0-A768-00AA006E0529'
+$extRight = [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight
+$deny     = [System.Security.AccessControl.AccessControlType]::Deny
+$allow    = [System.Security.AccessControl.AccessControlType]::Allow
+
+# Every explicit ACE for a given control-access right. Wrapped in @() so one result stays a collection.
+function Get-RightAces($sec, [guid]$right) {
+    return ,@($sec.GetAccessRules($true, $false, $sidType) | Where-Object {
+        $_.ObjectType -eq $right -and (($_.ActiveDirectoryRights -band $extRight) -ne 0) })
+}
+
+$sec = [System.DirectoryServices.ActiveDirectorySecurity]::new()
+Check 'a fresh descriptor is not denied' $false ($hasCcp.Invoke($null, @($sec)))
+
+$applyCcp.Invoke($null, @($sec, $true)) | Out-Null
+Check 'denying reads back as denied'     $true ($hasCcp.Invoke($null, @($sec)))
+$aces = Get-RightAces $sec $changePw
+Check '  as exactly two ACEs'            2 $aces.Count
+Check '  both of them Deny'              2 @($aces | Where-Object { $_.AccessControlType -eq $deny }).Count
+# Both trustees, matched by SID: the names "Everyone" and "SELF" are localised on a non-English DC.
+Check '  one for Everyone'               1 @($aces | Where-Object { $_.IdentityReference -eq $everyone }).Count
+Check '  and one for SELF'               1 @($aces | Where-Object { $_.IdentityReference -eq $self }).Count
+
+# A second save must not stack duplicate ACEs onto the account.
+$applyCcp.Invoke($null, @($sec, $true)) | Out-Null
+Check 'denying twice leaves two, not 4'  2 (Get-RightAces $sec $changePw).Count
+
+$applyCcp.Invoke($null, @($sec, $false)) | Out-Null
+Check 'allowing reads back as allowed'   $false ($hasCcp.Invoke($null, @($sec)))
+Check '  with no deny left behind'       0 @((Get-RightAces $sec $changePw) | Where-Object { $_.AccessControlType -eq $deny }).Count
+
+# Denying only one of the two trustees leaves the right reachable through the other, so it is NOT
+# "cannot change". Reading it as ticked would show a state the account does not have.
+$onlySelf = [System.DirectoryServices.ActiveDirectorySecurity]::new()
+$onlySelf.AddAccessRule([System.DirectoryServices.ActiveDirectoryAccessRule]::new($self, $extRight, $deny, $changePw))
+Check 'only SELF denied is not "cannot"' $false ($hasCcp.Invoke($null, @($onlySelf)))
+$onlyEveryone = [System.DirectoryServices.ActiveDirectorySecurity]::new()
+$onlyEveryone.AddAccessRule([System.DirectoryServices.ActiveDirectoryAccessRule]::new($everyone, $extRight, $deny, $changePw))
+Check '  nor only Everyone'              $false ($hasCcp.Invoke($null, @($onlyEveryone)))
+
+# The neighbouring right. Change Password is what the user does with their OLD password; Reset Password
+# is what an administrator does. Touching the wrong one would take away the ability to reset the account.
+$mixed = [System.DirectoryServices.ActiveDirectorySecurity]::new()
+$mixed.AddAccessRule([System.DirectoryServices.ActiveDirectoryAccessRule]::new($everyone, $extRight, $deny, $resetPw))
+$applyCcp.Invoke($null, @($mixed, $false)) | Out-Null
+Check 'a Reset Password ACE survives'    1 (Get-RightAces $mixed $resetPw).Count
+$applyCcp.Invoke($null, @($mixed, $true)) | Out-Null
+Check '  either way'                     1 (Get-RightAces $mixed $resetPw).Count
+Check '  and the deny is on CHANGE'      $true ($hasCcp.Invoke($null, @($mixed)))
+
+# And deletion protection, which is also an Everyone deny, on a different right entirely.
+$guarded = [System.DirectoryServices.ActiveDirectorySecurity]::new()
+$delRights = [System.DirectoryServices.ActiveDirectoryRights]::Delete -bor [System.DirectoryServices.ActiveDirectoryRights]::DeleteTree
+$guarded.AddAccessRule([System.DirectoryServices.ActiveDirectoryAccessRule]::new($everyone, $delRights, $deny))
+$applyCcp.Invoke($null, @($guarded, $true)) | Out-Null
+$applyCcp.Invoke($null, @($guarded, $false)) | Out-Null
+$stillGuarded = @($guarded.GetAccessRules($true, $false, $sidType) | Where-Object {
+    $_.AccessControlType -eq $deny -and (($_.ActiveDirectoryRights -band $delRights) -eq $delRights) }).Count
+Check 'deletion protection survives'     1 $stillGuarded
+
+Write-Host "`n== and the pane only saves what it actually read ==" -ForegroundColor Cyan
+# The two checkboxes start unticked, and unticked is a legitimate value. If the read FAILS they must
+# stay out of the save -- or saving would clear a never-expires flag or a deny the account really has.
+$epSrc = Get-Content -Raw (Join-Path $repoRoot 'app\src\UnifiedDirectoryManager\ViewModels\EditPaneViewModel.cs')
+$builder = [regex]::Match($epSrc, '(?s)private IEnumerable<PendingChange> BuildPasswordOptionChanges\(\).*?\r?\n    \}').Value
+Check 'the change builder was found'     $true ($builder.Length -gt 0)
+Check '  it yields nothing unread'       $true ($builder -match 'if \(!IsUser \|\| !PasswordOptionsKnown\) yield break;')
+# Synthetic keys, so a raw userAccountControl edit in the Attribute Editor cannot silently replace this.
+Check '  keyed apart from the attribute' $true ($builder -match '"__passwordNeverExpires__"')
+Check '  both of them'                   $true ($builder -match '"__cannotChangePassword__"')
+
+# The DACL mask must cover the new ops, or ObjectSecurity binds without the DACL and the write is lost.
+$dsSrc = Get-Content -Raw (Join-Path $repoRoot 'app\src\UnifiedDirectoryManager\Services\DirectoryService.cs')
+$maskLine = [regex]::Match($dsSrc, '(?s)if \(changes\.Any\(c => c\.Op is ChangeOp\.Protect.*?SecurityMasks\.Dacl;').Value
+Check 'the DACL mask was found'          $true ($maskLine.Length -gt 0)
+Check '  and covers both ops'            $true (($maskLine -match 'SetCannotChangePassword') -and ($maskLine -match 'UnsetCannotChangePassword'))
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

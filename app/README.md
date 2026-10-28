@@ -353,6 +353,30 @@ All edits across the tabs are batched and shown in a confirmation diff when you 
 - **Country picker** — the Address tab has a searchable dropdown of the full ISO 3166-1 list.
   Choosing a country sets `co` (name), `c` (two-letter code) and `countryCode` (numeric) together,
   matching ADUC.
+- **Password options** *(2.3.7)* — the Account tab has **Password never expires** and **User cannot
+  change password**, as in ADUC. They sit side by side but are stored in completely different places:
+
+  | Option | Stored as |
+  |---|---|
+  | Password never expires | the `DONT_EXPIRE_PASSWORD` flag (`0x10000`) in `userAccountControl` |
+  | User cannot change password | a **permission** on the account: deny ACEs for the *Change Password* right on **Everyone** and **SELF** |
+
+  The second is not a flag, though it looks like one. `userAccountControl` does have a matching bit
+  (`0x40`), but Microsoft documents it as **not assignable by writing userAccountControl** — it only
+  reports the permission. A tool that wrote the bit would appear to work and change nothing.
+
+  Three things worth knowing:
+
+  - **Only the one flag changes.** "Password never expires" reads `userAccountControl` fresh at save time
+    and flips one bit. It does not write back the value from when you opened the account, so a disable
+    or a smartcard requirement set elsewhere in the meantime is left alone.
+  - **It denies *Change* Password, not *Reset* Password.** Change is what a user does with their old
+    password; reset is what an administrator does. You can still reset the password of an account set
+    to "cannot change".
+  - **If they cannot be read, they cannot be changed.** Both boxes are disabled with a red note rather
+    than shown unticked. Unticked is a real value, so a failed read that looked like "no" would let a
+    Save clear a setting the account actually has. Reading the permission needs read access to the
+    account's security descriptor; without it, both boxes are disabled together.
 - **Account expiration** — the Account tab has a "Never expires" checkbox plus a date picker and a
   24-hour time box. Saving writes `accountExpires` (an INTEGER8 FILETIME) via an LDAP modify;
   "Never" stores `0`.

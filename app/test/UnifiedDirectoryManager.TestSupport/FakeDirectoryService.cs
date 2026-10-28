@@ -29,6 +29,9 @@ public sealed class FakeDirectoryService : IDirectoryService
     /// <summary>Deletion-protection answers per DN, for the DACL read at the end of a load.</summary>
     public Dictionary<string, bool> Protection { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Per-DN password options; absent means neither option is set.</summary>
+    public Dictionary<string, PasswordOptions> PasswordOptionsByDn { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// When true, a load parks until <see cref="ReleaseLoad"/> is called for that DN. This is the whole
     /// point of the class — it is what lets a test hold one load open while another finishes.
@@ -73,6 +76,9 @@ public sealed class FakeDirectoryService : IDirectoryService
 
     public Task<bool> GetDeletionProtectionAsync(string distinguishedName, CancellationToken cancellationToken = default) =>
         Task.FromResult(Protection.TryGetValue(distinguishedName, out var p) && p);
+
+    public Task<PasswordOptions> GetPasswordOptionsAsync(string distinguishedName, CancellationToken cancellationToken = default) =>
+        Task.FromResult(PasswordOptionsByDn.TryGetValue(distinguishedName, out var o) ? o : new PasswordOptions(false, false));
 
     public Task<GroupMembersResult> GetGroupMembersAsync(string groupDn, CancellationToken cancellationToken = default) =>
         Task.FromResult(new GroupMembersResult(Array.Empty<GroupMember>(), Truncated: false, Unconfirmed: false));

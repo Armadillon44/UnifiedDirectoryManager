@@ -154,6 +154,20 @@
                                     </TextBlock.Style>
                                 </TextBlock>
                             </Grid>
+                            <!-- Password options. Disabled until they have actually been read: an unticked box from a
+                                 failed read is not a decision, and saving it would clear a setting the account has. -->
+                            <Border BorderBrush="#E0E0E0" BorderThickness="0,1,0,0" Margin="0,8,0,0" Padding="0,8,0,0">
+                                <StackPanel IsEnabled="{Binding PasswordOptionsKnown}">
+                                    <TextBlock Text="Password options" FontWeight="SemiBold" Margin="0,0,0,4" />
+                                    <CheckBox Content="Password never expires" IsChecked="{Binding PasswordNeverExpires}"
+                                              ToolTip="Sets DONT_EXPIRE_PASSWORD in userAccountControl. Overrides the domain password age policy for this account." />
+                                    <CheckBox Content="User cannot change password" IsChecked="{Binding CannotChangePassword}" Margin="0,4,0,0"
+                                              ToolTip="A permission on the account, not a flag: denies the Change Password right to Everyone and SELF. An administrator can still reset the password." />
+                                    <TextBlock Text="Could not read these options, so they cannot be changed here."
+                                               Foreground="#B00" FontSize="11" Margin="0,4,0,0"
+                                               Visibility="{Binding PasswordOptionsUnreadable, Converter={StaticResource BoolToVis}}" />
+                                </StackPanel>
+                            </Border>
                             <Border BorderBrush="#E0E0E0" BorderThickness="0,1,0,0" Margin="0,8,0,0" Padding="0,8,0,0">
                                 <StackPanel>
                                     <TextBlock Text="Account expiration" FontWeight="SemiBold" Margin="0,0,0,4" />

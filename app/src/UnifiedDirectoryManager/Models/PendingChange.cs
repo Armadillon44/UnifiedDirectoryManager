@@ -18,6 +18,24 @@ public enum ChangeOp
     Protect,
     /// <summary>Remove accidental-deletion protection from the object.</summary>
     Unprotect,
+
+    /// <summary>Set the DONT_EXPIRE_PASSWORD flag in userAccountControl.</summary>
+    SetPasswordNeverExpires,
+    /// <summary>Clear the DONT_EXPIRE_PASSWORD flag in userAccountControl.</summary>
+    UnsetPasswordNeverExpires,
+
+    /// <summary>
+    /// Deny the user the ability to change their own password.
+    /// </summary>
+    /// <remarks>
+    /// An ACL change, NOT a userAccountControl flag. Microsoft is explicit that the matching UAC bit
+    /// (<c>ADS_UF_PASSWD_CANT_CHANGE</c>, 0x40) “cannot be assigned by directly modifying the
+    /// UserAccountControl attribute” — it reflects a permission on the user object, and writing the bit
+    /// does nothing. The permission is two ACEs for the Change Password control-access right.
+    /// </remarks>
+    SetCannotChangePassword,
+    /// <summary>Let the user change their own password again.</summary>
+    UnsetCannotChangePassword,
 }
 
 /// <summary>
@@ -52,6 +70,10 @@ public sealed class PendingChange
             ChangeOp.Disable => "Disable account",
             ChangeOp.Protect => "Protect from accidental deletion",
             ChangeOp.Unprotect => "Remove accidental-deletion protection",
+            ChangeOp.SetPasswordNeverExpires => "Password never expires: on",
+            ChangeOp.UnsetPasswordNeverExpires => "Password never expires: off",
+            ChangeOp.SetCannotChangePassword => "User cannot change password: on (permission on the account)",
+            ChangeOp.UnsetCannotChangePassword => "User cannot change password: off (permission on the account)",
             _ => Op.ToString(),
         };
     }

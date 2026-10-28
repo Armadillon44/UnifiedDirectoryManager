@@ -22,6 +22,27 @@ public sealed class DirectoryService : IDirectoryService
         ActiveDirectoryRights.Delete | ActiveDirectoryRights.DeleteTree;
     private static readonly SecurityIdentifier EveryoneSid = new(WellKnownSidType.WorldSid, null);
 
+    /// <summary>NT AUTHORITY\\SELF (S-1-5-10) — the user acting on their own object.</summary>
+    /// <remarks>
+    /// By SID, never by name. The account names behind these well-known SIDs are localised to the
+    /// language of the first domain controller in the domain, so matching on “Everyone” or “SELF”
+    /// silently finds nothing on a non-English domain.
+    /// </remarks>
+    private static readonly SecurityIdentifier SelfSid = new(WellKnownSidType.SelfSid, null);
+
+    /// <summary>
+    /// The Change Password control-access right, {AB721A53-1E2F-11D0-9819-00AA0040529B}.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from Reset Password ({00299570-246D-11D0-A768-00AA006E0529}): “change” requires the old
+    /// password and is what the user does for themselves; “reset” is what an administrator does. Denying
+    /// the wrong one of the two would take away an administrator's ability to reset the account.
+    /// </remarks>
+    private static readonly Guid ChangePasswordRight = new("AB721A53-1E2F-11D0-9819-00AA0040529B");
+
+    /// <summary>userAccountControl DONT_EXPIRE_PASSWORD (0x10000).</summary>
+    private const int DontExpirePassword = 0x10000;
+
     private ConnectionState? _current;
     private NameResolver? _resolver;
 
@@ -406,9 +427,11 @@ public sealed class DirectoryService : IDirectoryService
     {
         using var entry = Required.CreateEntry(distinguishedName);
 
-        // If any change touches the DACL (accidental-deletion protection), restrict the security
-        // descriptor to the DACL up front — before the entry binds — so ObjectSecurity reads/writes it.
-        if (changes.Any(c => c.Op is ChangeOp.Protect or ChangeOp.Unprotect))
+        // If any change touches the DACL — accidental-deletion protection, or the change-password
+        // permission — restrict the security descriptor to the DACL up front, before the entry binds,
+        // so ObjectSecurity reads and writes it without needing SACL privileges.
+        if (changes.Any(c => c.Op is ChangeOp.Protect or ChangeOp.Unprotect
+                                  or ChangeOp.SetCannotChangePassword or ChangeOp.UnsetCannotChangePassword))
             entry.Options!.SecurityMasks = SecurityMasks.Dacl;
 
         var needCommit = false;
@@ -454,6 +477,26 @@ public sealed class DirectoryService : IDirectoryService
                     if (entry.Properties[change.LdapName].Count > 0) { entry.Properties[change.LdapName].Clear(); needCommit = true; }
                     break;
 
+                case ChangeOp.SetPasswordNeverExpires:
+                    SetPasswordNeverExpires(entry, true);
+                    needCommit = true;
+                    break;
+
+                case ChangeOp.UnsetPasswordNeverExpires:
+                    SetPasswordNeverExpires(entry, false);
+                    needCommit = true;
+                    break;
+
+                case ChangeOp.SetCannotChangePassword:
+                    SetCannotChangePassword(entry, deny: true);
+                    needCommit = true;
+                    break;
+
+                case ChangeOp.UnsetCannotChangePassword:
+                    SetCannotChangePassword(entry, deny: false);
+                    needCommit = true;
+                    break;
+
                 case ChangeOp.Enable:
                     SetEnabled(entry, true);
                     needCommit = true;
@@ -489,6 +532,27 @@ public sealed class DirectoryService : IDirectoryService
 
         AppLog.Instance.Info($"Applied {changes.Count} change(s) to {distinguishedName}: " +
                              string.Join("; ", changes.Select(c => c.Describe())));
+    }
+
+    /// <summary>
+    /// Reads the two Account-tab password options in one bind.
+    /// </summary>
+    /// <remarks>
+    /// Together because they are shown together but stored in completely different places: one is a flag
+    /// in userAccountControl, the other a pair of ACEs in the object's DACL. Two round trips to fill two
+    /// adjacent checkboxes would be the only thing separating them.
+    /// </remarks>
+    public Task<PasswordOptions> GetPasswordOptionsAsync(string distinguishedName, CancellationToken cancellationToken = default)
+    {
+        return Task.Run(() =>
+        {
+            using var entry = Required.CreateEntry(distinguishedName);
+            entry.Options!.SecurityMasks = SecurityMasks.Dacl;
+            var uac = entry.Properties["userAccountControl"].Value is int i ? i : NormalAccount;
+            return new PasswordOptions(
+                NeverExpires: (uac & DontExpirePassword) != 0,
+                CannotChange: HasCannotChangePassword(entry.ObjectSecurity));
+        }, cancellationToken);
     }
 
     /// <summary>Reads whether the object is protected from accidental deletion (Everyone:Deny Delete/DeleteTree).</summary>
@@ -1306,6 +1370,96 @@ public sealed class DirectoryService : IDirectoryService
     {
         var current = entry.Properties["userAccountControl"].Value is int i ? i : NormalAccount;
         entry.Properties["userAccountControl"].Value = enabled ? current & ~AccountDisable : current | AccountDisable;
+    }
+
+    /// <summary>
+    /// Flips DONT_EXPIRE_PASSWORD on the live entry, read-modify-write.
+    /// </summary>
+    /// <remarks>
+    /// Reads the CURRENT value off the bound entry rather than writing an integer computed when the pane
+    /// loaded. userAccountControl is one attribute carrying a dozen unrelated flags, so writing a stale
+    /// whole value would silently revert anything changed in between — a disable from another window, or
+    /// a smartcard requirement set in ADUC — while appearing to touch only this checkbox.
+    /// </remarks>
+    private static void SetPasswordNeverExpires(DirectoryEntry entry, bool on)
+    {
+        var current = entry.Properties["userAccountControl"].Value is int i ? i : NormalAccount;
+        entry.Properties["userAccountControl"].Value = ApplyPasswordNeverExpires(current, on);
+    }
+
+    /// <summary>The userAccountControl value with DONT_EXPIRE_PASSWORD set or cleared, and nothing else touched.</summary>
+    internal static int ApplyPasswordNeverExpires(int userAccountControl, bool on) =>
+        on ? userAccountControl | DontExpirePassword : userAccountControl & ~DontExpirePassword;
+
+    /// <summary>
+    /// Grants or denies the user the Change Password right, on both Everyone and SELF.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is how “User cannot change password” is actually stored. The userAccountControl bit that
+    /// reports it (0x40) is documented as not assignable by writing userAccountControl: it reflects this
+    /// permission, so setting the bit achieves nothing and the checkbox would appear to do nothing.
+    /// </para>
+    /// <para>
+    /// BOTH trustees, because that is what the permission means and what ADUC writes. Denying only SELF
+    /// leaves Everyone's allow in place, and the user keeps the right through it.
+    /// </para>
+    /// <para>
+    /// Existing explicit ACEs for this right on these two trustees are stripped first, so the result is
+    /// the same whether the account arrived with a deny, an allow, or nothing — and a second save does
+    /// not stack duplicate ACEs onto the object.
+    /// </para>
+    /// </remarks>
+    private static void SetCannotChangePassword(DirectoryEntry entry, bool deny) =>
+        ApplyCannotChangePassword(entry.ObjectSecurity, deny);
+
+    /// <summary>
+    /// The ACE work behind <see cref="SetCannotChangePassword"/>, on a security descriptor rather than an
+    /// entry so it can be exercised without a domain controller.
+    /// </summary>
+    internal static void ApplyCannotChangePassword(ActiveDirectorySecurity security, bool deny)
+    {
+        foreach (ActiveDirectoryAccessRule rule in
+                 security.GetAccessRules(includeExplicit: true, includeInherited: false, typeof(SecurityIdentifier)))
+        {
+            if (!IsChangePasswordAce(rule)) continue;
+            security.RemoveAccessRuleSpecific(rule);
+        }
+
+        var type = deny ? AccessControlType.Deny : AccessControlType.Allow;
+        foreach (var sid in new[] { EveryoneSid, SelfSid })
+            security.AddAccessRule(new ActiveDirectoryAccessRule(
+                sid, ActiveDirectoryRights.ExtendedRight, type, ChangePasswordRight));
+    }
+
+    /// <summary>An explicit ACE for the Change Password right on Everyone or SELF.</summary>
+    private static bool IsChangePasswordAce(ActiveDirectoryAccessRule rule) =>
+        rule.ObjectType == ChangePasswordRight
+        && (rule.ActiveDirectoryRights & ActiveDirectoryRights.ExtendedRight) != 0
+        && rule.IdentityReference is SecurityIdentifier sid
+        && (sid == EveryoneSid || sid == SelfSid);
+
+    /// <summary>
+    /// True when the user is denied the Change Password right.
+    /// </summary>
+    /// <remarks>
+    /// Requires a deny for BOTH trustees, matching what <see cref="SetCannotChangePassword"/> writes and
+    /// what Microsoft's own read procedure specifies. Explicit ACEs only, deliberately: the checkbox can
+    /// only add and remove explicit ones, so reporting an inherited deny as “ticked” would show a state
+    /// the operator then could not untick from here.
+    /// </remarks>
+    internal static bool HasCannotChangePassword(ActiveDirectorySecurity security)
+    {
+        bool everyone = false, self = false;
+        foreach (ActiveDirectoryAccessRule rule in
+                 security.GetAccessRules(includeExplicit: true, includeInherited: false, typeof(SecurityIdentifier)))
+        {
+            if (!IsChangePasswordAce(rule) || rule.AccessControlType != AccessControlType.Deny) continue;
+            var sid = (SecurityIdentifier)rule.IdentityReference;
+            if (sid == EveryoneSid) everyone = true;
+            else if (sid == SelfSid) self = true;
+        }
+        return everyone && self;
     }
 
     /// <summary>
