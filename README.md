@@ -8,7 +8,23 @@ the things ADUC never had: reusable **new-user templates**, GUI **advanced searc
 Built with **WPF on .NET 10**. Ships as a **self-contained, single-file `.exe`** for **win-x64** and
 **win-arm64** — no .NET install required on the target machine (Windows 10 / 11).
 
-> **v2.3.6 — two fixes where the app disagreed with what you had selected.**
+> **v2.3.7 — password options on the Account tab.**
+>
+> **Password never expires** and **User cannot change password**, as in ADUC. They sit side by side
+> but are stored in completely different places, which is the part worth knowing:
+>
+> - **Password never expires** is a flag in `userAccountControl`. Saving reads the account's current
+>   value and changes that one flag, so a disable or a smartcard requirement set elsewhere in the
+>   meantime is left alone.
+> - **User cannot change password** is not a flag at all. `userAccountControl` has a matching bit, but
+>   Microsoft documents it as not assignable by writing `userAccountControl` — it only reports a
+>   permission. The app writes the permission itself, as ADUC does: a deny on the *Change Password*
+>   right for Everyone and SELF. It denies *change*, not *reset*, so an administrator can still reset
+>   the account's password.
+>
+> If the options cannot be read for an account, both boxes are disabled with a note rather than
+> shown unticked — unticked is a real value, and saving it would switch off a setting the account has.
+>> **v2.3.6 — two fixes where the app disagreed with what you had selected.**
 >
 > **Dragging a multi-selection moves all of it.** Selecting several objects and dragging them onto an
 > OU moved exactly one — the row under the cursor. The drag read the selection when the pointer had
