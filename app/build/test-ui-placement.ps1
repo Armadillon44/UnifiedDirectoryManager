@@ -1221,5 +1221,107 @@ $moveCode = [regex]::Replace($moveBody, '//.*?(\r?\n|$)', '')
 Check '  and never reads SelectedItems'  $false ($moveCode -match 'List\.SelectedItems')
 # The stale comment that caused this is gone.
 Check 'the wrong claim is not restated'  $false ($olv -match 'defers collapsing')
+
+Write-Host "`n== Ctrl+C copies any list ==" -ForegroundColor Cyan
+# One class-level binding covers every ListView. These tests read what WOULD be copied and whether Ctrl+C
+# is live; they never call Clipboard.SetText, because the clipboard is the operator's and a test run must
+# not overwrite whatever they last copied.
+if (-not ('ClipRow' -as [type])) {
+    Add-Type @'
+public class ClipRow {
+    public string Name { get; set; }
+    public string Mail { get; set; }
+    public string Note { get; set; }
+    public bool Flag { get; set; }
+}
+'@
+}
+$LC = [UnifiedDirectoryManager.Views.ListClipboard]
+$lcFlags = [System.Reflection.BindingFlags]'NonPublic,Static'
+$buildText  = $LC.GetMethod('BuildText', $lcFlags)
+$rowsToCopy = $LC.GetMethod('RowsToCopy', $lcFlags)
+Check 'the copy seams exist'             $true (($null -ne $buildText) -and ($null -ne $rowsToCopy))
+
+function New-Template([string]$inner) {
+    $xaml = '<DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">' + $inner + '</DataTemplate>'
+    return [System.Windows.Markup.XamlReader]::Parse($xaml)
+}
+function New-ClipList([string]$mode) {
+    $lv = [System.Windows.Controls.ListView]::new()
+    $lv.SelectionMode = $mode
+    $gv = [System.Windows.Controls.GridView]::new()
+    # A checkbox header, as the cloud lists have: not a text header, so not a column to copy.
+    $c0 = [System.Windows.Controls.GridViewColumn]::new(); $c0.Header = [System.Windows.Controls.CheckBox]::new()
+    $c0.CellTemplate = New-Template '<CheckBox IsChecked="{Binding Flag}" />'; $gv.Columns.Add($c0)
+    $c1 = [System.Windows.Controls.GridViewColumn]::new(); $c1.Header = 'Name'
+    $c1.DisplayMemberBinding = [System.Windows.Data.Binding]::new('Name'); $gv.Columns.Add($c1)
+    $c2 = [System.Windows.Controls.GridViewColumn]::new(); $c2.Header = 'Mail'
+    $c2.DisplayMemberBinding = [System.Windows.Data.Binding]::new('Mail'); $gv.Columns.Add($c2)
+    # Text that comes from a cell template rather than a display binding still counts.
+    $c3 = [System.Windows.Controls.GridViewColumn]::new(); $c3.Header = 'Note'
+    $c3.CellTemplate = New-Template '<TextBlock Text="{Binding Note}" />'; $gv.Columns.Add($c3)
+    # A button column with no header, like Bulk Edit's Remove.
+    $c4 = [System.Windows.Controls.GridViewColumn]::new(); $c4.Header = ''
+    $c4.CellTemplate = New-Template '<Button Content="Remove" />'; $gv.Columns.Add($c4)
+    $lv.View = $gv
+    # Bound through ItemsSource, as every real list is. Adding to Items directly made the filtered view and
+    # the full source enumerate the same, so a copy that ignored the filter passed (mutation testing found it).
+    $rows = [System.Collections.ObjectModel.ObservableCollection[object]]::new()
+    foreach ($n in 'alpha', 'bravo', 'charlie', 'delta') {
+        $r = [ClipRow]::new(); $r.Name = $n; $r.Mail = "$n@contoso.com"; $r.Note = "note $n"
+        $rows.Add($r)
+    }
+    $lv.ItemsSource = $rows
+    return $lv
+}
+
+$clip = New-ClipList 'Extended'
+$clip.Items[1].Note = "two`tparts`r`nand a line"
+$clipWin = [System.Windows.Window]::new(); $clipWin.Content = $clip
+$clipWin.ShowActivated = $false; $clipWin.Left = -4000; $clipWin.Width = 400; $clipWin.Height = 300
+$clipWin.Show(); $clipWin.UpdateLayout()
+
+$all = [string]$buildText.Invoke($null, @($clip, $rowsToCopy.Invoke($null, @($clip))))
+$lines = @($all.TrimEnd() -split "`r?`n")
+Check 'a header row, then one per row'   5 $lines.Count
+# The columns on screen, in screen order -- not the checkbox, not the button.
+Check '  headed by the text columns'     "Name`tMail`tNote" $lines[0]
+Check '  values read through bindings'   "alpha`talpha@contoso.com`tnote alpha" $lines[1]
+# A tab or line break inside a value would split the row and misalign the pasted table.
+Check '  a tab in a value stays in row'  3 @($lines[2] -split "`t").Count
+Check '  and so does a line break'       "bravo`tbravo@contoso.com`ttwo parts and a line" $lines[2]
+
+Check 'nothing selected copies it all'   4 @($rowsToCopy.Invoke($null, @($clip))).Count
+# Selected in reverse order. SelectedItems is in CLICK order; the copy must be in the order shown.
+[void]$clip.SelectedItems.Add($clip.Items[3]); [void]$clip.SelectedItems.Add($clip.Items[1])
+$picked = @($rowsToCopy.Invoke($null, @($clip)))
+Check 'a selection copies only it'       2 $picked.Count
+Check '  in the order shown, not clicked' 'bravo' $picked[0].Name
+$clip.SelectedItems.Clear()
+
+# A filtered list copies what is on screen, not the whole source.
+$clip.Items.Filter = [Predicate[object]]{ param($o) $o.Name -ne 'charlie' }
+Check 'a filtered list copies what shows' 3 @($rowsToCopy.Invoke($null, @($clip))).Count
+$clip.Items.Filter = $null
+
+# In a single-selection list the highlighted row is where you are, not a choice of what to copy --
+# treating it as one would leave those lists impossible to copy whole.
+$single = New-ClipList 'Single'
+$single.SelectedItem = $single.Items[2]
+Check 'a single-select list copies whole' 4 @($rowsToCopy.Invoke($null, @($single))).Count
+
+# And Ctrl+C is actually live on a ListView once the binding is registered.
+$LC.GetMethod('Register').Invoke($null, @()) | Out-Null
+$copyCmd = [System.Windows.Input.ApplicationCommands]::Copy
+Check 'Ctrl+C is live on a list'         $true ($copyCmd.CanExecute($null, $clip))
+$empty = [System.Windows.Controls.ListView]::new(); $empty.View = [System.Windows.Controls.GridView]::new()
+$clipWin.Content = [System.Windows.Controls.StackPanel]::new()
+$clipWin.Content.Children.Add($clip) | Out-Null; $clipWin.Content.Children.Add($empty) | Out-Null
+$clipWin.UpdateLayout()
+Check '  but not on an empty one'        $false ($copyCmd.CanExecute($null, $empty))
+$clipWin.Close()
+
+$appSrc2 = Get-Content -Raw (Join-Path $src 'App.xaml.cs')
+Check 'startup registers it'             $true ($appSrc2 -match 'Views\.ListClipboard\.Register\(\);')
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

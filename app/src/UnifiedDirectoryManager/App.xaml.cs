@@ -31,6 +31,9 @@ public partial class App : Application
         // any window exists, and after the logger, so a failure to do so is recorded rather than lost.
         MenuDropAlignment.ForceMenusToOpenRightwards();
 
+        // Ctrl+C on any list copies it as tab-separated text. Once, for every ListView, before any exists.
+        Views.ListClipboard.Register();
+
         // Never let an unhandled exception silently terminate the app — surface it instead.
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         // Catch faults that never reach the dispatcher: exceptions on background/non-UI threads, and

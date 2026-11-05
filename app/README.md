@@ -239,11 +239,22 @@ The menus now show these beside the item, so you can learn them without being to
 | **F1** | This guide |
 | **Del** | Delete the selected objects (with the usual confirmation) |
 | **Alt+Enter** | Properties of the selected object |
+| **Ctrl+C** | Copy a list *(2.3.8)* — see below |
 
 **Del** and **Alt+Enter** work when the object list has focus — click a row first — which is how
 Explorer and ADUC behave. Delete deliberately does nothing while you are in the tree or typing in a
 box, so it cannot act on something you are not looking at. **Ctrl+N** and **Ctrl+F** do nothing in the
 cloud view, because they are on-prem operations.
+
+*(2.3.8.)* **Ctrl+C copies any list** — a group’s members, a user’s groups, direct reports, the object
+lists, search and picker results. Click in the list first. It copies the **selected rows**, or the whole
+list when nothing is selected; **Ctrl+A** then **Ctrl+C** copies everything. The text is tab-separated
+with a header row, so it pastes as a table into Excel, Teams or an email, and it has the columns the
+list is showing, in the order shown. A filtered list copies what is on screen.
+
+Two lists behave slightly differently. The **cloud** object lists (Entra users, groups, devices) select one
+row at a time — their checkboxes are for picking several — so Ctrl+C there always copies the whole
+list. And the on-prem **Member Of** tab keeps its own copy, as before, with the Copy button beside it.
 
 **If you are upgrading from 2.3.2 or earlier, the Edit menu is gone.** Everything that was in it is in
 **Action**, along with the creates that used to be in File and the four things that were only ever on
