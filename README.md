@@ -8,6 +8,15 @@ the things ADUC never had: reusable **new-user templates**, GUI **advanced searc
 Built with **WPF on .NET 10**. Ships as a **self-contained, single-file `.exe`** for **win-x64** and
 **win-arm64** — no .NET install required on the target machine (Windows 10 / 11).
 
+> **v2.3.8 — Ctrl+C copies any list.**
+>
+> Click in any list of users or groups — a group’s members, a user’s groups, direct reports, the object
+> lists, search and picker results — and press **Ctrl+C**. It copies the selected rows, or the whole list
+> when nothing is selected (**Ctrl+A**, **Ctrl+C** for everything), as tab-separated text with a header
+> row, so it pastes as a table into Excel, Teams or an email. The columns match the screen, in the order
+> shown, and a filtered list copies what is on screen. The cloud object lists, which highlight one row
+> at a time, always copy whole.
+>
 > **v2.3.7 — password options on the Account tab.**
 >
 > **Password never expires** and **User cannot change password**, as in ADUC. They sit side by side
