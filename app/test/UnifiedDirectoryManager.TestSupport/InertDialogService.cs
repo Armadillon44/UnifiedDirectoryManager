@@ -48,8 +48,14 @@ public class InertDialogService : IDialogService
         return ConfirmAnswer;
     }
 
-    public virtual IReadOnlyList<AdObjectRow>? PickObjects(string title, AdObjectType type, bool multiSelect) => throw Unused();
-    public virtual IReadOnlyList<GroupRef>? PickGroupsHybrid(string title) => throw Unused();
+    /// <summary>What <see cref="PickObjects"/> returns. Null means the call was not expected, and throws.</summary>
+    public IReadOnlyList<AdObjectRow>? PickedObjects { get; set; }
+
+    /// <summary>What <see cref="PickGroupsHybrid"/> returns. Null means the call was not expected, and throws.</summary>
+    public IReadOnlyList<GroupRef>? PickedGroups { get; set; }
+
+    public virtual IReadOnlyList<AdObjectRow>? PickObjects(string title, AdObjectType type, bool multiSelect) => PickedObjects ?? throw Unused();
+    public virtual IReadOnlyList<GroupRef>? PickGroupsHybrid(string title) => PickedGroups ?? throw Unused();
     public virtual IReadOnlyList<CloudObjectRow>? PickCloudMembers(string title) => throw Unused();
     public virtual IReadOnlyList<CloudSku>? PickLicenses(string title, IReadOnlyList<CloudSku> candidates) => throw Unused();
     public virtual IReadOnlyList<CloudGroup>? PickCloudGroups(string title) => throw Unused();
@@ -57,9 +63,35 @@ public class InertDialogService : IDialogService
     public virtual IReadOnlyList<MailboxRecipient>? PickMailboxRecipients(string title, IReadOnlyList<MailboxRecipient>? initial = null) => throw Unused();
     public virtual void ShowDistributionGroupMembers(string identity, string groupName, bool isSynced) => throw Unused();
     public virtual IReadOnlyList<MemberCandidate>? PasteMembers(string title, MemberBackend backend, IEnumerable<string> alreadyMembers, string? selfIdentity) => throw Unused();
-    public virtual string? PickContainer(string? initialDn) => throw Unused();
+    /// <summary>What <see cref="PickContainer"/> returns. Null means the call was not expected, and throws.</summary>
+    public string? PickedContainer { get; set; }
+
+    public virtual string? PickContainer(string? initialDn) => PickedContainer ?? throw Unused();
     public virtual IReadOnlyList<string>? PickContainers(IEnumerable<string> initialDns) => throw Unused();
-    public virtual void Alert(string title, string message) => throw Unused();
+    /// <summary>When true, <see cref="Alert"/> records instead of throwing. Off by default: an unexpected alert
+    /// usually means the test wandered off its path.</summary>
+    public bool RecordAlerts { get; set; }
+
+    /// <summary>Alerts shown, as (title, message), when <see cref="RecordAlerts"/> is on.</summary>
+    public List<(string Title, string Message)> Alerts { get; } = new();
+
+    public virtual void Alert(string title, string message)
+    {
+        if (!RecordAlerts) throw Unused();
+        Alerts.Add((title, message));
+    }
+
+    /// <summary>What <see cref="AskUnsavedChanges"/> answers. Cancel by default, which loses nothing.</summary>
+    public UnsavedChoice UnsavedAnswer { get; set; } = UnsavedChoice.Cancel;
+
+    /// <summary>Every unsaved-changes prompt, as (heading, lines), in order.</summary>
+    public List<(string Heading, IReadOnlyList<string> Lines)> UnsavedPrompts { get; } = new();
+
+    public virtual UnsavedChoice AskUnsavedChanges(string title, string heading, IEnumerable<string> lines)
+    {
+        UnsavedPrompts.Add((heading, lines.ToList()));
+        return UnsavedAnswer;
+    }
     public virtual void ShowBulkResult(BulkResult result) => throw Unused();
     public virtual BulkResult ShowScenarioRun(Scenario scenario, IReadOnlyList<AdObjectRow> targets, IList<string>? operationLog) => throw Unused();
     public virtual void ShowNewUser(string? defaultOuDn, Action onCreated) => throw Unused();

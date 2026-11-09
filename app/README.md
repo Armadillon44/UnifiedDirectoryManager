@@ -359,6 +359,28 @@ Saved searches are JSON files in `%APPDATA%\UnifiedDirectoryManager\Searches`.
 
 All edits across the tabs are batched and shown in a confirmation diff when you click **Save**.
 
+*(2.3.9.)* **That now includes group changes.** Adding and removing groups on **Member Of**, members on a
+group's **Members** tab, and **Direct reports** wait for **Save** like every other edit, and the confirmation
+lists property and membership changes together. Until then each row says what will happen — **Adding
+(unsaved)** in green italics or **Removing (unsaved)** in grey italics, with a **Pending** column. Removing a
+row that is still "Adding" cancels the add; adding a group that is "Removing" takes the removal back;
+**Reload** discards all of it.
+
+This fixed real data loss. A group change used to write at once and then reload the whole pane, quietly
+throwing away any property you had changed but not saved. ADUC's Member Of tab has always waited for
+Apply; this matches it.
+
+On **Save**, properties are written first. If that fails nothing else is attempted, and every change stays
+on screen to try again. Membership changes are then written one at a time — a refused one does not stop
+the rest, and the error names what did not go through. **Enable, Disable, Unlock, Reset password** and
+**Move** still act immediately, but no longer wipe what you have not saved.
+
+*(2.3.9.)* **Unsaved changes are never discarded silently.** Clicking a different object in the list, or
+closing an editor window or the app, with unsaved changes asks **Save / Discard / Cancel** and lists what is
+pending. Cancel — or Esc — keeps you where you were. Browsing to another OU, or the object moving out of the
+list, leaves the edits in the pane rather than asking, because nothing is lost by keeping them there.
+Moving, or running a scenario on, the object being edited asks first too.
+
 - **Attribute Editor** — single-valued attributes edit inline; multi-valued ones (e.g.
   `proxyAddresses`) open a values editor via **Edit…**. Read-only and system attributes are disabled.
 - **Country picker** — the Address tab has a searchable dropdown of the full ISO 3166-1 list.
@@ -468,8 +490,8 @@ silently truncating.
 ## Group membership
 
 Select a group and open its **Members** tab. **Add members…** opens a picker that searches users,
-computers and groups; **Remove selected** takes out whatever is highlighted. Changes are confirmed
-and written to the group's `member` attribute.
+computers and groups; **Remove selected** takes out whatever is highlighted. *(2.3.9.)* Changes wait for
+**Save**, then are confirmed and written to the group's `member` attribute — see **Editing objects**.
 
 The same three buttons appear on an Entra group's Members tab in the cloud pane, and in the
 **Distribution group members** window for an Exchange group.

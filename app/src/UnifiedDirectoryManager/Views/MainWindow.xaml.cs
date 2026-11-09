@@ -27,6 +27,11 @@ public partial class MainWindow : Window
         };
         Loaded += (_, _) => { ApplySettings(); ApplyDock(); };
         Closing += OnClosing;
+        // Closing the app takes every editor window with it, so unsaved edits in any of them -- and in the
+        // properties pane here -- are asked about first.
+        UnsavedChangesGuard.AttachFor(this, () =>
+            (_vm is null ? Enumerable.Empty<EditPaneViewModel>() : new[] { _vm.Edit })
+                .Concat(UnsavedChangesGuard.EditorPanes(this)));
     }
 
     /// <summary>Applies persisted window + tree sizes once the view model is available.</summary>

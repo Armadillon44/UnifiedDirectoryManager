@@ -13,6 +13,8 @@ public partial class AdObjectPropertiesWindow : Window
     {
         InitializeComponent();
         this.FixLazyRender();
+        // Closing over unsaved edits asks first: save, discard, or stay.
+        UnsavedChangesGuard.Attach(this);
     }
 
     private void OnClose(object sender, RoutedEventArgs e) => Close();

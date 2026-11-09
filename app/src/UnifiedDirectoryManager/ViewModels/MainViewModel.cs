@@ -266,12 +266,7 @@ public partial class MainViewModel : ObservableObject
         Edit = new EditPaneViewModel(directory, dialogs, SetError, graph, exchange);
         Cloud = new CloudObjectListViewModel(graph, exchange, dialogs, settingsStore, settings);
 
-        List.SelectionChanged += (_, row) =>
-        {
-            UpdateSelectionState();
-            if (row is not null) _ = Edit.LoadAsync(row.DistinguishedName, row.Type);
-            else Edit.Clear();
-        };
+        List.SelectionChanged += (_, row) => _ = OnListSelectionChangedAsync(row);
 
         ReloadScenarios();
         RebuildToolbar();
@@ -670,6 +665,114 @@ public partial class MainViewModel : ObservableObject
         });
     }
 
+    // Set while a selection is being put back after Cancel, and while the unsaved prompt (and any save it starts)
+    // runs: selection changes during either must not reload the pane underneath it.
+    private bool _restoringSelection;
+    private bool _leavingPane;
+
+    /// <summary>
+    /// Follows the list's selection into the edit pane, without losing anything unsaved in it.
+    /// </summary>
+    /// <remarks>
+    /// <para>With nothing unsaved this is what it always was: load the selected object, or clear the pane.</para>
+    /// <para>With unsaved edits:</para>
+    /// <list type="bullet">
+    /// <item>Re-selecting the object being edited keeps the edits. A list refresh re-selects the same object as a
+    /// NEW row, and every write from the pane refreshes the list — so this is the difference between an Unlock
+    /// keeping your edits and silently discarding them.</item>
+    /// <item>Selecting nothing keeps the pane as it is. Nothing is lost by leaving it on screen, and the selection
+    /// empties for reasons nobody chose: browsing to another OU, or the object moving out of the list.</item>
+    /// <item>Selecting a different object asks: save, discard, or stay. Staying keeps the pane and puts the
+    /// selection back on the object being edited, when that row is still in the list.</item>
+    /// </list>
+    /// <para>
+    /// It yields before judging, because a refresh clears the selection and refills it in one pass — what matters
+    /// is where it settled, not the empty moment in between. The yield also lets the click finish before a modal
+    /// prompt appears over it.
+    /// </para>
+    /// </remarks>
+    private async Task OnListSelectionChangedAsync(AdObjectRow? row)
+    {
+        UpdateSelectionState();
+        if (_restoringSelection || _leavingPane) return;
+        if (!Edit.HasUnsavedChanges())
+        {
+            if (row is not null) _ = Edit.LoadAsync(row.DistinguishedName, row.Type);
+            else Edit.Clear();
+            return;
+        }
+
+        await Task.Yield();
+        if (_restoringSelection || _leavingPane) return;
+        var target = List.SelectedRow;
+        var editing = Edit.CurrentDn;
+        switch (DecideFollow(Edit.HasUnsavedChanges(), editing, target?.DistinguishedName))
+        {
+            case PaneFollow.Keep: return;
+            case PaneFollow.Clear: Edit.Clear(); return;
+            case PaneFollow.Load: _ = Edit.LoadAsync(target!.DistinguishedName, target.Type); return;
+        }
+
+        bool leave;
+        _leavingPane = true;
+        try { leave = await Edit.ConfirmLeaveAsync(); }
+        finally { _leavingPane = false; }
+
+        if (leave)
+        {
+            // The selection may have moved while the prompt or the save ran; follow where it is now.
+            if (List.SelectedRow is { } now) _ = Edit.LoadAsync(now.DistinguishedName, now.Type);
+            else Edit.Clear();
+        }
+        else RestoreSelection(editing);
+    }
+
+    /// <summary>What the edit pane should do when the list selection settles.</summary>
+    internal enum PaneFollow { Load, Clear, Keep, Ask }
+
+    /// <summary>
+    /// The decision behind <see cref="OnListSelectionChangedAsync"/>, kept free of the view model so it can be
+    /// tested: nothing unsaved follows the selection as always; unsaved edits stay on screen when the selection
+    /// empties or returns to the same object, and anything else asks.
+    /// </summary>
+    internal static PaneFollow DecideFollow(bool hasUnsavedChanges, string? editingDn, string? selectedDn)
+    {
+        if (!hasUnsavedChanges) return selectedDn is null ? PaneFollow.Clear : PaneFollow.Load;
+        if (selectedDn is null) return PaneFollow.Keep;
+        if (string.Equals(selectedDn, editingDn, StringComparison.OrdinalIgnoreCase)) return PaneFollow.Keep;
+        return PaneFollow.Ask;
+    }
+
+    /// <summary>Puts the list selection back on <paramref name="dn"/>, without that reloading the pane.</summary>
+    private void RestoreSelection(string? dn)
+    {
+        if (dn is null) return;
+        var row = List.Rows.FirstOrDefault(r => string.Equals(r.DistinguishedName, dn, StringComparison.OrdinalIgnoreCase));
+        if (row is null) return; // no longer in the list; the pane keeps the object regardless
+        _restoringSelection = true;
+        try { List.SelectedRow = row; }
+        finally { _restoringSelection = false; }
+    }
+
+    /// <summary>
+    /// Before an operation that changes objects in the list: if the one open in the edit pane is among them and
+    /// has unsaved edits, the same save / discard / stay prompt. False means the operator chose to stay.
+    /// </summary>
+    private Task<bool> ConfirmPaneBeforeAsync(IEnumerable<AdObjectRow> rows) =>
+        Edit.CurrentDn is { } dn && rows.Any(r => string.Equals(r.DistinguishedName, dn, StringComparison.OrdinalIgnoreCase))
+            ? Edit.ConfirmLeaveAsync()
+            : Task.FromResult(true);
+
+    /// <summary>
+    /// Empties the edit pane after an operation — unless it holds unsaved edits for an object the operation did
+    /// not touch, which it used to throw away along with everything else.
+    /// </summary>
+    private void ReleaseEditPane(Func<string, bool> touched)
+    {
+        if (Edit.HasUnsavedChanges() && Edit.CurrentDn is { } dn && !touched(dn)) return;
+        Edit.Clear();
+    }
+
     /// <summary>Rebinds the UI to the (possibly new) connection after a reconnect from the Settings dialog.</summary>
     private void RefreshAfterReconnect()
     {
@@ -957,6 +1060,9 @@ public partial class MainViewModel : ObservableObject
             DirectoryService.ParentDn(r.DistinguishedName), targetOuDn, StringComparison.OrdinalIgnoreCase)).ToList();
         if (toMove.Count == 0) { _dialogs.Alert("Move", "The selected object(s) are already in that OU."); return; }
 
+        // Moving the object open in the edit pane changes its DN, so its unsaved edits are dealt with first.
+        if (!await ConfirmPaneBeforeAsync(toMove)) return;
+
         var lines = new[] { $"Move {toMove.Count} object(s) to:", "• " + targetOuDn, string.Empty }
             .Concat(toMove.Select(r => $"   {r.Type}: {r.Name}"));
         if (!_dialogs.Confirm("Move objects", $"Move {toMove.Count} object(s) to another OU?", lines)) return;
@@ -968,7 +1074,7 @@ public partial class MainViewModel : ObservableObject
             try { await _directory.MoveObjectAsync(r.DistinguishedName, targetOuDn); ok++; }
             catch (Exception ex) { errors.Add($"{r.Name}: {DirectoryService.Friendly(ex)}"); }
         }
-        Edit.Clear();
+        ReleaseEditPane(dn => toMove.Any(r => string.Equals(r.DistinguishedName, dn, StringComparison.OrdinalIgnoreCase)));
         await List.ReloadAsync();
         if (errors.Count > 0) _dialogs.Alert("Move", $"Moved {ok}; {errors.Count} failed:\n" + string.Join("\n", errors));
         else StatusMessage = $"Moved {ok} object(s).";
@@ -1175,7 +1281,7 @@ public partial class MainViewModel : ObservableObject
                 // By DN rather than parent?.Children.Remove(node): see RemoveNodeByDn. The old line did
                 // nothing whenever the node was not held by the DN-matched parent.
                 RemoveNodeByDn(dn);
-                Edit.Clear();
+                ReleaseEditPane(open => IsSelfOrDescendantDn(open, dn));
                 if (selectionInSubtree && parent is not null)
                     SelectedNode = parent; // OnSelectedNodeChanged re-points the object list to the (live) parent
                 else
@@ -1188,7 +1294,7 @@ public partial class MainViewModel : ObservableObject
                 // leave the OU PARTLY deleted. Refresh the OU's children from AD so the tree shows what remains,
                 // move off any now-deleted selection, and warn that the delete may be incomplete.
                 try { node.Invalidate(); await node.EnsureChildrenAsync(); } catch { /* best effort */ }
-                Edit.Clear();
+                ReleaseEditPane(open => IsSelfOrDescendantDn(open, dn));
                 if (selectionInSubtree && !ReferenceEquals(SelectedNode, node)) SelectedNode = node;
                 try { await List.ReloadAsync(); } catch { /* best effort */ }
                 _dialogs.Alert("Delete may be incomplete",
@@ -1348,6 +1454,9 @@ public partial class MainViewModel : ObservableObject
         // requires typing the object count (the same safeguard as bulk delete); a single object is a plain confirm.
         var title = $"Run scenario: {scenario.Name}";
         var heading = $"Run “{scenario.Name}” on {rows.Count} object(s)?";
+        // A scenario acts on the object open in the edit pane too, so its unsaved edits are dealt with first.
+        if (!await ConfirmPaneBeforeAsync(rows)) return;
+
         var approved = rows.Count == 1
             ? _dialogs.Confirm(title, heading, lines)
             : _dialogs.ConfirmWithPhrase(title, heading + "  This may be hard to undo.", lines, rows.Count.ToString());
@@ -1373,7 +1482,7 @@ public partial class MainViewModel : ObservableObject
             var operationLog = logPath is not null ? new List<string>() : null;
             // The progress window runs the scenario and streams each step live; it returns once the operator closes it.
             var result = _dialogs.ShowScenarioRun(scenario, rows, operationLog);
-            Edit.Clear();
+            ReleaseEditPane(dn => rows.Any(r => string.Equals(r.DistinguishedName, dn, StringComparison.OrdinalIgnoreCase)));
             await List.ReloadAsync();
 
             var savedTo = logPath is not null && operationLog is not null
@@ -1824,7 +1933,7 @@ public partial class MainViewModel : ObservableObject
             catch (Exception ex) { errors.Add($"{row.Name}: {DirectoryService.Friendly(ex)}"); }
         }
 
-        Edit.Clear();
+        ReleaseEditPane(dn => rows.Any(r => string.Equals(r.DistinguishedName, dn, StringComparison.OrdinalIgnoreCase)));
         await List.ReloadAsync();
 
         // Always say where the records went — including on the failure path, where a record may have been written

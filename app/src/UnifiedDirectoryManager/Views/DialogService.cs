@@ -139,6 +139,13 @@ public sealed class DialogService : IDialogService
         return window.ShowDialog() == true;
     }
 
+    public UnsavedChoice AskUnsavedChanges(string title, string heading, IEnumerable<string> lines)
+    {
+        var window = new UnsavedChangesWindow(title, heading, lines) { Owner = Owner };
+        window.ShowDialog();
+        return window.Choice;
+    }
+
     public string? PickContainer(string? initialDn)
     {
         var window = new OuPickerWindow(_directory, initialDn) { Owner = Owner };
@@ -417,7 +424,9 @@ public sealed class DialogService : IDialogService
 
     public void OpenObjectEditor(string distinguishedName, AdObjectType type, string title, Action onChanged)
     {
-        var vm = new EditPaneViewModel(_directory, this, AppLog.Instance.Warn, _graph, _exchange);
+        // Errors are shown, not only logged. A save from this window can now include group changes that fail
+        // one by one, and a log line nobody reads is how a half-saved account would go unnoticed.
+        var vm = new EditPaneViewModel(_directory, this, msg => Alert("Error", msg), _graph, _exchange);
         vm.ObjectChanged += () => onChanged();
         var window = new ObjectEditorWindow { DataContext = vm, Title = title, Owner = Owner };
         window.Show(); // non-modal so several editors can be open at once

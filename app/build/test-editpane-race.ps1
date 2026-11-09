@@ -166,5 +166,255 @@ Pump
 Check 'the current load reports its failure' $true ($threw -or $t.Errors.Count -ge 1)
 Check 'and the pane offers nothing'          $false $t.Vm.HasObject
 
+
+Write-Host "`n== membership changes wait for Save ==" -ForegroundColor Cyan
+# Reported: change a user's properties, remove them from a group before saving, and the property change is
+# gone -- the group removal wrote at once and reloaded the whole pane. Membership changes now wait for Save
+# like every other edit. These drive the real view model against the fake directory and record what is
+# written, so each assertion is about writes, not about the source. (The fakes log writes as C# value
+# tuples, whose field names do not survive into PowerShell: Item1 is the DN, Item2 the changes.)
+$SALES = 'CN=Sales,OU=Groups,DC=contoso,DC=net'
+$STAFF = 'CN=All Staff,OU=Groups,DC=contoso,DC=net'
+$MKTG  = 'CN=Marketing,OU=Groups,DC=contoso,DC=net'
+$CAROL = 'CN=Carol,OU=Staff,DC=contoso,DC=net'
+$TEAM  = 'CN=Team,OU=Groups,DC=contoso,DC=net'
+$Group = [UnifiedDirectoryManager.Models.AdObjectType]::Group
+$Pend  = [UnifiedDirectoryManager.Models.PendingMembership]
+
+function Multi([string]$ldap, [string[]]$dns, [string[]]$names) {
+    $a = $Fake::Attr($ldap, $dns[0])
+    $a.DisplayValues[0] = $names[0]
+    for ($i = 1; $i -lt $dns.Count; $i++) { $a.RawValues.Add($dns[$i]); $a.DisplayValues.Add($names[$i]) }
+    return $a
+}
+function NewEditablePane {
+    $fake = New-Object UnifiedDirectoryManager.TestSupport.FakeDirectoryService
+    $fake.Objects[$ALICE] = [UnifiedDirectoryManager.Models.AdAttribute[]]@(
+        $Fake::Attr('displayName', 'Alice'), $Fake::Attr('description', 'alice-original'),
+        (Multi 'memberOf' @($SALES, $STAFF) @('Sales', 'All Staff')),
+        (Multi 'directReports' @($BOB) @('Bob')))
+    $fake.Objects[$TEAM] = [UnifiedDirectoryManager.Models.AdAttribute[]]@($Fake::Attr('displayName', 'Team'))
+    $fake.GroupMembers[$TEAM] = [UnifiedDirectoryManager.Services.GroupMember[]]@(
+        [UnifiedDirectoryManager.Services.GroupMember]::new('Bob', $BOB))
+    $dlg = New-Object UnifiedDirectoryManager.TestSupport.InertDialogService
+    $dlg.RecordAlerts = $true   # a Save with nothing to save alerts; that must not throw mid-suite
+    $errors = New-Object System.Collections.Generic.List[string]
+    $vm = [UnifiedDirectoryManager.ViewModels.EditPaneViewModel]::new(
+        # GetNewClosure: the callback fires after this function has returned, when $errors would otherwise be gone.
+        $fake, $dlg, [Action[string]] ({ param($m) $errors.Add($m) }.GetNewClosure()),
+        (New-Object UnifiedDirectoryManager.TestSupport.InertGraphService),
+        (New-Object UnifiedDirectoryManager.TestSupport.InertExchangeService))
+    return @{ Vm = $vm; Fake = $fake; Dlg = $dlg; Errors = $errors }
+}
+function Field($vm, [string]$ldap) {
+    foreach ($c in $vm.General, $vm.Account, $vm.Address, $vm.Organization, $vm.Email) {
+        foreach ($f in $c) { if ($f.LdapName -eq $ldap) { return $f } }
+    }
+}
+function Row($vm, [string]$name) { $vm.MemberOf | Where-Object { $_.Name -eq $name } | Select-Object -First 1 }
+# A broken build of the code under test must FAIL a named check, not crash the suite before the tally: a crash
+# reads as "inconclusive" to the mutation harness rather than as the guard doing its job. So results are read
+# through Safe, and a throwing operation becomes a value a check can disagree with.
+function Safe([scriptblock]$s) { try { & $s } catch { "<error: $($_.Exception.Message)>" } }
+function Run($task) {
+    $n = 0; while (-not $task.IsCompleted -and $n -lt 200) { Pump; $n++ }
+    try { return $task.GetAwaiter().GetResult() } catch { return "<threw: $($_.Exception.Message)>" }
+}
+function List([object[]]$items) { $l = New-Object System.Collections.ArrayList; foreach ($i in $items) { [void]$l.Add($i) }; return ,$l }
+function OnPremGroup([string]$name, [string]$dn) {
+    [UnifiedDirectoryManager.Models.GroupRef]::new([UnifiedDirectoryManager.Models.GroupChannel]::OnPremAd, $name, $dn, $null, $null, '')
+}
+function PickRow([string]$name, [string]$dn) {
+    $r = New-Object UnifiedDirectoryManager.Models.AdObjectRow -Property @{ Name = $name; DistinguishedName = $dn }
+    return ,([UnifiedDirectoryManager.Models.AdObjectRow[]]@($r))
+}
+
+# --- the reported sequence ---
+$t = NewEditablePane
+[void](Await ($t.Vm.LoadAsync($ALICE, $User))); Pump
+Check 'Alice is loaded with two groups'  2 $t.Vm.MemberOf.Count
+(Field $t.Vm 'description').EditText = 'edited'
+$t.Vm.RemoveFromGroupCommand.Execute((List @(Row $t.Vm 'Sales'))); Pump
+Check 'removing a group writes nothing'  0 $t.Fake.Writes.Count
+Check '  and keeps the property edit'    'edited' (Field $t.Vm 'description').EditText
+Check '  the group is marked removing'   $Pend::Removing (Row $t.Vm 'Sales').Pending
+Check '  and the row says so'            'Removing (unsaved)' (Row $t.Vm 'Sales').PendingLabel
+Check '  so there are unsaved changes'   $true $t.Vm.HasUnsavedChanges()
+[void](Run ($t.Vm.SaveCommand.ExecuteAsync($null)))
+Check 'Save writes both'                 2 $t.Fake.Writes.Count
+Check '  the property first'             'description' (Safe { $t.Fake.Writes[0].Item2[0].LdapName })
+Check '  then the group removal'         'RemoveFromGroups' (Safe { [string]$t.Fake.Writes[1].Item2[0].Op })
+Check '  from Sales'                     $SALES (Safe { $t.Fake.Writes[1].Item2[0].Values[0] })
+Check '  all against Alice'              2 @($t.Fake.Writes | Where-Object { $_.Item1 -eq $ALICE }).Count
+Check '  in one confirmation'            1 $t.Dlg.Confirmations.Count
+
+# --- adding, and taking changes back ---
+$t = NewEditablePane
+[void](Await ($t.Vm.LoadAsync($ALICE, $User))); Pump
+$t.Dlg.PickedGroups = [UnifiedDirectoryManager.Models.GroupRef[]]@((OnPremGroup 'Marketing' $MKTG))
+$t.Vm.AddToGroupsCommand.Execute($null)
+Check 'adding writes nothing'            0 $t.Fake.Writes.Count
+Check '  the group appears as adding'    $Pend::Adding (Row $t.Vm 'Marketing').Pending
+# On its own -- no property edited -- a pending membership change is unsaved work. (The earlier check had a
+# description edit alongside, which made it true regardless; mutation testing found the gap.)
+Check '  which on its own is unsaved'    $true $t.Vm.HasUnsavedChanges()
+$t.Vm.AddToGroupsCommand.Execute($null)
+Check '  adding it twice adds one row'   1 @($t.Vm.MemberOf | Where-Object { $_.Name -eq 'Marketing' }).Count
+$t.Vm.RemoveFromGroupCommand.Execute((List @(Row $t.Vm 'Marketing')))
+Check 'removing a pending add drops it'  $null (Row $t.Vm 'Marketing')
+Check '  leaving nothing unsaved'        $false $t.Vm.HasUnsavedChanges()
+$t.Vm.RemoveFromGroupCommand.Execute((List @(Row $t.Vm 'All Staff')))
+$t.Dlg.PickedGroups = [UnifiedDirectoryManager.Models.GroupRef[]]@((OnPremGroup 'All Staff' $STAFF))
+$t.Vm.AddToGroupsCommand.Execute($null)
+Check 're-adding takes a removal back'   $Pend::None (Row $t.Vm 'All Staff').Pending
+Check '  without a second row'           1 @($t.Vm.MemberOf | Where-Object { $_.Name -eq 'All Staff' }).Count
+
+# --- declining, and reloading ---
+$t.Vm.RemoveFromGroupCommand.Execute((List @(Row $t.Vm 'Sales')))
+$t.Dlg.ConfirmAnswer = $false
+[void](Run ($t.Vm.SaveCommand.ExecuteAsync($null)))
+Check 'declining the save writes nothing' 0 $t.Fake.Writes.Count
+Check '  and keeps the change pending'   $Pend::Removing (Row $t.Vm 'Sales').Pending
+[void](Run ($t.Vm.ReloadCommand.ExecuteAsync($null)))
+Check 'Reload discards pending changes'  $false $t.Vm.HasUnsavedChanges()
+Check '  Sales is back as it was'        $Pend::None (Row $t.Vm 'Sales').Pending
+
+# --- failures ---
+# One group refusing must not stop the others -- as when each was written at once.
+$t = NewEditablePane
+[void](Await ($t.Vm.LoadAsync($ALICE, $User))); Pump
+$t.Vm.RemoveFromGroupCommand.Execute((List @((Row $t.Vm 'Sales'), (Row $t.Vm 'All Staff'))))
+[void]$t.Fake.FailWritesFor.Add($SALES)
+$ok = Run ($t.Vm.SaveCommand.ExecuteAsync($null))
+Check 'a refused group does not stop the rest' 2 $t.Fake.Writes.Count
+Check '  All Staff was still written'    $STAFF (Safe { $t.Fake.Writes[1].Item2[0].Values[0] })
+Check '  and the refusal is reported'    $true (($t.Errors -join ' ') -match 'Sales')
+
+# A failed PROPERTY write stops before any group, and keeps every change on screen to try again.
+$t = NewEditablePane
+[void](Await ($t.Vm.LoadAsync($ALICE, $User))); Pump
+(Field $t.Vm 'description').EditText = 'edited'
+$t.Vm.RemoveFromGroupCommand.Execute((List @(Row $t.Vm 'Sales')))
+[void]$t.Fake.FailWritesFor.Add($ALICE)
+[void](Run ($t.Vm.SaveCommand.ExecuteAsync($null)))
+Check 'a failed property write stops there' 1 $t.Fake.Writes.Count
+Check '  the edit is kept'               'edited' (Field $t.Vm 'description').EditText
+Check '  and so is the group change'     $Pend::Removing (Row $t.Vm 'Sales').Pending
+
+Write-Host "`n== direct reports and a group's members wait too ==" -ForegroundColor Cyan
+$t = NewEditablePane
+[void](Await ($t.Vm.LoadAsync($ALICE, $User))); Pump
+$t.Vm.RemoveDirectReportsCommand.Execute((List @(Safe { $t.Vm.DirectReports[0] })))
+$t.Dlg.PickedObjects = PickRow 'Carol' $CAROL
+$t.Vm.AddDirectReportsCommand.Execute($null)
+Check 'direct report changes write nothing' 0 $t.Fake.Writes.Count
+Check '  Bob is marked removing'         $Pend::Removing ($t.Vm.DirectReports | Where-Object { $_.Name -eq 'Bob' }).Pending
+Check '  Carol is marked adding'         $Pend::Adding ($t.Vm.DirectReports | Where-Object { $_.Name -eq 'Carol' }).Pending
+[void](Run ($t.Vm.SaveCommand.ExecuteAsync($null)))
+$carolWrite = $t.Fake.Writes | Where-Object { $_.Item1 -eq $CAROL } | Select-Object -First 1
+$bobWrite   = $t.Fake.Writes | Where-Object { $_.Item1 -eq $BOB } | Select-Object -First 1
+Check 'Save sets Carol''s manager'       $ALICE (Safe { $carolWrite.Item2[0].Values[0] })
+Check '  and clears Bob''s'              'Clear' (Safe { [string]$bobWrite.Item2[0].Op })
+# Nobody can be their own manager.
+$t.Dlg.RecordAlerts = $true
+$t.Dlg.PickedObjects = PickRow 'Alice' $ALICE
+$t.Vm.AddDirectReportsCommand.Execute($null)
+Check 'adding yourself is refused'       1 $t.Dlg.Alerts.Count
+
+$t = NewEditablePane
+[void](Await ($t.Vm.LoadAsync($TEAM, $Group))); Pump
+Check 'the group shows its member'       1 $t.Vm.Members.Count
+$t.Dlg.PickedObjects = PickRow 'Carol' $CAROL
+$t.Vm.AddMembersCommand.Execute($null)
+$t.Vm.RemoveMemberCommand.Execute((List @($t.Vm.Members | Where-Object { $_.Name -eq 'Bob' })))
+Check 'member changes write nothing'     0 $t.Fake.MemberWrites.Count
+[void](Run ($t.Vm.SaveCommand.ExecuteAsync($null)))
+Check 'Save adds Carol to the group'     $CAROL (Safe { ($t.Fake.MemberWrites | Where-Object { $_.Item1 }).Item3[0] })
+Check '  and removes Bob'                $BOB (Safe { ($t.Fake.MemberWrites | Where-Object { -not $_.Item1 }).Item3[0] })
+
+Write-Host "`n== leaving with unsaved changes asks first ==" -ForegroundColor Cyan
+$t = NewEditablePane
+[void](Await ($t.Vm.LoadAsync($ALICE, $User))); Pump
+Check 'nothing unsaved: leave, no prompt' $true (Run ($t.Vm.ConfirmLeaveAsync()))
+Check '  and nothing was asked'          0 $t.Dlg.UnsavedPrompts.Count
+(Field $t.Vm 'description').EditText = 'edited'
+$t.Vm.RemoveFromGroupCommand.Execute((List @(Row $t.Vm 'Sales')))
+$t.Dlg.UnsavedAnswer = [UnifiedDirectoryManager.Services.UnsavedChoice]::Cancel
+Check 'Cancel stays'                     $false (Run ($t.Vm.ConfirmLeaveAsync()))
+Check '  with the edit intact'           'edited' (Field $t.Vm 'description').EditText
+Check '  the prompt listed the group'    $true (Safe { $t.Dlg.UnsavedPrompts[0].Item2 -contains 'Remove from group: Sales (On-prem)' })
+$t.Dlg.UnsavedAnswer = [UnifiedDirectoryManager.Services.UnsavedChoice]::Save
+$asked = $t.Dlg.Confirmations.Count
+Check 'Save leaves'                      $true (Run ($t.Vm.ConfirmLeaveAsync()))
+Check '  having written both'            2 $t.Fake.Writes.Count
+Check '  without asking a second time'   $asked $t.Dlg.Confirmations.Count
+
+$t = NewEditablePane
+[void](Await ($t.Vm.LoadAsync($ALICE, $User))); Pump
+(Field $t.Vm 'description').EditText = 'edited'
+$t.Dlg.UnsavedAnswer = [UnifiedDirectoryManager.Services.UnsavedChoice]::Discard
+Check 'Discard leaves'                   $true (Run ($t.Vm.ConfirmLeaveAsync()))
+Check '  writing nothing'                0 $t.Fake.Writes.Count
+Check '  and nothing is left unsaved'    $false $t.Vm.HasUnsavedChanges()
+
+# A save that fails from the prompt keeps the operator on the object, where the failure is.
+$t = NewEditablePane
+[void](Await ($t.Vm.LoadAsync($ALICE, $User))); Pump
+$t.Vm.RemoveFromGroupCommand.Execute((List @(Row $t.Vm 'Sales')))
+[void]$t.Fake.FailWritesFor.Add($SALES)
+$t.Dlg.UnsavedAnswer = [UnifiedDirectoryManager.Services.UnsavedChoice]::Save
+Check 'a failed save from the prompt stays' $false (Run ($t.Vm.ConfirmLeaveAsync()))
+
+Write-Host "`n== immediate actions no longer wipe unsaved edits ==" -ForegroundColor Cyan
+$t = NewEditablePane
+[void](Await ($t.Vm.LoadAsync($ALICE, $User))); Pump
+(Field $t.Vm 'description').EditText = 'edited'
+$t.Vm.RemoveFromGroupCommand.Execute((List @(Row $t.Vm 'Sales')))
+[void](Run ($t.Vm.UnlockCommand.ExecuteAsync($null)))
+Check 'Unlock is written at once'        $ALICE (Safe { $t.Fake.Unlocks[0] })
+Check '  and the edit survives it'       'edited' (Field $t.Vm 'description').EditText
+Check '  so does the pending group'      $Pend::Removing (Row $t.Vm 'Sales').Pending
+
+# Move used to reload and discard, with a warning saying so. The object is the same object afterwards.
+$t.Dlg.PickedContainer = 'OU=Elsewhere,DC=contoso,DC=net'
+[void](Run ($t.Vm.MoveCommand.ExecuteAsync($null)))
+Check 'Move keeps the edit'              'edited' (Field $t.Vm 'description').EditText
+Check '  and follows the object'         'CN=Alice,OU=Elsewhere,DC=contoso,DC=net' $t.Vm.CurrentDn
+[void](Run ($t.Vm.SaveCommand.ExecuteAsync($null)))
+Check '  so Save writes to its new home' 'CN=Alice,OU=Elsewhere,DC=contoso,DC=net' (Safe { $t.Fake.Writes[0].Item1 })
+
+Write-Host "`n== the main window follows the list without losing edits ==" -ForegroundColor Cyan
+# The decision is pure so it can be tested here; MainViewModel cannot be built in a test.
+$decide = [UnifiedDirectoryManager.ViewModels.MainViewModel].GetMethod('DecideFollow', [System.Reflection.BindingFlags]'NonPublic,Static')
+function Follow($unsaved, $editing, $selected) { [string]$decide.Invoke($null, @($unsaved, $editing, $selected)) }
+Check 'nothing unsaved: load the row'    'Load'  (Follow $false $ALICE $BOB)
+Check '  or clear when none is selected' 'Clear' (Follow $false $ALICE $null)
+# A list refresh re-selects the same object as a new row; every pane write refreshes the list.
+Check 'same object re-selected: keep'    'Keep'  (Follow $true $ALICE $ALICE.ToUpperInvariant())
+Check 'selection emptied: keep the pane' 'Keep'  (Follow $true $ALICE $null)
+Check 'a different object: ask'          'Ask'   (Follow $true $ALICE $BOB)
+
+# Closing a window over unsaved edits asks first. A real window, closed for real.
+$t = NewEditablePane
+[void](Await ($t.Vm.LoadAsync($ALICE, $User))); Pump
+(Field $t.Vm 'description').EditText = 'edited'
+$win = [System.Windows.Window]::new(); $win.DataContext = $t.Vm
+$win.ShowActivated = $false; $win.Left = -4000
+$script:closed = $false; $win.add_Closed({ $script:closed = $true })
+[UnifiedDirectoryManager.Views.UnsavedChangesGuard]::Attach($win)
+$win.Show()
+$t.Dlg.UnsavedAnswer = [UnifiedDirectoryManager.Services.UnsavedChoice]::Cancel
+$win.Close(); Pump; Pump
+Check 'Cancel keeps the window open'     $false $script:closed
+$t.Dlg.UnsavedAnswer = [UnifiedDirectoryManager.Services.UnsavedChoice]::Discard
+$win.Close(); Pump; Pump
+Check 'Discard lets it close'            $true $script:closed
+
+# And every window that hosts an edit pane is guarded.
+$srcRoot = Join-Path (Split-Path -Parent $root) 'app\src\UnifiedDirectoryManager'
+foreach ($w in 'Views\Dialogs\ObjectEditorWindow.xaml.cs', 'Views\Dialogs\AdObjectPropertiesWindow.xaml.cs') {
+    Check "  $(Split-Path -Leaf $w) is guarded" $true ((Get-Content -Raw (Join-Path $srcRoot $w)) -match 'UnsavedChangesGuard\.Attach\(this\)')
+}
+Check '  and so is the main window'      $true ((Get-Content -Raw (Join-Path $srcRoot 'Views\MainWindow.xaml.cs')) -match 'UnsavedChangesGuard\.AttachFor\(this')
 Write-Host "`npass=$pass fail=$fail" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })
 if ($fail -gt 0) { exit 1 }

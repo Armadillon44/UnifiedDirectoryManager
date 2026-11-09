@@ -81,13 +81,61 @@ public sealed class FakeDirectoryService : IDirectoryService
         Task.FromResult(PasswordOptionsByDn.TryGetValue(distinguishedName, out var o) ? o : new PasswordOptions(false, false));
 
     public Task<GroupMembersResult> GetGroupMembersAsync(string groupDn, CancellationToken cancellationToken = default) =>
-        Task.FromResult(new GroupMembersResult(Array.Empty<GroupMember>(), Truncated: false, Unconfirmed: false));
+        Task.FromResult(new GroupMembersResult(
+            GroupMembers.TryGetValue(groupDn, out var members) ? members : Array.Empty<GroupMember>(),
+            Truncated: false, Unconfirmed: false));
 
     public Task ApplyChangesAsync(string distinguishedName, IReadOnlyList<PendingChange> changes, CancellationToken cancellationToken = default)
     {
         Writes.Add((distinguishedName, changes));
+        // A write naming a DN in FailWritesFor -- as its target, or as a group it adds to or removes from --
+        // fails, so a test can check that one failed change does not stop the rest.
+        foreach (var dn in changes.SelectMany(c => c.Values).Prepend(distinguishedName))
+            if (FailWritesFor.Contains(dn)) throw new InvalidOperationException($"the directory refused {dn}");
         return Task.CompletedTask;
     }
+
+    /// <summary>DNs whose writes fail. See <see cref="ApplyChangesAsync"/>.</summary>
+    public HashSet<string> FailWritesFor { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Every member add or remove on a group, in order: (add?, group DN, member DNs).</summary>
+    public List<(bool Add, string GroupDn, IReadOnlyList<string> MemberDns)> MemberWrites { get; } = new();
+
+    public Task AddMembersAsync(string groupDn, IReadOnlyList<string> memberDns, CancellationToken cancellationToken = default)
+    {
+        MemberWrites.Add((true, groupDn, memberDns));
+        return Task.CompletedTask;
+    }
+
+    public Task RemoveMembersAsync(string groupDn, IReadOnlyList<string> memberDns, CancellationToken cancellationToken = default)
+    {
+        MemberWrites.Add((false, groupDn, memberDns));
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Accounts unlocked, in order.</summary>
+    public List<string> Unlocks { get; } = new();
+
+    public Task UnlockAccountAsync(string distinguishedName, CancellationToken cancellationToken = default)
+    {
+        Unlocks.Add(distinguishedName);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Moves, in order. A move keeps the object's attributes under its new DN, as AD does.</summary>
+    public List<(string From, string ToParent)> Moves { get; } = new();
+
+    public Task<string> MoveObjectAsync(string distinguishedName, string newParentDn, CancellationToken cancellationToken = default)
+    {
+        Moves.Add((distinguishedName, newParentDn));
+        var rdn = distinguishedName.Split(',')[0];
+        var moved = rdn + "," + newParentDn;
+        if (Objects.Remove(distinguishedName, out var attrs)) Objects[moved] = attrs;
+        return Task.FromResult(moved);
+    }
+
+    /// <summary>Members returned per group DN by <see cref="GetGroupMembersAsync"/>. Absent means none.</summary>
+    public Dictionary<string, IReadOnlyList<GroupMember>> GroupMembers { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public Task<IReadOnlyDictionary<string, string>> GetGroupTypesAsync(IReadOnlyList<string> distinguishedNames, CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyDictionary<string, string>>(new Dictionary<string, string>());
@@ -164,12 +212,8 @@ public sealed class FakeDirectoryService : IDirectoryService
     public Task<IReadOnlyList<AdObjectRow>> SearchByNameAsync(string text, AdObjectType type, CancellationToken cancellationToken = default) => throw Unused();
     public Task<bool> ExistsAsync(string distinguishedName, CancellationToken cancellationToken = default) => throw Unused();
     public Task<IReadOnlySet<string>> FindExistingSamAccountNamesAsync(IEnumerable<string> samAccountNames, CancellationToken cancellationToken = default) => throw Unused();
-    public Task AddMembersAsync(string groupDn, IReadOnlyList<string> memberDns, CancellationToken cancellationToken = default) => throw Unused();
-    public Task RemoveMembersAsync(string groupDn, IReadOnlyList<string> memberDns, CancellationToken cancellationToken = default) => throw Unused();
     public Task DeleteObjectAsync(string distinguishedName, CancellationToken cancellationToken = default) => throw Unused();
-    public Task<string> MoveObjectAsync(string distinguishedName, string newParentDn, CancellationToken cancellationToken = default) => throw Unused();
     public Task ResetPasswordAsync(string distinguishedName, string newPassword, bool mustChangeAtNextLogon, bool unlock, CancellationToken cancellationToken = default) => throw Unused();
-    public Task UnlockAccountAsync(string distinguishedName, CancellationToken cancellationToken = default) => throw Unused();
     public Task<UserCreateResult> CreateUserAsync(string ouDn, IReadOnlyDictionary<string, string> attributes, IEnumerable<string> groupDns, string? password, bool enabled, bool mustChangePassword, IReadOnlyList<string>? proxyAddresses = null, CancellationToken cancellationToken = default) => throw Unused();
     public Task<BulkResult> BulkApplyAsync(IReadOnlyList<AdObjectRow> targets, IReadOnlyList<PendingChange> changes, IProgress<int>? progress = null, CancellationToken cancellationToken = default) => throw Unused();
 }

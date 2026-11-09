@@ -3,6 +3,9 @@ using UnifiedDirectoryManager.ViewModels;
 
 namespace UnifiedDirectoryManager.Services;
 
+/// <summary>The answer to "you have unsaved changes": keep them by saving, throw them away, or go back.</summary>
+public enum UnsavedChoice { Save, Discard, Cancel }
+
 /// <summary>
 /// Opens the app's dialogs/windows on behalf of view models, keeping window creation out of the VMs.
 /// </summary>
@@ -64,6 +67,12 @@ public interface IDialogService
 
     /// <summary>Confirmation dialog listing the changes about to happen. Returns true to proceed.</summary>
     bool Confirm(string title, string heading, IEnumerable<string> lines);
+
+    /// <summary>
+    /// Asks what to do with unsaved changes before they would be lost: save them, discard them, or stay.
+    /// </summary>
+    /// <param name="lines">The pending changes, as the Save confirmation would list them.</param>
+    UnsavedChoice AskUnsavedChanges(string title, string heading, IEnumerable<string> lines);
 
     /// <summary>Browses the directory tree to pick an OU/container. Returns its DN, or null if cancelled.</summary>
     string? PickContainer(string? initialDn);

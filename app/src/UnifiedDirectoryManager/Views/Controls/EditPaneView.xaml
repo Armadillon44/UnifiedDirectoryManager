@@ -34,6 +34,20 @@
                 </Grid>
             </Grid>
         </DataTemplate>
+        <!-- A row in a membership list that is added or removed on screen but not yet saved. Italic for both,
+             green for an add and grey for a removal, alongside the Pending column that says it in words. -->
+        <Style x:Key="PendingRowStyle" TargetType="ListViewItem" BasedOn="{StaticResource {x:Type ListViewItem}}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Pending}" Value="Adding">
+                    <Setter Property="FontStyle" Value="Italic" />
+                    <Setter Property="Foreground" Value="#1B6E1B" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Pending}" Value="Removing">
+                    <Setter Property="FontStyle" Value="Italic" />
+                    <Setter Property="Foreground" Value="#888" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
     </UserControl.Resources>
 
     <Grid>
@@ -233,13 +247,15 @@
 
                             <TextBlock Text="Direct reports" Style="{StaticResource FieldLabel}" Margin="0,14,0,2" />
                             <TextBlock Foreground="#666" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,4"
-                                       Text="Users who report to this user (their Manager is set to this user). Ctrl/Shift-click to select several." />
+                                       Text="Users who report to this user (their Manager is set to this user). Ctrl/Shift-click to select several. Additions and removals are applied when you click Save." />
                             <ListView x:Name="DirectReportsList" ItemsSource="{Binding DirectReports}"
                                       SelectionMode="Extended" MinHeight="110" MaxHeight="220"
+                                      ItemContainerStyle="{StaticResource PendingRowStyle}"
                                       ScrollViewer.VerticalScrollBarVisibility="Auto">
                                 <ListView.View>
                                     <GridView>
                                         <GridViewColumn Header="Name" Width="320" DisplayMemberBinding="{Binding Name}" />
+                                        <GridViewColumn Header="Pending" Width="130" DisplayMemberBinding="{Binding PendingLabel}" />
                                     </GridView>
                                 </ListView.View>
                             </ListView>
@@ -294,7 +310,7 @@
 
                 <TabItem Header="Members" Visibility="{Binding IsGroup, Converter={StaticResource BoolToVis}}">
                     <DockPanel Margin="6">
-                        <TextBlock DockPanel.Dock="Top" Text="Objects that belong to this group (click a column header to sort; Ctrl/Shift-click to select several)" Foreground="#666" Margin="0,0,0,4" TextWrapping="Wrap" />
+                        <TextBlock DockPanel.Dock="Top" Text="Objects that belong to this group (click a column header to sort; Ctrl/Shift-click to select several). Additions and removals are applied when you click Save." Foreground="#666" Margin="0,0,0,4" TextWrapping="Wrap" />
                         <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
                             <Button Content="Add members…" Command="{Binding AddMembersCommand}" />
                             <Button Content="Paste a list…" Command="{Binding PasteMembersCommand}" Margin="6,0,0,0"
@@ -304,12 +320,14 @@
                         </WrapPanel>
                         <ListView x:Name="MembersList" ItemsSource="{Binding Members}"
                                   SelectionMode="Extended" VirtualizingStackPanel.IsVirtualizing="False"
+                                  ItemContainerStyle="{StaticResource PendingRowStyle}"
                                   GridViewColumnHeader.Click="OnMembersHeaderClick"
                                   MouseDoubleClick="OnMemberDoubleClick"
                                   ToolTip="Double-click a member to open it.">
                             <ListView.View>
                                 <GridView>
                                     <GridViewColumn Header="Name" Width="320" DisplayMemberBinding="{Binding Name}" />
+                                    <GridViewColumn Header="Pending" Width="130" DisplayMemberBinding="{Binding PendingLabel}" />
                                 </GridView>
                             </ListView.View>
                         </ListView>
@@ -319,7 +337,7 @@
                 <TabItem Header="Member Of">
                     <DockPanel Margin="6">
                         <TextBlock DockPanel.Dock="Top" Foreground="#666" Margin="0,0,0,4" TextWrapping="Wrap"
-                                   Text="Groups this object belongs to — on-prem AD and Entra ID together (Ctrl/Shift-click to select several; Ctrl+C or right-click ▸ Copy to copy the list). Membership of a group synced from on-prem AD is mastered on-prem." />
+                                   Text="Groups this object belongs to — on-prem AD and Entra ID together (Ctrl/Shift-click to select several; Ctrl+C or right-click ▸ Copy to copy the list). Additions and removals are applied when you click Save. Membership of a group synced from on-prem AD is mastered on-prem." />
                         <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
                             <Button Content="Add to groups…" Command="{Binding AddToGroupsCommand}" />
                             <Button Content="Remove selected" Command="{Binding RemoveFromGroupCommand}"
@@ -332,6 +350,7 @@
                         <ListView x:Name="MemberOfList" ItemsSource="{Binding MemberOf}"
                                   SelectionMode="Extended" VirtualizingStackPanel.IsVirtualizing="False"
                                   KeyDown="OnMemberOfKeyDown"
+                                  ItemContainerStyle="{StaticResource PendingRowStyle}"
                                   GridViewColumnHeader.Click="OnMemberOfHeaderClick">
                             <ListView.ContextMenu>
                                 <ContextMenu>
@@ -344,6 +363,7 @@
                                     <GridViewColumn Header="Group" Width="240" DisplayMemberBinding="{Binding Name}" />
                                     <GridViewColumn Header="Type" Width="140" DisplayMemberBinding="{Binding Kind}" />
                                     <GridViewColumn Header="Source" Width="90" DisplayMemberBinding="{Binding Source}" />
+                                    <GridViewColumn Header="Pending" Width="130" DisplayMemberBinding="{Binding PendingLabel}" />
                                 </GridView>
                             </ListView.View>
                         </ListView>

@@ -53,10 +53,11 @@ public partial class EditPaneView : UserControl
     {
         if (items is null || items.Count == 0) return;
         var sb = new StringBuilder();
-        sb.AppendLine("Group\tType\tSource");
+        // The Pending column is included so a copied list with unsaved changes is not mistaken for the directory.
+        sb.AppendLine("Group\tType\tSource\tPending");
         foreach (var item in items)
             if (item is GroupMembership g)
-                sb.AppendLine($"{g.Name}\t{g.Kind}\t{g.Source}");
+                sb.AppendLine($"{g.Name}\t{g.Kind}\t{g.Source}\t{g.PendingLabel}");
         try { Clipboard.SetText(sb.ToString()); } catch { /* clipboard can transiently fail; nothing actionable */ }
     }
 }

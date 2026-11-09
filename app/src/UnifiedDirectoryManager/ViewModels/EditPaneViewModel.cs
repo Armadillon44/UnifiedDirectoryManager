@@ -39,14 +39,41 @@ public sealed partial class GroupMembership : ObservableObject
     /// Cloud: the Entra kind ("Microsoft 365" / "Security" / …). Blank until resolved.</summary>
     [ObservableProperty] private string _kind;
 
+    /// <summary>Whether this row is as loaded, or added/removed on screen and waiting for Save.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(PendingLabel))]
+    private PendingMembership _pending;
+
+    public string PendingLabel => PendingMembershipText.Label(Pending);
+
     public override string ToString() => Name;
 }
 
+/// <summary>A row in a membership list that can be pending a change. Lets one helper serve two lists.</summary>
+public interface IPendingRow
+{
+    string Name { get; }
+    string Dn { get; }
+    PendingMembership Pending { get; }
+}
+
 /// <summary>An object that is a member of the selected group: its display <see cref="Name"/> and on-prem DN.</summary>
-public sealed record GroupMemberRow(string Name, string Dn);
+public sealed record GroupMemberRow(string Name, string Dn) : IPendingRow
+{
+    /// <summary>As loaded, or added/removed on screen and waiting for Save.</summary>
+    public PendingMembership Pending { get; init; }
+
+    public string PendingLabel => PendingMembershipText.Label(Pending);
+}
 
 /// <summary>A user who reports to the selected user (their <c>manager</c> points at it): display <see cref="Name"/> and DN.</summary>
-public sealed record DirectReportRow(string Name, string Dn);
+public sealed record DirectReportRow(string Name, string Dn) : IPendingRow
+{
+    /// <summary>As loaded, or added/removed on screen and waiting for Save.</summary>
+    public PendingMembership Pending { get; init; }
+
+    public string PendingLabel => PendingMembershipText.Label(Pending);
+}
 
 /// <summary>
 /// The editable attribute pane. Shows friendly-labelled fields (logic uses lDAPDisplayName),
@@ -405,6 +432,32 @@ public partial class EditPaneViewModel : ObservableObject
         finally { if (token == _loadToken) IsBusy = false; }
     }
 
+    /// <summary>
+    /// Re-reads the object and updates only what cannot be edited — system-maintained values such as the
+    /// account options, lockout time and password-last-set. Every edit, pending membership change and picker
+    /// choice stays exactly as it was.
+    /// </summary>
+    private async Task RefreshReadOnlyAsync()
+    {
+        if (_dn is not { } dn) return;
+        var token = _loadToken;
+        var attrs = await _directory.LoadObjectAsync(dn);
+        if (token != _loadToken || !string.Equals(_dn, dn, StringComparison.OrdinalIgnoreCase)) return; // pane moved on
+        var map = attrs.GroupBy(a => a.LdapName, StringComparer.OrdinalIgnoreCase)
+                       .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var field in General.Concat(Account).Concat(Address).Concat(Organization).Concat(Email))
+        {
+            if (!field.IsReadOnly) continue;
+            field.OriginalText = map.TryGetValue(field.LdapName, out var fresh) ? fresh.DisplaySummary : string.Empty;
+            field.EditText = field.OriginalText;
+        }
+        for (var i = 0; i < AllAttributes.Count; i++)
+            if (AllAttributes[i].IsReadOnly && map.TryGetValue(AllAttributes[i].LdapName, out var fresh))
+                AllAttributes[i] = fresh;
+        LoadLockoutStatus(map);
+    }
+
     [RelayCommand]
     private async Task ReloadAsync()
     {
@@ -416,10 +469,116 @@ public partial class EditPaneViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private async Task SaveAsync()
-    {
-        if (_dn is null) return;
+    private Task SaveAsync() => SaveCoreAsync(askFirst: true);
 
+    /// <summary>
+    /// Writes everything pending: property edits first, then membership changes.
+    /// </summary>
+    /// <param name="askFirst">
+    /// Show the confirmation. False only when the operator has just been shown the same list and chose Save
+    /// in the unsaved-changes prompt — asking twice in a row for one decision is noise.
+    /// </param>
+    /// <returns>True when everything pending was written.</returns>
+    /// <remarks>
+    /// <para>
+    /// The target and the membership changes are captured BEFORE the first await. A save takes seconds when
+    /// it includes cloud groups, and the pane's lists belong to whatever object is loaded at the time they
+    /// are read — reading them after an await could apply one user's pending groups to another.
+    /// </para>
+    /// <para>
+    /// If the property write fails, nothing else is attempted and every pending change stays on screen, so
+    /// the cause can be fixed and Save pressed again. Membership changes are written one at a time and a
+    /// failure is reported rather than stopping the rest — the same as when they were written immediately.
+    /// </para>
+    /// </remarks>
+    private async Task<bool> SaveCoreAsync(bool askFirst)
+    {
+        if (CaptureTarget() is not { } who) return false;
+
+        var attributeChanges = BuildAttributeChanges(explainRefusal: true);
+        if (attributeChanges is null) return false; // refused, and the reason already shown
+
+        var plan = PlanMembershipChanges();
+        var membershipLines = DescribeMembershipChanges(plan);
+        if (attributeChanges.Count == 0 && membershipLines.Count == 0)
+        {
+            if (askFirst) _dialogs.Alert("Save", "There are no changes to save.");
+            return true;
+        }
+
+        if (askFirst)
+        {
+            var lines = attributeChanges.Select(c => c.Describe()).Concat(membershipLines).Concat(MembershipNotes(plan));
+            if (!_dialogs.Confirm("Confirm changes",
+                    $"Apply {attributeChanges.Count + membershipLines.Count} change(s) to “{who.Title}”?", lines))
+                return false;
+        }
+
+        IsBusy = true;
+        try
+        {
+            if (attributeChanges.Count > 0)
+            {
+                try { await _directory.ApplyChangesAsync(who.Dn, attributeChanges); }
+                catch (Exception ex) { _onError(DirectoryService.Friendly(ex)); return false; }
+            }
+
+            var errors = new List<string>();
+            await ApplyGroupChangesAsync(who, plan, errors);
+            await ApplyMemberChangesAsync(who, plan, errors);
+            await ApplyDirectReportChangesAsync(who, plan, errors);
+
+            await ReloadAsync();
+            ObjectChanged?.Invoke();
+            if (errors.Count > 0)
+                _onError("Saved, but these changes did not complete:\n" + string.Join("\n", errors));
+            return errors.Count == 0;
+        }
+        finally { IsBusy = false; }
+    }
+
+    /// <summary>
+    /// Before this pane's object is replaced or its window closes: if anything is unsaved, asks whether to save
+    /// it, discard it, or stay.
+    /// </summary>
+    /// <returns>True to go ahead (saved, discarded, or nothing to lose); false to stay where you are.</returns>
+    /// <remarks>
+    /// A failed save returns false. The operator stays on the object and can see what did and did not go,
+    /// rather than being moved on with the failure behind them.
+    /// </remarks>
+    public async Task<bool> ConfirmLeaveAsync()
+    {
+        if (_dn is null || !HasUnsavedChanges()) return true;
+
+        var attributeChanges = BuildAttributeChanges(explainRefusal: false);
+        var plan = PlanMembershipChanges();
+        var lines = (attributeChanges?.Select(c => c.Describe())
+                     ?? new[] { "A group scope change that cannot be saved as it is" })
+            .Concat(DescribeMembershipChanges(plan))
+            .Concat(MembershipNotes(plan))
+            .ToList();
+
+        switch (_dialogs.AskUnsavedChanges("Unsaved changes", $"You have unsaved changes to “{Title}”.", lines))
+        {
+            case UnsavedChoice.Save:
+                return await SaveCoreAsync(askFirst: false);
+            case UnsavedChoice.Discard:
+                Clear();
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>The object currently loaded in the pane, or null while nothing is (including mid-load).</summary>
+    public string? CurrentDn => _dn;
+
+    /// <summary>
+    /// The property edits as changes to write, or null when one of them cannot be saved as it stands.
+    /// </summary>
+    /// <param name="explainRefusal">Say why when refusing. False when only describing the edits.</param>
+    private List<PendingChange>? BuildAttributeChanges(bool explainRefusal)
+    {
         // Collect changes keyed by attribute so the same attribute edited in two places is applied once.
         var byLdap = new Dictionary<string, PendingChange>(StringComparer.OrdinalIgnoreCase);
 
@@ -476,11 +635,12 @@ public partial class EditPaneViewModel : ObservableObject
             // than letting the DC return a bare constraint violation. Everything else is left to AD's own rules.
             if (GroupTypeClassifier.IsIllegalScopeChange(_originalGroupScope, GroupScope))
             {
+                if (!explainRefusal) return null;
                 _dialogs.Alert("Group scope",
                     $"Active Directory can't change a group directly from {GroupTypeClassifier.Label(_originalGroupScope)} " +
                     $"to {GroupTypeClassifier.Label(GroupScope)}.\n\n" +
                     "Change it to Universal and save, then change it again to the scope you want.");
-                return;
+                return null;
             }
             byLdap["groupType"] = new PendingChange
             {
@@ -510,23 +670,17 @@ public partial class EditPaneViewModel : ObservableObject
         foreach (var change in BuildPasswordOptionChanges())
             byLdap[change.LdapName] = change;
 
-        var changes = byLdap.Values.ToList();
-        if (changes.Count == 0)
-        {
-            _dialogs.Alert("Save", "There are no changes to save.");
-            return;
-        }
-
-        if (!_dialogs.Confirm("Confirm changes", $"Apply {changes.Count} change(s) to “{Title}”?", changes.Select(c => c.Describe())))
-            return;
-
-        await RunWrite(() => _directory.ApplyChangesAsync(_dn!, changes));
+        return byLdap.Values.ToList();
     }
 
-    /// <summary>True when the pane has pending edits that a reload (e.g. after a Move) would discard.
-    /// Mirrors the change-collection logic in <see cref="SaveAsync"/>.</summary>
-    private bool HasUnsavedChanges()
+    /// <summary>True when the pane has anything a reload would discard: property edits or pending membership
+    /// changes. Mirrors the change-collection logic in <see cref="SaveCoreAsync"/>.</summary>
+    public bool HasUnsavedChanges()
     {
+        if (MemberOf.Any(m => m.Pending != PendingMembership.None)
+            || Members.Any(m => m.Pending != PendingMembership.None)
+            || DirectReports.Any(r => r.Pending != PendingMembership.None))
+            return true;
         if (_editableFields.Any(f => !f.IsReadOnly && !f.IsDnValued && !f.IsMultiValued && f.IsDirty))
             return true;
         foreach (var attr in AllAttributes)
@@ -547,77 +701,240 @@ public partial class EditPaneViewModel : ObservableObject
         return false;
     }
 
+    // --- Membership changes are held until Save -------------------------------------------------------
+    //
+    // Add and Remove used to write at once and then reload the whole pane, which threw away any property edit
+    // not yet saved. They now mark rows, and Save writes everything together — as ADUC's Member Of tab waits
+    // for Apply. Removing a row still pending "Adding" just cancels the add; adding a group pending "Removing"
+    // cancels the removal; Reload discards all of it. No confirmation here: nothing is written until Save,
+    // which lists every change.
+
     [RelayCommand]
-    private async Task AddToGroupsAsync()
+    private void AddToGroups()
     {
-        if (CaptureTarget() is not { } who) return;
-        var picked = _dialogs.PickGroupsHybrid($"Add “{who.Title}” to groups");
+        if (_dn is null) return;
+        var picked = _dialogs.PickGroupsHybrid($"Add “{Title}” to groups");
         if (picked is null || picked.Count == 0) return;
 
-        var onPrem = picked.Where(g => g.Channel == GroupChannel.OnPremAd && g.Dn is not null).ToList();
-        var cloud = picked.Where(g => g.Channel == GroupChannel.EntraGraph && g.CloudId is not null).ToList();
-        var exchange = picked.Where(g => g.Channel == GroupChannel.ExchangeOnline).ToList();
-
-        if (!_dialogs.Confirm("Confirm", $"Add “{who.Title}” to {picked.Count} group(s)?",
-                picked.Select(g => $"{g.ChannelLabel}: {g.Name}")))
-            return;
-
-        IsBusy = true;
-        try
+        foreach (var g in picked)
         {
-            // On-prem groups via the existing membership write.
-            if (onPrem.Count > 0)
+            var row = g.Channel switch
             {
-                var change = new PendingChange { Op = ChangeOp.AddToGroups, Values = onPrem.Select(g => g.Dn!).ToList() };
-                await _directory.ApplyChangesAsync(_dn!, new[] { change });
-            }
+                GroupChannel.OnPremAd when g.Dn is not null =>
+                    new GroupMembership(g.Name, g.Dn, "On-prem", isCloud: false),
+                GroupChannel.EntraGraph when g.CloudId is not null =>
+                    new GroupMembership(g.Name, g.CloudId, "Cloud", isCloud: true),
+                GroupChannel.ExchangeOnline =>
+                    new GroupMembership(g.Name, g.CloudId ?? g.Smtp ?? g.Name, "Exchange", isCloud: true, isExchange: true, smtp: g.Smtp),
+                _ => null, // an on-prem pick with no DN, or a cloud pick with no id, has nothing to write to
+            };
+            if (row is null) continue;
 
-            // Cloud groups: resolve this object's Entra id, then add it to each.
-            var cloudErrors = new List<string>();
-            if (cloud.Count > 0)
+            var existing = MemberOf.FirstOrDefault(m => SameGroup(m, row));
+            if (existing is null)
             {
-                string? cloudId = null;
-                var lookupFailed = false;
-                // "No Entra twin" and "the lookup failed" are different facts and must not share a message:
-                // blaming sync for a throttled request sends the operator to the wrong place.
-                try { cloudId = await ResolveCloudObjectIdAsync(who); }
-                catch (Exception ex)
-                {
-                    lookupFailed = true;
-                    cloudErrors.Add("Couldn't check Entra ID for this object — cloud groups were skipped: " + GraphErrors.Friendly(ex));
-                }
-                if (!lookupFailed && cloudId is null)
-                    cloudErrors.Add("Couldn't find this object in Entra ID (it may not be synced yet) — cloud groups were skipped.");
-                else if (cloudId is not null)
-                    foreach (var g in cloud)
-                    {
-                        try { await _graph.AddMemberToGroupAsync(g.CloudId!, cloudId); }
-                        catch (Exception ex) { cloudErrors.Add($"{g.Name}: {GraphErrors.Friendly(ex)}"); }
-                    }
+                row.Pending = PendingMembership.Adding;
+                MemberOf.Add(row);
             }
-
-            // Exchange distribution / mail-enabled security groups: Graph can't add these, so use the EXO module.
-            // The member identity is this user's UPN (mailboxes/users only).
-            if (exchange.Count > 0)
-            {
-                if (string.IsNullOrWhiteSpace(who.CloudUpn))
-                    cloudErrors.Add("No mailbox identity for this object — Exchange distribution groups were skipped.");
-                else
-                    foreach (var g in exchange)
-                    {
-                        var groupId = !string.IsNullOrWhiteSpace(g.Smtp) ? g.Smtp! : (g.CloudId ?? g.Name);
-                        try { await _exchange.AddDistributionGroupMemberAsync(groupId, who.CloudUpn!); }
-                        catch (Exception ex) { cloudErrors.Add($"{g.Name} (Exchange): {ex.Message}"); }
-                    }
-            }
-
-            await ReloadAsync();
-            ObjectChanged?.Invoke();
-            if (cloudErrors.Count > 0)
-                _onError("Some cloud group additions didn't complete:\n" + string.Join("\n", cloudErrors));
+            else if (existing.Pending == PendingMembership.Removing)
+                existing.Pending = PendingMembership.None; // re-adding a group being removed takes the removal back
+            // otherwise already a member, or already being added
         }
-        catch (Exception ex) { _onError(DirectoryService.Friendly(ex)); }
-        finally { IsBusy = false; }
+    }
+
+    [RelayCommand]
+    private void RemoveFromGroup(System.Collections.IList? selected)
+    {
+        // The "Remove selected" button passes the list's SelectedItems, so several groups go at once.
+        var rows = selected?.Cast<GroupMembership>().ToList() ?? new List<GroupMembership>();
+        foreach (var row in rows)
+        {
+            if (row.Pending == PendingMembership.Adding) MemberOf.Remove(row); // never written: just drop it
+            else row.Pending = PendingMembership.Removing;
+        }
+    }
+
+    /// <summary>
+    /// Two rows name the same group. Exchange groups compare on SMTP when both carry one, because the picker
+    /// and the cloud read can identify one group by different ids; everything else by its DN or object id.
+    /// </summary>
+    private static bool SameGroup(GroupMembership a, GroupMembership b)
+    {
+        if (a.IsExchange && b.IsExchange && !string.IsNullOrWhiteSpace(a.Smtp) && !string.IsNullOrWhiteSpace(b.Smtp))
+            return string.Equals(a.Smtp, b.Smtp, StringComparison.OrdinalIgnoreCase);
+        return a.IsCloud == b.IsCloud && string.Equals(a.Dn, b.Dn, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Every pending membership change in the pane, copied out so a save can outlive the pane's lists.</summary>
+    private sealed record MembershipPlan(
+        IReadOnlyList<(GroupMembership Group, bool Add)> Groups,
+        IReadOnlyList<(GroupMemberRow Member, bool Add)> Members,
+        IReadOnlyList<(DirectReportRow Report, bool Add)> Reports);
+
+    private MembershipPlan PlanMembershipChanges()
+    {
+        static List<(T, bool)> Pending<T>(IEnumerable<T> rows, Func<T, PendingMembership> state) =>
+            rows.Where(r => state(r) == PendingMembership.Adding).Select(r => (r, true))
+                .Concat(rows.Where(r => state(r) == PendingMembership.Removing).Select(r => (r, false)))
+                .ToList();
+        return new MembershipPlan(
+            Pending(MemberOf, g => g.Pending),
+            Pending(Members, m => m.Pending),
+            Pending(DirectReports, r => r.Pending));
+    }
+
+    /// <summary>One line per pending membership change, for the Save confirmation and the unsaved prompt.</summary>
+    private static List<string> DescribeMembershipChanges(MembershipPlan plan)
+    {
+        var lines = new List<string>();
+        foreach (var (g, add) in plan.Groups)
+            lines.Add($"{(add ? "Add to group" : "Remove from group")}: {g.Name} ({g.Source})");
+        foreach (var (m, add) in plan.Members)
+            lines.Add($"{(add ? "Add member" : "Remove member")}: {m.Name}");
+        foreach (var (r, add) in plan.Reports)
+            lines.Add(add ? $"Add direct report: {r.Name} (sets their manager to this user)"
+                          : $"Remove direct report: {r.Name} (clears their manager)");
+        return lines;
+    }
+
+    private static IEnumerable<string> MembershipNotes(MembershipPlan plan)
+    {
+        if (plan.Groups.Any(x => x.Group.IsCloud))
+            yield return "Note: membership of a group synced from on-prem AD is mastered on-prem and can't be changed in the cloud.";
+    }
+
+    /// <summary>
+    /// Writes the pending Member Of changes, one group at a time so one failure cannot stop the rest. Each
+    /// group goes through the service that owns it: LDAP on-prem, Graph for Entra groups, the Exchange module
+    /// for distribution lists and mail-enabled security groups, which Graph cannot change.
+    /// </summary>
+    private async Task ApplyGroupChangesAsync(WriteTarget who, MembershipPlan plan, List<string> errors)
+    {
+        static string Verb(bool add) => add ? "Add to" : "Remove from";
+
+        foreach (var (g, add) in plan.Groups.Where(x => !x.Group.IsCloud))
+        {
+            try
+            {
+                var change = new PendingChange { Op = add ? ChangeOp.AddToGroups : ChangeOp.RemoveFromGroups, Values = { g.Dn } };
+                await _directory.ApplyChangesAsync(who.Dn, new[] { change });
+            }
+            catch (Exception ex) { errors.Add($"{Verb(add)} {g.Name}: {DirectoryService.Friendly(ex)}"); }
+        }
+
+        var cloud = plan.Groups.Where(x => x.Group.IsCloud && !x.Group.IsExchange).ToList();
+        if (cloud.Count > 0)
+        {
+            // "No Entra twin" and "the lookup failed" are different facts and must not share a message:
+            // blaming sync for a throttled request sends the operator to the wrong place.
+            string? cloudId = null;
+            var lookupFailed = false;
+            try { cloudId = await ResolveCloudObjectIdAsync(who); }
+            catch (Exception ex)
+            {
+                lookupFailed = true;
+                errors.Add("Couldn't check Entra ID for this object, so its cloud group changes were NOT made: " + GraphErrors.Friendly(ex));
+            }
+            if (!lookupFailed && cloudId is null)
+                errors.Add("Couldn't find this object in Entra ID (it may not be synced yet), so its cloud group changes were NOT made.");
+            else if (cloudId is not null)
+                foreach (var (g, add) in cloud)
+                {
+                    try
+                    {
+                        if (add) await _graph.AddMemberToGroupAsync(g.Dn, cloudId);
+                        else await _graph.RemoveMemberFromGroupAsync(g.Dn, cloudId);
+                    }
+                    catch (Exception ex) { errors.Add($"{Verb(add)} {g.Name}: {GraphErrors.Friendly(ex)}"); }
+                }
+        }
+
+        var exchange = plan.Groups.Where(x => x.Group.IsExchange).ToList();
+        if (exchange.Count > 0)
+        {
+            if (string.IsNullOrWhiteSpace(who.CloudUpn))
+                errors.Add("No mailbox identity for this object, so its Exchange distribution group changes were NOT made.");
+            else
+                foreach (var (g, add) in exchange)
+                {
+                    // The group is addressed by its primary SMTP where known — what the cmdlets expect.
+                    var hasSmtp = !string.IsNullOrWhiteSpace(g.Smtp);
+                    try
+                    {
+                        if (add) await _exchange.AddDistributionGroupMemberAsync(hasSmtp ? g.Smtp! : g.Dn, who.CloudUpn!);
+                        else await _exchange.RemoveDistributionGroupMemberAsync(hasSmtp ? g.Smtp! : g.Name, who.CloudUpn!);
+                    }
+                    catch (Exception ex) { errors.Add($"{Verb(add)} {g.Name} (Exchange): {ex.Message}"); }
+                }
+        }
+    }
+
+    /// <summary>Writes the pending changes to a group's own Members list.</summary>
+    private async Task ApplyMemberChangesAsync(WriteTarget who, MembershipPlan plan, List<string> errors)
+    {
+        var adds = plan.Members.Where(x => x.Add).Select(x => x.Member.Dn).ToList();
+        var removes = plan.Members.Where(x => !x.Add).Select(x => x.Member.Dn).ToList();
+        if (adds.Count > 0)
+        {
+            try { await _directory.AddMembersAsync(who.Dn, adds); }
+            catch (Exception ex) { errors.Add($"Add {adds.Count} member(s): {DirectoryService.Friendly(ex)}"); }
+        }
+        if (removes.Count > 0)
+        {
+            try { await _directory.RemoveMembersAsync(who.Dn, removes); }
+            catch (Exception ex) { errors.Add($"Remove {removes.Count} member(s): {DirectoryService.Friendly(ex)}"); }
+        }
+    }
+
+    /// <summary>
+    /// Writes the pending direct-report changes. A direct report is the other user's <c>manager</c>, so each
+    /// one is a write to THAT user — setting it to this user, or clearing it.
+    /// </summary>
+    private async Task ApplyDirectReportChangesAsync(WriteTarget who, MembershipPlan plan, List<string> errors)
+    {
+        foreach (var (r, add) in plan.Reports)
+        {
+            try
+            {
+                var change = add
+                    ? new PendingChange { Op = ChangeOp.Set, LdapName = "manager", FriendlyName = "Manager", Values = { who.Dn } }
+                    : new PendingChange { Op = ChangeOp.Clear, LdapName = "manager", FriendlyName = "Manager" };
+                await _directory.ApplyChangesAsync(r.Dn, new[] { change });
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"{(add ? "Add direct report" : "Remove direct report")} {r.Name}: {DirectoryService.Friendly(ex)}");
+            }
+        }
+    }
+
+    /// <summary>Adds a row as pending, or takes back its pending removal. Shared by Members and Direct reports.</summary>
+    private static void StagePendingAdd<T>(ObservableCollection<T> list, string dn, Func<T> create, Func<T, T> asLoaded)
+        where T : IPendingRow
+    {
+        var i = IndexOfDn(list, dn);
+        if (i < 0) list.Add(create());
+        else if (list[i].Pending == PendingMembership.Removing) list[i] = asLoaded(list[i]);
+    }
+
+    /// <summary>Marks rows as pending removal, or drops a row that was only ever pending addition.</summary>
+    private static void StagePendingRemove<T>(ObservableCollection<T> list, IEnumerable<T> rows, Func<T, T> asRemoving)
+        where T : IPendingRow
+    {
+        foreach (var row in rows.ToList())
+        {
+            var i = IndexOfDn(list, row.Dn);
+            if (i < 0) continue;
+            if (list[i].Pending == PendingMembership.Adding) list.RemoveAt(i);
+            else list[i] = asRemoving(list[i]);
+        }
+    }
+
+    private static int IndexOfDn<T>(IList<T> list, string dn) where T : IPendingRow
+    {
+        for (var i = 0; i < list.Count; i++)
+            if (string.Equals(list[i].Dn, dn, StringComparison.OrdinalIgnoreCase)) return i;
+        return -1;
     }
 
     /// <summary>
@@ -646,85 +963,6 @@ public partial class EditPaneViewModel : ObservableObject
         return null;
     }
 
-    [RelayCommand]
-    private async Task RemoveFromGroupAsync(System.Collections.IList? selected)
-    {
-        if (CaptureTarget() is not { } who) return;
-
-        // The "Remove selected" button passes the list's SelectedItems so several groups can be
-        // removed at once; fall back to nothing if the parameter is missing.
-        var groups = selected?.Cast<GroupMembership>().ToList() ?? new List<GroupMembership>();
-        if (groups.Count == 0) return;
-
-        var onPrem = groups.Where(g => !g.IsCloud).ToList();
-        var cloud = groups.Where(g => g.IsCloud && !g.IsExchange).ToList();   // Entra (Graph) groups
-        var exchange = groups.Where(g => g.IsExchange).ToList();               // distribution / mail-enabled security
-
-        var heading = groups.Count == 1
-            ? $"Remove “{who.Title}” from this group?"
-            : $"Remove “{who.Title}” from these {groups.Count} groups?";
-        var lines = groups.Select(g => $"{g.Source}: {g.Name}").ToList();
-        if (cloud.Count > 0)
-            lines.Add("Note: membership of a group synced from on-prem AD is mastered on-prem and can't be removed in the cloud.");
-        if (!_dialogs.Confirm("Confirm", heading, lines))
-            return;
-
-        IsBusy = true;
-        try
-        {
-            // On-prem groups via the existing membership write.
-            if (onPrem.Count > 0)
-            {
-                var change = new PendingChange { Op = ChangeOp.RemoveFromGroups, Values = onPrem.Select(g => g.Dn).ToList() };
-                await _directory.ApplyChangesAsync(who.Dn, new[] { change });
-            }
-
-            // Cloud (Graph) groups: resolve this object's Entra id, then remove it from each (the group id is the row's Dn).
-            var cloudErrors = new List<string>();
-            if (cloud.Count > 0)
-            {
-                string? cloudId = null;
-                var lookupFailed = false;
-                try { cloudId = await ResolveCloudObjectIdAsync(who); }
-                catch (Exception ex)
-                {
-                    lookupFailed = true;
-                    cloudErrors.Add("Couldn't check Entra ID for this object — cloud groups were NOT removed: " + GraphErrors.Friendly(ex));
-                }
-                if (!lookupFailed && cloudId is null)
-                    cloudErrors.Add("Couldn't find this object in Entra ID — cloud groups were skipped.");
-                else if (cloudId is not null)
-                    foreach (var g in cloud)
-                    {
-                        try { await _graph.RemoveMemberFromGroupAsync(g.Dn, cloudId); }
-                        catch (Exception ex) { cloudErrors.Add($"{g.Name}: {GraphErrors.Friendly(ex)}"); }
-                    }
-            }
-
-            // Exchange-managed groups (distribution / mail-enabled security): Graph can't modify these, so use the
-            // Exchange module. The member identity is this user's UPN; the group is addressed by its primary SMTP.
-            if (exchange.Count > 0)
-            {
-                if (string.IsNullOrWhiteSpace(who.CloudUpn))
-                    cloudErrors.Add("No mailbox identity for this object — Exchange distribution groups were skipped.");
-                else
-                    foreach (var g in exchange)
-                    {
-                        var groupId = !string.IsNullOrWhiteSpace(g.Smtp) ? g.Smtp! : g.Name;
-                        try { await _exchange.RemoveDistributionGroupMemberAsync(groupId, who.CloudUpn!); }
-                        catch (Exception ex) { cloudErrors.Add($"{g.Name} (Exchange): {ex.Message}"); }
-                    }
-            }
-
-            await ReloadAsync();
-            ObjectChanged?.Invoke();
-            if (cloudErrors.Count > 0)
-                _onError("Some cloud / Exchange group removals didn't complete:\n" + string.Join("\n", cloudErrors));
-        }
-        catch (Exception ex) { _onError(DirectoryService.Friendly(ex)); }
-        finally { IsBusy = false; }
-    }
-
     /// <summary>Copies this user's group memberships onto another user (the operator picks which in the dialog).
     /// The currently-open object is unchanged, so no reload is needed here.</summary>
     [RelayCommand]
@@ -744,12 +982,18 @@ public partial class EditPaneViewModel : ObservableObject
             var groups = await _graph.GetUserGroupsByUpnAsync(upn);
             if (token != _loadToken) return; // superseded (a reload of the same object counts)
             foreach (var g in groups.Where(g => !g.IsSynced))
-                if (MemberOf.All(m => !(m.IsCloud && string.Equals(m.Dn, g.Id, StringComparison.OrdinalIgnoreCase))))
-                    // Distribution lists / mail-enabled security groups are Exchange-managed — label their source
-                    // "Exchange" (matching the unified group picker), not the generic "Cloud", and carry the SMTP
-                    // so a removal from this tab can go through the Exchange module (Graph can't modify them).
-                    MemberOf.Add(new GroupMembership(g.DisplayName, g.Id, g.IsExchangeManaged ? "Exchange" : "Cloud",
-                        isCloud: true, kind: g.KindLabel, isExchange: g.IsExchangeManaged, smtp: g.Mail));
+            {
+                // Distribution lists / mail-enabled security groups are Exchange-managed — label their source
+                // "Exchange" (matching the unified group picker), not the generic "Cloud", and carry the SMTP
+                // so a removal from this tab can go through the Exchange module (Graph can't modify them).
+                var loaded = new GroupMembership(g.DisplayName, g.Id, g.IsExchangeManaged ? "Exchange" : "Cloud",
+                    isCloud: true, kind: g.KindLabel, isExchange: g.IsExchangeManaged, smtp: g.Mail);
+                var existing = MemberOf.FirstOrDefault(m => SameGroup(m, loaded));
+                if (existing is null) MemberOf.Add(loaded);
+                // This read is slower than the pane, so a group can be added on screen before it arrives. If the
+                // object turns out to be a member already, the pending add would only fail on Save — drop it.
+                else if (existing.Pending == PendingMembership.Adding) existing.Pending = PendingMembership.None;
+            }
         }
         catch (Exception ex)
         {
@@ -782,16 +1026,21 @@ public partial class EditPaneViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private async Task AddMembersAsync()
+    private void AddMembers()
     {
         if (_dn is null || !IsGroup) return;
         var picked = _dialogs.PickObjects("Add members to group", AdObjectType.Unknown, multiSelect: true);
         if (picked is null || picked.Count == 0) return;
+        foreach (var p in picked) StageMember(p.Name, p.DistinguishedName);
+    }
 
-        if (!_dialogs.Confirm("Confirm", $"Add these object(s) as members of “{Title}”?", picked.Select(p => p.Name)))
-            return;
-
-        await RunWrite(() => _directory.AddMembersAsync(_dn!, picked.Select(p => p.DistinguishedName).ToList()));
+    /// <summary>Adds a member as pending. A group cannot contain itself, so that pick is ignored.</summary>
+    private void StageMember(string name, string dn)
+    {
+        if (string.Equals(dn, _dn, StringComparison.OrdinalIgnoreCase)) return;
+        StagePendingAdd(Members, dn,
+            () => new GroupMemberRow(name, dn) { Pending = PendingMembership.Adding },
+            row => row with { Pending = PendingMembership.None });
     }
 
     /// <summary>
@@ -846,38 +1095,30 @@ public partial class EditPaneViewModel : ObservableObject
     /// Adds many members at once from a pasted list. Resolved against Active Directory, because that is what
     /// owns this group's membership — a cloud-only user has no distinguished name to add.
     /// </summary>
+    /// <remarks>
+    /// A member pending removal is offered again rather than skipped as "already a member": pasting them is
+    /// how that removal is taken back. The paste dialog has its own review step, and Save lists the result.
+    /// </remarks>
     [RelayCommand]
-    private async Task PasteMembersAsync()
+    private void PasteMembers()
     {
         if (_dn is null || !IsGroup) return;
 
         var resolved = _dialogs.PasteMembers(
-            $"Add members to “{Title}” from a list", MemberBackend.ActiveDirectory, Members.Select(m => m.Dn), _dn);
+            $"Add members to “{Title}” from a list", MemberBackend.ActiveDirectory,
+            Members.Where(m => m.Pending != PendingMembership.Removing).Select(m => m.Dn), _dn);
         if (resolved is null || resolved.Count == 0) return;
-
-        if (!_dialogs.Confirm("Confirm", $"Add {resolved.Count} member(s) to “{Title}”?",
-                resolved.Select(c => c.Label)))
-            return;
-
-        await RunWrite(() => _directory.AddMembersAsync(_dn!, resolved.Select(c => c.Identity).ToList()));
+        foreach (var c in resolved) StageMember(c.DisplayName, c.Identity);
     }
 
     [RelayCommand]
-    private async Task RemoveMemberAsync(object? selected)
+    private void RemoveMember(object? selected)
     {
-        if (_dn is null || !IsGroup) return;
+        if (!IsGroup) return;
         // The view passes its SelectedItems (sorting reorders the view, so a row index would be unreliable —
         // act on the selected row objects directly).
-        var rows = selected is System.Collections.IList list
-            ? list.Cast<GroupMemberRow>().ToList()
-            : new List<GroupMemberRow>();
-        if (rows.Count == 0) return;
-
-        var prompt = rows.Count == 1 ? "Remove this member from" : $"Remove these {rows.Count} members from";
-        if (!_dialogs.Confirm("Confirm", $"{prompt} “{Title}”?", rows.Select(r => r.Name).ToList()))
-            return;
-
-        await RunWrite(() => _directory.RemoveMembersAsync(_dn!, rows.Select(r => r.Dn).ToList()));
+        var rows = selected is System.Collections.IList list ? list.Cast<GroupMemberRow>().ToList() : new List<GroupMemberRow>();
+        StagePendingRemove(Members, rows, row => row with { Pending = PendingMembership.Removing });
     }
 
     [RelayCommand]
@@ -914,10 +1155,11 @@ public partial class EditPaneViewModel : ObservableObject
         var lines = new List<string> { "From: " + currentParent, "To:   " + target };
         if (HasUnsavedChanges())
         {
-            // The move reloads the object, so any pending attribute edits would be discarded — warn first.
+            // A move used to reload the object and DISCARD unsaved edits, with a warning here saying so. It no
+            // longer does: the object is the same object afterwards, only its DN has changed, so the edits stay
+            // and Save writes them to it where it now lives.
             lines.Add(string.Empty);
-            lines.Add("⚠ You have unsaved changes in the properties pane. Moving reloads the object, so those "
-                    + "edits will be DISCARDED. Cancel and click Save first if you want to keep them.");
+            lines.Add("Your unsaved changes stay in the properties pane. Click Save afterwards to apply them.");
         }
         if (!_dialogs.Confirm("Move object", $"Move “{Title}” to another OU?", lines))
             return;
@@ -926,7 +1168,9 @@ public partial class EditPaneViewModel : ObservableObject
         try
         {
             _dn = await _directory.MoveObjectAsync(_dn!, target); // DN changes after a move
-            await ReloadAsync();
+            Location = DirectoryService.ParentDn(_dn);
+            if (HasUnsavedChanges()) await RefreshReadOnlyAsync();
+            else await ReloadAsync();
             ObjectChanged?.Invoke();
         }
         catch (Exception ex) { _onError(DirectoryService.Friendly(ex)); }
@@ -967,10 +1211,9 @@ public partial class EditPaneViewModel : ObservableObject
         ManagedByDisplay = "(none — pending save)";
     }
 
-    /// <summary>Adds direct reports by setting each picked user's <c>manager</c> to this user. Applied immediately
-    /// (it writes other objects, not the pane's pending edits), then reloads to refresh the directReports list.</summary>
+    /// <summary>Adds direct reports. Held until Save, which sets each one's <c>manager</c> to this user.</summary>
     [RelayCommand]
-    private async Task AddDirectReportsAsync()
+    private void AddDirectReports()
     {
         if (_dn is null || !IsUser) return;
         var picked = _dialogs.PickObjects("Add direct reports", AdObjectType.User, multiSelect: true);
@@ -980,64 +1223,19 @@ public partial class EditPaneViewModel : ObservableObject
         var targets = picked.Where(p => !string.Equals(p.DistinguishedName, _dn, StringComparison.OrdinalIgnoreCase)).ToList();
         if (targets.Count == 0) { _dialogs.Alert("Add direct reports", "A user can't be their own direct report."); return; }
 
-        if (!_dialogs.Confirm("Confirm",
-                $"Set “{Title}” as the manager of {targets.Count} user(s)?", targets.Select(p => p.Name)))
-            return;
-
-        IsBusy = true;
-        try
-        {
-            var errors = new List<string>();
-            foreach (var t in targets)
-            {
-                try
-                {
-                    var change = new PendingChange { Op = ChangeOp.Set, LdapName = "manager", FriendlyName = "Manager", Values = { _dn! } };
-                    await _directory.ApplyChangesAsync(t.DistinguishedName, new[] { change });
-                }
-                catch (Exception ex) { errors.Add($"{t.Name}: {DirectoryService.Friendly(ex)}"); }
-            }
-            await ReloadAsync();
-            ObjectChanged?.Invoke();
-            if (errors.Count > 0) _onError("Some direct reports couldn't be set:\n" + string.Join("\n", errors));
-        }
-        catch (Exception ex) { _onError(DirectoryService.Friendly(ex)); }
-        finally { IsBusy = false; }
+        foreach (var t in targets)
+            StagePendingAdd(DirectReports, t.DistinguishedName,
+                () => new DirectReportRow(t.Name, t.DistinguishedName) { Pending = PendingMembership.Adding },
+                row => row with { Pending = PendingMembership.None });
     }
 
-    /// <summary>Removes the selected direct reports by clearing each one's <c>manager</c> (they had this user as manager).</summary>
+    /// <summary>Removes direct reports. Held until Save, which clears each one's <c>manager</c>.</summary>
     [RelayCommand]
-    private async Task RemoveDirectReportsAsync(System.Collections.IList? selected)
+    private void RemoveDirectReports(System.Collections.IList? selected)
     {
-        if (_dn is null || !IsUser) return;
+        if (!IsUser) return;
         var rows = selected?.Cast<DirectReportRow>().ToList() ?? new List<DirectReportRow>();
-        if (rows.Count == 0) return;
-
-        var heading = rows.Count == 1
-            ? $"Remove this direct report of “{Title}”? Their manager will be cleared."
-            : $"Remove these {rows.Count} direct reports of “{Title}”? Their manager will be cleared.";
-        if (!_dialogs.Confirm("Confirm", heading, rows.Select(r => r.Name)))
-            return;
-
-        IsBusy = true;
-        try
-        {
-            var errors = new List<string>();
-            foreach (var r in rows)
-            {
-                try
-                {
-                    var change = new PendingChange { Op = ChangeOp.Clear, LdapName = "manager", FriendlyName = "Manager" };
-                    await _directory.ApplyChangesAsync(r.Dn, new[] { change });
-                }
-                catch (Exception ex) { errors.Add($"{r.Name}: {DirectoryService.Friendly(ex)}"); }
-            }
-            await ReloadAsync();
-            ObjectChanged?.Invoke();
-            if (errors.Count > 0) _onError("Some direct reports couldn't be removed:\n" + string.Join("\n", errors));
-        }
-        catch (Exception ex) { _onError(DirectoryService.Friendly(ex)); }
-        finally { IsBusy = false; }
+        StagePendingRemove(DirectReports, rows, row => row with { Pending = PendingMembership.Removing });
     }
 
     [RelayCommand]
@@ -1084,13 +1282,23 @@ public partial class EditPaneViewModel : ObservableObject
         await RunWrite(() => _directory.UnlockAccountAsync(_dn!));
     }
 
+    /// <summary>
+    /// For the header actions that write at once — Enable, Disable, Unlock, Reset password. Writes, then brings
+    /// the pane up to date without losing anything unsaved.
+    /// </summary>
+    /// <remarks>
+    /// With nothing unsaved it reloads, as it always did. With edits pending it refreshes only the read-only
+    /// values: these actions change nothing an operator can edit — the account options, the lockout time, the
+    /// password-last-set — so that is all that can be out of date, and a full reload would throw the edits away.
+    /// </remarks>
     private async Task RunWrite(Func<Task> write)
     {
         IsBusy = true;
         try
         {
             await write();
-            await ReloadAsync();
+            if (HasUnsavedChanges()) await RefreshReadOnlyAsync();
+            else await ReloadAsync();
             ObjectChanged?.Invoke();
         }
         catch (Exception ex)

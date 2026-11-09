@@ -1,0 +1,32 @@
+<Window x:Class="UnifiedDirectoryManager.Views.Dialogs.UnsavedChangesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Unsaved changes" Height="420" Width="560"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <TextBlock x:Name="Heading" Grid.Row="0" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,0,0,8" />
+        <Border Grid.Row="1" BorderBrush="#DDD" BorderThickness="1" Padding="8">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <ItemsControl x:Name="Lines">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,1" />
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+        </Border>
+        <!-- Save is the default, so Enter keeps your work. Esc (and the title-bar close) is Cancel, which
+             also keeps it: the only way to lose the changes is to choose Discard on purpose. -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Save" IsDefault="True" Click="OnSave" MinWidth="90" />
+            <Button Content="Discard" Click="OnDiscard" MinWidth="90" Margin="8,0,0,0" />
+            <Button Content="Cancel" IsCancel="True" MinWidth="90" Margin="8,0,0,0" />
+        </StackPanel>
+    </Grid>
+</Window>
