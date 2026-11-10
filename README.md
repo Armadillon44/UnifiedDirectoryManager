@@ -8,6 +8,17 @@ the things ADUC never had: reusable **new-user templates**, GUI **advanced searc
 Built with **WPF on .NET 10**. Ships as a **self-contained, single-file `.exe`** for **win-x64** and
 **win-arm64** — no .NET install required on the target machine (Windows 10 / 11).
 
+> **v2.3.9 — group changes wait for Save, and you can see when it is working.**
+>
+> Adding or removing groups, members or direct reports in the properties pane no longer writes at once
+> and reloads the pane, which used to throw away unsaved property edits. The changes are marked
+> *Adding (unsaved)* or *Removing (unsaved)* and written together on **Save**, as ADUC's Apply does.
+> Clicking another object, or closing an editor window or the app, with unsaved changes now asks
+> **Save / Discard / Cancel** instead of discarding them silently. While the pane saves, loads, or runs
+> Enable, Disable, Unlock, Reset password or Move, a moving bar says what it is doing, for example
+> *Removing from cloud group Sales-Team… (2 of 5)*, and **Member Of** says when cloud groups are still
+> loading. Cloud and Exchange changes take seconds each, and with nothing on screen the app looked hung.
+>
 > **v2.3.8 — Ctrl+C copies any list.**
 >
 > Click in any list of users or groups — a group’s members, a user’s groups, direct reports, the object
