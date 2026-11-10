@@ -381,6 +381,16 @@ pending. Cancel — or Esc — keeps you where you were. Browsing to another OU,
 list, leaves the edits in the pane rather than asking, because nothing is lost by keeping them there.
 Moving, or running a scenario on, the object being edited asks first too.
 
+*(2.3.9.)* **You can see when it is working.** While the pane saves, loads, or runs Enable, Disable, Unlock,
+Reset password or Move, a moving bar appears under the buttons saying what it is doing, for example
+"Removing from cloud group Sales-Team… (2 of 5)". Cloud and Exchange changes take a few seconds each, and
+with nothing on screen the app looked hung. Until the work finishes the pane is disabled and shows a busy
+cursor, because a save reloads the object when it is done and anything typed meanwhile would be replaced.
+**Member Of** shows "Loading cloud groups…" while a user's cloud groups are still being read, because until
+then the list is missing them. Clicking another object while a save is still writing waits for the save to
+finish instead of asking about changes that are already on their way. The empty pane now says "Select an
+object…" when nothing is selected and "Loading…" while an object loads; the first hint had never displayed.
+
 - **Attribute Editor** — single-valued attributes edit inline; multi-valued ones (e.g.
   `proxyAddresses`) open a values editor via **Edit…**. Read-only and system attributes are disabled.
 - **Country picker** — the Address tab has a searchable dropdown of the full ISO 3166-1 list.

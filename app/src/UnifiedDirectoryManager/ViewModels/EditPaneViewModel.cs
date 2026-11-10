@@ -133,7 +133,23 @@ public partial class EditPaneViewModel : ObservableObject
     [ObservableProperty] private bool _isUser;
     [ObservableProperty] private bool _isComputer;
     [ObservableProperty] private bool _isGroup;
+    /// <summary>
+    /// True while the pane is reading or writing. The view shows a moving bar with <see cref="BusyMessage"/>,
+    /// disables the pane and shows a busy cursor. Cloud and Exchange calls take seconds; without this the
+    /// pane looked hung.
+    /// </summary>
     [ObservableProperty] private bool _isBusy;
+    /// <summary>What the pane is doing while <see cref="IsBusy"/>: "Removing from cloud group Sales… (2 of 5)".</summary>
+    [ObservableProperty] private string _busyMessage = string.Empty;
+    /// <summary>
+    /// True while a user's cloud groups are still being read into Member Of. That read runs after the pane is
+    /// shown and can take seconds, so until it finishes the list is missing its cloud groups. This flag tells
+    /// the operator so.
+    /// </summary>
+    [ObservableProperty] private bool _isLoadingCloudGroups;
+    /// <summary>The save now writing, if any. See <see cref="ConfirmLeaveAsync"/>.</summary>
+    private Task<bool>? _saving;
+    private int _stepIndex, _stepCount;
     /// <summary>The objects that are members of the selected group (display name + DN; sortable in the UI).</summary>
     public ObservableCollection<GroupMemberRow> Members { get; } = new();
     /// <summary>Users who report to the selected user (the <c>directReports</c> back-link of <c>manager</c>).</summary>
@@ -229,6 +245,10 @@ public partial class EditPaneViewModel : ObservableObject
         _loadToken++; // cancel any in-flight load: it must not repopulate the pane we are clearing
         _dn = null;
         HasObject = false;
+        IsLoadingCloudGroups = false;
+        // The cancelled load will not let go of IsBusy itself: its finally only does that while it is still the
+        // current load, and the new token just made it stale. Without this the empty pane says "Loading…" forever.
+        IsBusy = false;
         Title = "No object selected";
         foreach (var c in new[] { General, Account, Address, Organization, Email }) c.Clear();
         ProxyAddresses.Clear();
@@ -271,6 +291,8 @@ public partial class EditPaneViewModel : ObservableObject
         IsUser = type == AdObjectType.User;
         IsComputer = type == AdObjectType.Computer;
         IsGroup = type == AdObjectType.Group;
+        IsLoadingCloudGroups = false; // a superseded load's cloud read must not leave this showing
+        BusyMessage = "Loading…";
         IsBusy = true;
         try
         {
@@ -415,7 +437,10 @@ public partial class EditPaneViewModel : ObservableObject
 
             // Merge the user's Entra (cloud) group memberships into the Member Of tab (best-effort, when signed in).
             if (IsUser && _graph.IsSignedIn && !string.IsNullOrWhiteSpace(_cloudUpn))
+            {
+                IsLoadingCloudGroups = true;
                 _ = LoadCloudMembershipsAsync(_cloudUpn!, token);
+            }
 
             // Classify the on-prem groups (Security/Distribution + scope) for the Member Of "Type" column (best-effort).
             if (MemberOf.Any(m => !m.IsCloud))
@@ -426,8 +451,8 @@ public partial class EditPaneViewModel : ObservableObject
         catch (Exception ex)
         {
             if (token != _loadToken) return; // superseded: its failure is not this pane's problem
+            Clear(); // first, so the error is not shown over a pane still saying "Loading…"
             _onError(DirectoryService.Friendly(ex));
-            Clear();
         }
         finally { if (token == _loadToken) IsBusy = false; }
     }
@@ -514,11 +539,30 @@ public partial class EditPaneViewModel : ObservableObject
                 return false;
         }
 
+        var writing = WriteAsync(who, attributeChanges, plan);
+        _saving = writing;
+        return await writing;
+    }
+
+    /// <summary>
+    /// The writing half of a save, once the operator has confirmed it. The busy message names each change as it
+    /// goes, with a count when there is more than one.
+    /// </summary>
+    private async Task<bool> WriteAsync(WriteTarget who, List<PendingChange> attributeChanges, MembershipPlan plan)
+    {
+        _stepIndex = 0;
+        _stepCount = (attributeChanges.Count > 0 ? 1 : 0)
+                     + plan.Groups.Count
+                     + (plan.Members.Any(x => x.Add) ? 1 : 0)   // members go in one write per direction
+                     + (plan.Members.Any(x => !x.Add) ? 1 : 0)
+                     + plan.Reports.Count;
+        BusyMessage = "Saving…";
         IsBusy = true;
         try
         {
             if (attributeChanges.Count > 0)
             {
+                Step("Saving properties");
                 try { await _directory.ApplyChangesAsync(who.Dn, attributeChanges); }
                 catch (Exception ex) { _onError(DirectoryService.Friendly(ex)); return false; }
             }
@@ -537,6 +581,13 @@ public partial class EditPaneViewModel : ObservableObject
         finally { IsBusy = false; }
     }
 
+    /// <summary>Moves the busy message on to a save's next change: "Removing from cloud group Sales… (2 of 5)".</summary>
+    private void Step(string doing) =>
+        BusyMessage = _stepCount > 1 ? $"{doing}… ({++_stepIndex} of {_stepCount})" : $"{doing}…";
+
+    /// <summary>Counts changes a save had to give up on unattempted, so the next one shows its real place.</summary>
+    private void SkipSteps(int count) => _stepIndex += count;
+
     /// <summary>
     /// Before this pane's object is replaced or its window closes: if anything is unsaved, asks whether to save
     /// it, discard it, or stay.
@@ -548,6 +599,15 @@ public partial class EditPaneViewModel : ObservableObject
     /// </remarks>
     public async Task<bool> ConfirmLeaveAsync()
     {
+        // A save that is still writing is not unsaved work. Its rows stay marked until it finishes, so asking
+        // now would list changes already on their way, and Save in that prompt would write them a second time.
+        // Let it finish, then ask about whatever it left behind.
+        if (_saving is { IsCompleted: false } saving)
+        {
+            try { await saving; }
+            catch { /* the save reports its own failure */ }
+        }
+
         if (_dn is null || !HasUnsavedChanges()) return true;
 
         var attributeChanges = BuildAttributeChanges(explainRefusal: false);
@@ -811,9 +871,11 @@ public partial class EditPaneViewModel : ObservableObject
     private async Task ApplyGroupChangesAsync(WriteTarget who, MembershipPlan plan, List<string> errors)
     {
         static string Verb(bool add) => add ? "Add to" : "Remove from";
+        static string Doing(bool add) => add ? "Adding to" : "Removing from";
 
         foreach (var (g, add) in plan.Groups.Where(x => !x.Group.IsCloud))
         {
+            Step($"{Doing(add)} group {g.Name}");
             try
             {
                 var change = new PendingChange { Op = add ? ChangeOp.AddToGroups : ChangeOp.RemoveFromGroups, Values = { g.Dn } };
@@ -829,6 +891,7 @@ public partial class EditPaneViewModel : ObservableObject
             // blaming sync for a throttled request sends the operator to the wrong place.
             string? cloudId = null;
             var lookupFailed = false;
+            BusyMessage = $"Looking up “{who.Title}” in Entra ID…";
             try { cloudId = await ResolveCloudObjectIdAsync(who); }
             catch (Exception ex)
             {
@@ -837,9 +900,12 @@ public partial class EditPaneViewModel : ObservableObject
             }
             if (!lookupFailed && cloudId is null)
                 errors.Add("Couldn't find this object in Entra ID (it may not be synced yet), so its cloud group changes were NOT made.");
-            else if (cloudId is not null)
+            if (cloudId is null)
+                SkipSteps(cloud.Count);
+            else
                 foreach (var (g, add) in cloud)
                 {
+                    Step($"{Doing(add)} cloud group {g.Name}");
                     try
                     {
                         if (add) await _graph.AddMemberToGroupAsync(g.Dn, cloudId);
@@ -853,10 +919,14 @@ public partial class EditPaneViewModel : ObservableObject
         if (exchange.Count > 0)
         {
             if (string.IsNullOrWhiteSpace(who.CloudUpn))
+            {
                 errors.Add("No mailbox identity for this object, so its Exchange distribution group changes were NOT made.");
+                SkipSteps(exchange.Count);
+            }
             else
                 foreach (var (g, add) in exchange)
                 {
+                    Step($"{Doing(add)} Exchange group {g.Name}");
                     // The group is addressed by its primary SMTP where known — what the cmdlets expect.
                     var hasSmtp = !string.IsNullOrWhiteSpace(g.Smtp);
                     try
@@ -874,13 +944,16 @@ public partial class EditPaneViewModel : ObservableObject
     {
         var adds = plan.Members.Where(x => x.Add).Select(x => x.Member.Dn).ToList();
         var removes = plan.Members.Where(x => !x.Add).Select(x => x.Member.Dn).ToList();
+        static string Count(int n) => n == 1 ? "1 member" : $"{n} members";
         if (adds.Count > 0)
         {
+            Step($"Adding {Count(adds.Count)}");
             try { await _directory.AddMembersAsync(who.Dn, adds); }
             catch (Exception ex) { errors.Add($"Add {adds.Count} member(s): {DirectoryService.Friendly(ex)}"); }
         }
         if (removes.Count > 0)
         {
+            Step($"Removing {Count(removes.Count)}");
             try { await _directory.RemoveMembersAsync(who.Dn, removes); }
             catch (Exception ex) { errors.Add($"Remove {removes.Count} member(s): {DirectoryService.Friendly(ex)}"); }
         }
@@ -894,6 +967,7 @@ public partial class EditPaneViewModel : ObservableObject
     {
         foreach (var (r, add) in plan.Reports)
         {
+            Step(add ? $"Adding direct report {r.Name}" : $"Removing direct report {r.Name}");
             try
             {
                 var change = add
@@ -1004,6 +1078,12 @@ public partial class EditPaneViewModel : ObservableObject
                 _onError("Cloud group memberships could not be read, so any cloud groups are MISSING from Member Of: "
                          + GraphErrors.Friendly(ex));
             AppLog.Instance.Warn("Could not load cloud group memberships: " + ex.Message);
+        }
+        finally
+        {
+            // Only the current load's read may clear it. A superseded read finishing must not report the
+            // current one done.
+            if (token == _loadToken) IsLoadingCloudGroups = false;
         }
     }
 
@@ -1164,11 +1244,13 @@ public partial class EditPaneViewModel : ObservableObject
         if (!_dialogs.Confirm("Move object", $"Move “{Title}” to another OU?", lines))
             return;
 
+        BusyMessage = $"Moving to {NameResolver.RdnFallback(target)}…";
         IsBusy = true;
         try
         {
             _dn = await _directory.MoveObjectAsync(_dn!, target); // DN changes after a move
             Location = DirectoryService.ParentDn(_dn);
+            BusyMessage = "Refreshing…";
             if (HasUnsavedChanges()) await RefreshReadOnlyAsync();
             else await ReloadAsync();
             ObjectChanged?.Invoke();
@@ -1251,7 +1333,8 @@ public partial class EditPaneViewModel : ObservableObject
         if (!_dialogs.Confirm(verb, $"{verb} account “{Title}”?", new[] { $"{verb} the account" }))
             return;
         var change = new PendingChange { Op = enabled ? ChangeOp.Enable : ChangeOp.Disable };
-        await RunWrite(() => _directory.ApplyChangesAsync(_dn!, new[] { change }));
+        await RunWrite(enabled ? "Enabling the account" : "Disabling the account",
+            () => _directory.ApplyChangesAsync(_dn!, new[] { change }));
     }
 
     [RelayCommand]
@@ -1269,7 +1352,7 @@ public partial class EditPaneViewModel : ObservableObject
         if (!_dialogs.Confirm("Reset password", $"Reset the password for “{Title}”?", lines))
             return;
 
-        await RunWrite(() => _directory.ResetPasswordAsync(
+        await RunWrite("Resetting the password", () => _directory.ResetPasswordAsync(
             _dn!, request.Password, request.MustChangeAtNextLogon, request.Unlock));
     }
 
@@ -1279,7 +1362,7 @@ public partial class EditPaneViewModel : ObservableObject
         if (_dn is null || !IsUser) return;
         if (!_dialogs.Confirm("Unlock", $"Unlock account “{Title}”?", new[] { "Unlock the account" }))
             return;
-        await RunWrite(() => _directory.UnlockAccountAsync(_dn!));
+        await RunWrite("Unlocking the account", () => _directory.UnlockAccountAsync(_dn!));
     }
 
     /// <summary>
@@ -1291,12 +1374,14 @@ public partial class EditPaneViewModel : ObservableObject
     /// values: these actions change nothing an operator can edit — the account options, the lockout time, the
     /// password-last-set — so that is all that can be out of date, and a full reload would throw the edits away.
     /// </remarks>
-    private async Task RunWrite(Func<Task> write)
+    private async Task RunWrite(string doing, Func<Task> write)
     {
+        BusyMessage = doing + "…";
         IsBusy = true;
         try
         {
             await write();
+            BusyMessage = "Refreshing…";
             if (HasUnsavedChanges()) await RefreshReadOnlyAsync();
             else await ReloadAsync();
             ObjectChanged?.Invoke();

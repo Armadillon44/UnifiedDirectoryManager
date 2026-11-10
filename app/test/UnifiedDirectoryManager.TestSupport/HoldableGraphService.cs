@@ -77,4 +77,46 @@ public sealed class HoldableGraphService : InertGraphService
 
     public override Task<IReadOnlyList<CloudMember>> GetGroupMembersAsync(string groupId, CancellationToken cancellationToken = default) =>
         Park(_memberWaiters, (IReadOnlyList<CloudMember>)GroupMembers.ToList());
+
+    // --- a user's own cloud groups, as the edit pane's Member Of reads them -----------------------------
+
+    private readonly List<TaskCompletionSource<IReadOnlyList<CloudGroup>>> _groupWaiters = new();
+
+    /// <summary>
+    /// When true, <see cref="GetUserGroupsByUpnAsync"/> parks until <see cref="ReleaseGroups"/>. This is separate
+    /// from <see cref="Hold"/>, so the pane's cloud-group read can be held while its other reads answer.
+    /// </summary>
+    public bool HoldGroups { get; set; }
+
+    /// <summary>What a released group read hands back.</summary>
+    public List<CloudGroup> UserGroups { get; } = new();
+
+    public int PendingGroups => _groupWaiters.Count;
+
+    /// <summary>Completes the OLDEST parked group read.</summary>
+    public bool ReleaseGroups() => Release(_groupWaiters, (IReadOnlyList<CloudGroup>)UserGroups.ToList());
+
+    public override Task<IReadOnlyList<CloudGroup>> GetUserGroupsByUpnAsync(string upnOrId, CancellationToken cancellationToken = default)
+    {
+        IReadOnlyList<CloudGroup> ready = UserGroups.ToList();
+        if (!HoldGroups) return Task.FromResult(ready);
+        var tcs = new TaskCompletionSource<IReadOnlyList<CloudGroup>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _groupWaiters.Add(tcs);
+        return tcs.Task;
+    }
+
+    /// <summary>Every cloud group add or remove, in order: (add?, group id, member object id).</summary>
+    public List<(bool Add, string GroupId, string MemberId)> GroupWrites { get; } = new();
+
+    public override Task AddMemberToGroupAsync(string groupId, string memberObjectId, CancellationToken cancellationToken = default)
+    {
+        GroupWrites.Add((true, groupId, memberObjectId));
+        return Task.CompletedTask;
+    }
+
+    public override Task RemoveMemberFromGroupAsync(string groupId, string memberObjectId, CancellationToken cancellationToken = default)
+    {
+        GroupWrites.Add((false, groupId, memberObjectId));
+        return Task.CompletedTask;
+    }
 }

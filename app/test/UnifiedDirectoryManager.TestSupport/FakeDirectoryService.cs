@@ -90,13 +90,45 @@ public sealed class FakeDirectoryService : IDirectoryService
         Writes.Add((distinguishedName, changes));
         // A write naming a DN in FailWritesFor -- as its target, or as a group it adds to or removes from --
         // fails, so a test can check that one failed change does not stop the rest.
+        Exception? refused = null;
         foreach (var dn in changes.SelectMany(c => c.Values).Prepend(distinguishedName))
-            if (FailWritesFor.Contains(dn)) throw new InvalidOperationException($"the directory refused {dn}");
+            if (FailWritesFor.Contains(dn)) { refused = new InvalidOperationException($"the directory refused {dn}"); break; }
+
+        if (HoldWrites)
+        {
+            var parked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pendingWrites.Add((parked, refused));
+            return parked.Task;
+        }
+        if (refused is not null) throw refused;
         return Task.CompletedTask;
     }
 
     /// <summary>DNs whose writes fail. See <see cref="ApplyChangesAsync"/>.</summary>
     public HashSet<string> FailWritesFor { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly List<(TaskCompletionSource Done, Exception? Refused)> _pendingWrites = new();
+
+    /// <summary>
+    /// When true, an <see cref="ApplyChangesAsync"/> write parks until <see cref="ReleaseWrite"/>. That lets a test
+    /// act while a Save is still writing, as an operator can. The write is still recorded at once, and on release
+    /// it still fails if <see cref="FailWritesFor"/> names it.
+    /// </summary>
+    public bool HoldWrites { get; set; }
+
+    /// <summary>How many writes are parked right now.</summary>
+    public int PendingWrites => _pendingWrites.Count;
+
+    /// <summary>Completes the oldest parked write. Returns false when none is waiting.</summary>
+    public bool ReleaseWrite()
+    {
+        if (_pendingWrites.Count == 0) return false;
+        var (done, refused) = _pendingWrites[0];
+        _pendingWrites.RemoveAt(0);
+        if (refused is null) done.SetResult();
+        else done.SetException(refused);
+        return true;
+    }
 
     /// <summary>Every member add or remove on a group, in order: (add?, group DN, member DNs).</summary>
     public List<(bool Add, string GroupDn, IReadOnlyList<string> MemberDns)> MemberWrites { get; } = new();

@@ -48,13 +48,100 @@
                 </DataTrigger>
             </Style.Triggers>
         </Style>
+
+        <!-- "Working on it": a highlight that sweeps along the bar, for work with no known length. The app's own
+             ProgressBar template shows a solid, unmoving bar when IsIndeterminate is set, so this is its own
+             template. The sweep is a gradient mask moved in relative units, so it crosses any width. It runs only
+             while the bar is visible: a running animation makes WPF redraw constantly, even behind a hidden bar.
+             Background is the track, Foreground the sweep. -->
+        <Style x:Key="BusyBar" TargetType="ProgressBar">
+            <Setter Property="Height" Value="4" />
+            <Setter Property="IsIndeterminate" Value="True" />
+            <Setter Property="Background" Value="#E6E6E6" />
+            <Setter Property="Foreground" Value="{StaticResource Accent}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Border Background="{TemplateBinding Background}" CornerRadius="2" ClipToBounds="True"
+                                SnapsToDevicePixels="True">
+                            <Rectangle x:Name="Sweep" Fill="{TemplateBinding Foreground}">
+                                <Rectangle.OpacityMask>
+                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                        <LinearGradientBrush.RelativeTransform>
+                                            <TranslateTransform X="-1" />
+                                        </LinearGradientBrush.RelativeTransform>
+                                        <GradientStop Color="Transparent" Offset="0.15" />
+                                        <GradientStop Color="Black" Offset="0.5" />
+                                        <GradientStop Color="Transparent" Offset="0.85" />
+                                    </LinearGradientBrush>
+                                </Rectangle.OpacityMask>
+                            </Rectangle>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsVisible" Value="True">
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard x:Name="SweepRun">
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Sweep"
+                                                             Storyboard.TargetProperty="(UIElement.OpacityMask).(Brush.RelativeTransform).(TranslateTransform.X)"
+                                                             From="-1" To="1" Duration="0:0:1.4" RepeatBehavior="Forever" />
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.EnterActions>
+                                <Trigger.ExitActions>
+                                    <StopStoryboard BeginStoryboardName="SweepRun" />
+                                </Trigger.ExitActions>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </UserControl.Resources>
 
-    <Grid>
-        <!-- Empty state -->
-        <TextBlock Text="Select an object to view and edit its attributes."
-                   Foreground="#999" HorizontalAlignment="Center" VerticalAlignment="Center"
-                   Visibility="{Binding HasObject, Converter={StaticResource BoolToVis}}" />
+    <!-- While the pane is busy everything in it is disabled (see the header and the tabs), so a wait cursor is
+         forced across the whole pane. Disabled elements pass the cursor query up to this enabled root. -->
+    <Grid x:Name="PaneRoot">
+        <Grid.Style>
+            <Style TargetType="Grid">
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                        <Setter Property="Cursor" Value="Wait" />
+                        <Setter Property="ForceCursor" Value="True" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+        </Grid.Style>
+
+        <!-- Empty state: nothing selected, or the object still loading (a load blanks the pane on purpose; see
+             LoadAsync). This was bound to HasObject without inverting it from 1.2.0 until 2.3.9, so the hint
+             showed only behind a loaded object, and so was never seen. -->
+        <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="300" Margin="16">
+            <StackPanel.Style>
+                <Style TargetType="StackPanel">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding HasObject}" Value="False">
+                            <Setter Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </StackPanel.Style>
+            <TextBlock x:Name="EmptyStateText" Foreground="#999" HorizontalAlignment="Center" TextWrapping="Wrap">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Text" Value="Select an object to view and edit its attributes." />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                                <Setter Property="Text" Value="{Binding BusyMessage}" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+            <ProgressBar Style="{StaticResource BusyBar}" Width="160" Margin="0,8,0,0"
+                         Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
+        </StackPanel>
 
         <DockPanel Visibility="{Binding HasObject, Converter={StaticResource BoolToVis}}">
             <!-- Header -->
@@ -63,7 +150,15 @@
                     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal">
                         <TextBlock Text="{Binding Title}" FontWeight="SemiBold" FontSize="14" Foreground="White" VerticalAlignment="Center" />
                     </StackPanel>
-                    <WrapPanel Margin="0,6,0,0">
+                    <!-- What the pane is doing, while it does it. Cloud and Exchange writes take seconds each. -->
+                    <StackPanel x:Name="BusyPanel" DockPanel.Dock="Bottom" Margin="0,8,0,0"
+                                Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
+                        <ProgressBar Style="{StaticResource BusyBar}" Background="#40FFFFFF" Foreground="White" />
+                        <TextBlock x:Name="BusyText" Text="{Binding BusyMessage}" Foreground="White" Margin="0,4,0,0"
+                                   TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                    <WrapPanel x:Name="HeaderButtons" Margin="0,6,0,0"
+                               IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}">
                         <Button Content="Save" Command="{Binding SaveCommand}" />
                         <Button Content="Reload" Command="{Binding ReloadCommand}" />
                         <Button Content="Enable" Command="{Binding EnableCommand}"
@@ -78,7 +173,10 @@
                 </DockPanel>
             </Border>
 
-            <TabControl Margin="6">
+            <!-- Disabled while busy: a save reloads the object when it finishes, so anything typed meanwhile would
+                 be silently replaced. -->
+            <TabControl x:Name="ObjectTabs" Margin="6"
+                        IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}">
                 <TabItem Header="General">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="6">
@@ -338,6 +436,12 @@
                     <DockPanel Margin="6">
                         <TextBlock DockPanel.Dock="Top" Foreground="#666" Margin="0,0,0,4" TextWrapping="Wrap"
                                    Text="Groups this object belongs to — on-prem AD and Entra ID together (Ctrl/Shift-click to select several; Ctrl+C or right-click ▸ Copy to copy the list). Additions and removals are applied when you click Save. Membership of a group synced from on-prem AD is mastered on-prem." />
+                        <!-- The cloud groups arrive seconds after the rest; until then the list is short. -->
+                        <StackPanel x:Name="CloudGroupsLoading" DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,4"
+                                    Visibility="{Binding IsLoadingCloudGroups, Converter={StaticResource BoolToVis}}">
+                            <ProgressBar Style="{StaticResource BusyBar}" Width="80" VerticalAlignment="Center" />
+                            <TextBlock Text="Loading cloud groups…" Foreground="#666" Margin="8,0,0,0" VerticalAlignment="Center" />
+                        </StackPanel>
                         <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
                             <Button Content="Add to groups…" Command="{Binding AddToGroupsCommand}" />
                             <Button Content="Remove selected" Command="{Binding RemoveFromGroupCommand}"
