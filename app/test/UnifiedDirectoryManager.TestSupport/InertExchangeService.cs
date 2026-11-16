@@ -40,6 +40,10 @@ public class InertExchangeService : IExchangeService
     public virtual Task<IReadOnlyList<CloudPropertySection>> GetDistributionGroupDetailAsync(string identity, CancellationToken cancellationToken = default) => throw Unused();
     public virtual Task<DlRecipientList> GetDistributionGroupRecipientsAsync(string identity, string rowKey, CancellationToken cancellationToken = default) => throw Unused();
     public virtual Task<IReadOnlyList<string>> SetDistributionGroupPropertiesAsync(string identity, IReadOnlyList<CloudProperty> changes, CancellationToken cancellationToken = default) => throw Unused();
+    public virtual Task<DistributionGroupNaming> GetDistributionGroupNamingAsync(string identity, CancellationToken cancellationToken = default) => throw Unused();
+    public virtual Task<DistributionGroupNaming> RenameDistributionGroupAsync(string identity, string name, string displayName, string? newPrimaryAddress, CancellationToken cancellationToken = default) => throw Unused();
+    public virtual Task<IReadOnlyList<string>> SetUnifiedGroupPrimaryAddressAsync(string identity, string newPrimaryAddress, CancellationToken cancellationToken = default) => throw Unused();
+    public virtual Task<IReadOnlyList<RecipientConflict>> FindRecipientConflictsAsync(string? name, string? address, CancellationToken cancellationToken = default) => throw Unused();
     public virtual Task<IReadOnlyList<MailboxRecipient>> GetDistributionGroupMembersAsync(string groupIdentity, CancellationToken cancellationToken = default) => throw Unused();
     public virtual Task RemoveDistributionGroupMemberAsync(string groupIdentity, string memberIdentity, CancellationToken cancellationToken = default) => throw Unused();
     public virtual Task AddDistributionGroupMemberAsync(string groupIdentity, string memberIdentity, CancellationToken cancellationToken = default) => throw Unused();

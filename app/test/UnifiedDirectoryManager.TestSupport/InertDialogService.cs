@@ -36,11 +36,21 @@ public class InertDialogService : IDialogService
     /// <summary>Every save prompt offered, so a test can assert the name and folder suggested.</summary>
     public List<(string Filter, string DefaultFileName, string? InitialDirectory)> SaveFilePrompts { get; } = new();
 
+    /// <summary>The lines of every confirmation, in the same order as <see cref="Confirmations"/>.</summary>
+    public List<List<string>> ConfirmationLines { get; } = new();
+
     public virtual bool Confirm(string title, string heading, IEnumerable<string> lines)
     {
         Confirmations.Add((title, heading));
+        ConfirmationLines.Add(lines.ToList());
         return ConfirmAnswer;
     }
+
+    /// <summary>What <see cref="ShowRenameGroup"/> returns: null is the operator cancelling the dialog.</summary>
+    public GroupRenameOutcome? RenameOutcome { get; set; }
+
+    /// <summary>Every group the rename dialog was opened for, in order.</summary>
+    public List<GroupRenameSource> RenameRequests { get; } = new();
 
     public virtual bool ConfirmWithPhrase(string title, string heading, IEnumerable<string> lines, string requiredPhrase)
     {
@@ -137,6 +147,11 @@ public class InertDialogService : IDialogService
     public virtual string? PromptOpenFile(string filter) => throw Unused();
     public virtual (DelegateAccess Access, bool AutoMapping)? EditDelegateAccess(string delegateName, DelegateAccess current) => throw Unused();
     public virtual (string Id, string Name, bool FromExchange)? ShowNewCloudGroup(CloudGroupType? initialType) => throw Unused();
+    public virtual GroupRenameOutcome? ShowRenameGroup(GroupRenameSource source)
+    {
+        RenameRequests.Add(source);
+        return RenameOutcome;
+    }
 
     /// <summary>The delete confirmation. Answers ConfirmAnswer, and never asks to record the deletion.</summary>
     public virtual bool? ConfirmDelete(string title, string heading, IEnumerable<string> lines,

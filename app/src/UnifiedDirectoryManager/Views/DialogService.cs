@@ -25,11 +25,14 @@ public sealed class DialogService : IDialogService
     private readonly ScenarioRunner _scenarioRunner;
     private readonly BulkUserCreator _bulkCreator;
     private readonly BulkUserCsvImporter _csvImporter;
+    private readonly GroupReferenceMaintenance _groupLinks;
 
     public DialogService(IDirectoryService directory, ITemplateStore templates, IScenarioStore scenarios,
         ISavedSearchStore savedSearches, ISettingsStore settingsStore, AppSettings settings, IGraphService graph,
-        IExchangeService exchange, IDomainLocator locator, ICredentialStore credentials, ScenarioRunner scenarioRunner)
+        IExchangeService exchange, IDomainLocator locator, ICredentialStore credentials, ScenarioRunner scenarioRunner,
+        GroupReferenceMaintenance? groupLinks = null)
     {
+        _groupLinks = groupLinks ?? new GroupReferenceMaintenance(directory, templates, scenarios);
         _directory = directory;
         _templates = templates;
         _scenarios = scenarios;
@@ -400,6 +403,31 @@ public sealed class DialogService : IDialogService
             : null;
     }
 
+    public GroupRenameOutcome? ShowRenameGroup(GroupRenameSource source)
+    {
+        var service = new GroupRenameService(_directory, _graph, _exchange, _groupLinks);
+        var vm = new RenameGroupViewModel(service, this, source, SyncNowAction());
+        new RenameGroupWindow { DataContext = vm, Owner = Owner }.ShowDialog(); // the window loads the group itself
+        return vm.Outcome;
+    }
+
+    /// <summary>
+    /// The Rename dialog's "Sync now": an Entra Connect delta sync on the configured server, with its saved sync
+    /// account if there is one. Null when no server is configured, so the button is not offered at all.
+    /// </summary>
+    private Func<CancellationToken, Task<string>>? SyncNowAction()
+    {
+        var server = _settings.EntraConnectServer?.Trim();
+        if (string.IsNullOrWhiteSpace(server)) return null;
+        return async ct =>
+        {
+            var result = await _entraSync.RunDeltaSyncAsync(server, null, null, allowSavedFallback: true, cancellationToken: ct);
+            return result.Success
+                ? $"A delta sync was started on {server}. Entra ID usually shows the new name within a few minutes."
+                : "The sync did not start: " + result.Output;
+        };
+    }
+
     public SearchQuery? ShowAdvancedSearch(string defaultBaseDn, SavedSearchPinning? pinning = null)
     {
         var vm = new AdvancedSearchViewModel(this, _savedSearches, pinning);
@@ -428,9 +456,24 @@ public sealed class DialogService : IDialogService
         // one by one, and a log line nobody reads is how a half-saved account would go unnoticed.
         var vm = new EditPaneViewModel(_directory, this, msg => Alert("Error", msg), _graph, _exchange);
         vm.ObjectChanged += () => onChanged();
+        vm.GroupDnChanged += (oldDn, newDn) => _ = RetargetGroupReferencesAsync(oldDn, newDn);
         var window = new ObjectEditorWindow { DataContext = vm, Title = title, Owner = Owner };
         window.Show(); // non-modal so several editors can be open at once
         _ = vm.LoadAsync(distinguishedName, type);
+    }
+
+    /// <summary>
+    /// After a pop-out editor moves a group: points templates and scenarios at its new DN. Never throws; the move
+    /// itself already succeeded. The main window's pane does the same through MainViewModel.
+    /// </summary>
+    private async Task RetargetGroupReferencesAsync(string oldDn, string newDn)
+    {
+        try
+        {
+            var guid = await _directory.GetObjectGuidAsync(newDn);
+            if (guid is not null) await _groupLinks.RetargetGroupAsync(guid, oldDn, newDn);
+        }
+        catch (Exception ex) { AppLog.Instance.Warn($"Could not update templates and scenarios for {newDn}: {ex.Message}"); }
     }
 
     public bool ConfirmWithPhrase(string title, string heading, IEnumerable<string> lines, string requiredPhrase)

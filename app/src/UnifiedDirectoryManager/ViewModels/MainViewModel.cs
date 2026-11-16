@@ -21,6 +21,7 @@ public partial class MainViewModel : ObservableObject
     private readonly IExchangeService _exchange;
     private readonly ICredentialStore _credentials;
     private readonly ISavedSearchStore _savedSearches;
+    private readonly GroupReferenceMaintenance? _groupLinks;
     private TreeNodeViewModel? _cloudRoot;
     private TreeNodeViewModel? _exchangeRoot;
     private bool _scenarioRunning; // guards against a second (fire-and-forget) scenario run overlapping
@@ -234,6 +235,8 @@ public partial class MainViewModel : ObservableObject
     // passwords at once needs its own confirmation and its own report of which secrets went where,
     // and that is a feature, not a menu entry (audit P8).
     [ObservableProperty] private bool _selectionIsOneUser;
+    /// <summary>Rename acts on exactly one group.</summary>
+    [ObservableProperty] private bool _selectionIsOneGroup;
 
     /// <summary>
     /// What the toolbar shows, built from the operator's chosen ids (audit T1). Rebuilt rather than
@@ -249,7 +252,8 @@ public partial class MainViewModel : ObservableObject
 
     public MainViewModel(IDirectoryService directory, IDialogService dialogs, IScenarioStore scenarios,
         ISettingsStore settingsStore, AppSettings settings, IGraphService graph, IExchangeService exchange,
-        ICredentialStore credentials, ISavedSearchStore savedSearches)
+        ICredentialStore credentials, ISavedSearchStore savedSearches,
+        GroupReferenceMaintenance? groupLinks = null)
     {
         _directory = directory;
         _dialogs = dialogs;
@@ -259,6 +263,7 @@ public partial class MainViewModel : ObservableObject
         _exchange = exchange;
         _credentials = credentials;
         _savedSearches = savedSearches;
+        _groupLinks = groupLinks;
         Settings = settings;
         _editDock = Enum.TryParse<EditPaneDock>(settings.EditDock, out var dock) ? dock : EditPaneDock.Right;
 
@@ -302,6 +307,7 @@ public partial class MainViewModel : ObservableObject
         // When the edit pane commits a change (disable, attribute edit, group/member change),
         // refresh the list so it reflects the change (e.g. the greyed-out disabled state).
         Edit.ObjectChanged += () => _ = List.ReloadAsync();
+        Edit.GroupDnChanged += (oldDn, newDn) => _ = RetargetGroupReferencesAsync(oldDn, newDn);
     }
 
     /// <summary>
@@ -405,6 +411,9 @@ public partial class MainViewModel : ObservableObject
             AdConnected = true;
             AdWarning = string.Empty;
             StatusMessage = "Ready.";
+            // Give stored group references their GUIDs while their DNs still resolve, and follow any group renamed
+            // or moved since the last session. In the background: it touches only templates and scenarios.
+            SweepGroupReferences();
         }
         else
         {
@@ -549,7 +558,37 @@ public partial class MainViewModel : ObservableObject
         _dialogs.ShowBulkCreateUsers(SelectedNode?.DirectoryDn, onCreated: () => _ = List.ReloadAsync());
 
     [RelayCommand]
-    private void ManageTemplates() => _dialogs.ShowTemplateEditor();
+    private void ManageTemplates()
+    {
+        _dialogs.ShowTemplateEditor();
+        SweepGroupReferences(); // a group added in the editor gets its GUID now, while its DN still resolves
+    }
+
+    /// <summary>
+    /// After this app moves a group: points the templates and scenarios that use it at its new DN. A reference
+    /// that already carries the GUID would be found anyway, but one written before GUIDs were stored names only
+    /// the old DN, and after the move nothing else could find it. Never throws: the move itself succeeded.
+    /// </summary>
+    private async Task RetargetGroupReferencesAsync(string oldDn, string newDn)
+    {
+        if (_groupLinks is null) return;
+        try
+        {
+            var guid = await _directory.GetObjectGuidAsync(newDn);
+            if (guid is not null) await _groupLinks.RetargetGroupAsync(guid, oldDn, newDn);
+        }
+        catch (Exception ex) { AppLog.Instance.Warn($"Could not update templates and scenarios for {newDn}: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// Runs the stored-group-reference sweep in the background. It never throws, and it logs what it changed and
+    /// any group it could not find, so there is nothing here to await or report.
+    /// </summary>
+    private void SweepGroupReferences()
+    {
+        if (_groupLinks is null || !_directory.IsConnected) return;
+        _ = _groupLinks.UpgradeAllAsync();
+    }
 
     /// <summary>File ▸ New Cloud Group. The type defaults from whichever cloud list is showing.</summary>
     [RelayCommand]
@@ -1052,6 +1091,35 @@ public partial class MainViewModel : ObservableObject
         await MoveRowsToOuAsync(rows, target);
     }
 
+    /// <summary>
+    /// Rename… on the selected group (list right-click, Action menu, toolbar). The dialog does the work; this
+    /// deals with the edit pane first if it holds that group, and shows the result afterwards.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(SelectionIsOneGroup))]
+    private async Task RenameSelectedAsync()
+    {
+        var rows = SelectedRowsOrSingle();
+        if (rows.Count != 1 || rows[0].Type != AdObjectType.Group)
+        {
+            _dialogs.Alert("Rename", "Select one group to rename.");
+            return;
+        }
+        var row = rows[0];
+        // The rename writes names the pane may be editing, and changes the group's DN.
+        if (!await ConfirmPaneBeforeAsync(rows)) return;
+
+        var outcome = _dialogs.ShowRenameGroup(new GroupRenameSource(GroupRenameOrigin.OnPremDn, row.DistinguishedName, row.Name));
+        if (outcome is null) return;
+
+        // The pane follows the group to its new DN rather than going blank.
+        if (string.Equals(Edit.CurrentDn, row.DistinguishedName, StringComparison.OrdinalIgnoreCase))
+            await Edit.LoadAsync(outcome.Identity, AdObjectType.Group);
+        await List.ReloadAsync();
+        StatusMessage = outcome.Succeeded
+            ? $"Renamed “{row.Name}” to “{outcome.ActualName}”."
+            : $"The rename of “{row.Name}” did not finish: {outcome.Error}";
+    }
+
     /// <summary>Moves the given rows into <paramref name="targetOuDn"/> (used by the command and by tree drag-and-drop).</summary>
     public async Task MoveRowsToOuAsync(IReadOnlyList<AdObjectRow> rows, string targetOuDn)
     {
@@ -1071,7 +1139,12 @@ public partial class MainViewModel : ObservableObject
         var errors = new List<string>();
         foreach (var r in toMove)
         {
-            try { await _directory.MoveObjectAsync(r.DistinguishedName, targetOuDn); ok++; }
+            try
+            {
+                var newDn = await _directory.MoveObjectAsync(r.DistinguishedName, targetOuDn);
+                ok++;
+                if (r.Type == AdObjectType.Group) await RetargetGroupReferencesAsync(r.DistinguishedName, newDn);
+            }
             catch (Exception ex) { errors.Add($"{r.Name}: {DirectoryService.Friendly(ex)}"); }
         }
         ReleaseEditPane(dn => toMove.Any(r => string.Equals(r.DistinguishedName, dn, StringComparison.OrdinalIgnoreCase)));
@@ -1382,7 +1455,11 @@ public partial class MainViewModel : ObservableObject
     // --- Scenarios ---
 
     [RelayCommand]
-    private void ManageScenarios() => _dialogs.ShowScenarioEditor(ReloadScenarios);
+    private void ManageScenarios()
+    {
+        _dialogs.ShowScenarioEditor(ReloadScenarios);
+        SweepGroupReferences();
+    }
 
     /// <summary>Rebuilds the runnable-scenario menu items from the store (called at startup and after edits).</summary>
     public void ReloadScenarios()
@@ -1564,6 +1641,7 @@ public partial class MainViewModel : ObservableObject
         var user = SelectedRowsOrSingle().FirstOrDefault(r => r.Type == AdObjectType.User);
         if (user is null) { _dialogs.Alert("Save as template", "Select a user to copy into a new template."); return; }
         _dialogs.ShowCopyUserToTemplate(user.DistinguishedName);
+        SweepGroupReferences();
     }
 
     [RelayCommand(CanExecute = nameof(SelectionHasUsers))]
@@ -1631,6 +1709,7 @@ public partial class MainViewModel : ObservableObject
         SelectionHasEnabled = rows.Any(r => r.Type is AdObjectType.User or AdObjectType.Computer && !r.IsDisabled);
         SelectionHasUsers = rows.Any(r => r.Type == AdObjectType.User);
         SelectionIsOneUser = SelectedRowsOrSingle() is { Count: 1 } one && one[0].Type == AdObjectType.User;
+        SelectionIsOneGroup = SelectedRowsOrSingle() is { Count: 1 } single && single[0].Type == AdObjectType.Group;
         SelectionHasGroups = rows.Any(r => r.Type == AdObjectType.Group);
 
         // The menu-bar entries for these actions disable with the selection; the context menu hides them.
@@ -1638,6 +1717,7 @@ public partial class MainViewModel : ObservableObject
         DisableSelectedCommand.NotifyCanExecuteChanged();
         UnlockSelectedCommand.NotifyCanExecuteChanged();
         MoveSelectedToOuCommand.NotifyCanExecuteChanged();
+        RenameSelectedCommand.NotifyCanExecuteChanged();
         SaveSelectedAsTemplateCommand.NotifyCanExecuteChanged();
         CopyUserCommand.NotifyCanExecuteChanged();
         CopyGroupsToUserCommand.NotifyCanExecuteChanged();

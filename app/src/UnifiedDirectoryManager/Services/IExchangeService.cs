@@ -177,6 +177,27 @@ public interface IExchangeService
     /// equivalent value, and the caller must not report those as saved.</returns>
     Task<IReadOnlyList<string>> SetDistributionGroupPropertiesAsync(string identity, IReadOnlyList<CloudProperty> changes, CancellationToken cancellationToken = default);
 
+    /// <summary>A distribution group's names and addresses, for renaming it.</summary>
+    Task<DistributionGroupNaming> GetDistributionGroupNamingAsync(string identity, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Renames a distribution list, mail-enabled security group or room list: <c>Name</c> and <c>DisplayName</c>
+    /// together, through the organization's naming policy, optionally with a new primary address. The old primary
+    /// is kept as a secondary so mail sent to it still arrives. Returns the names as Exchange now reports them,
+    /// which a naming policy may have changed. Refuses a synced group, which Exchange cannot change.
+    /// </summary>
+    Task<DistributionGroupNaming> RenameDistributionGroupAsync(
+        string identity, string name, string displayName, string? newPrimaryAddress, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Sets a Microsoft 365 group's primary address, keeping the old one as a secondary. Returns every address the
+    /// group has afterwards. Graph cannot do this: a group's mail properties are read-only there.
+    /// </summary>
+    Task<IReadOnlyList<string>> SetUnifiedGroupPrimaryAddressAsync(string identity, string newPrimaryAddress, CancellationToken cancellationToken = default);
+
+    /// <summary>The recipients that already hold <paramref name="name"/> as their Name or <paramref name="address"/> as any address.</summary>
+    Task<IReadOnlyList<RecipientConflict>> FindRecipientConflictsAsync(string? name, string? address, CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Lists a distribution list's or mail-enabled security group's members. Reads the whole membership
     /// (<c>-ResultSize Unlimited</c>): the default page is 1,000 and truncates in silence, which on a

@@ -82,14 +82,17 @@ public partial class App : Application
         // Scenario runner needs the cloud clients too (scenarios can include Entra ID + Exchange steps).
         var scenarioRunner = new ScenarioRunner(_directory, graph, exchange);
 
-        var dialogs = new DialogService(_directory, templates, scenarios, savedSearches, settingsStore, settings, graph, exchange, locator, credentials, scenarioRunner);
+        // One instance for the whole app: its lock is what stops two sweeps rewriting the same template at once.
+        var groupLinks = new GroupReferenceMaintenance(_directory, templates, scenarios);
+
+        var dialogs = new DialogService(_directory, templates, scenarios, savedSearches, settingsStore, settings, graph, exchange, locator, credentials, scenarioRunner, groupLinks);
 
         // The app no longer gates on an on-prem connection at startup. Show the main window immediately,
         // then attempt a silent connect from the saved profile in the background; a failure surfaces as a
         // (non-blocking) warning bar and the app continues — useful for cloud-only / Entra-only sessions.
         try
         {
-            var mainVm = new MainViewModel(_directory, dialogs, scenarios, settingsStore, settings, graph, exchange, credentials, savedSearches);
+            var mainVm = new MainViewModel(_directory, dialogs, scenarios, settingsStore, settings, graph, exchange, credentials, savedSearches, groupLinks);
             var main = new MainWindow { DataContext = mainVm };
             MainWindow = main;
             ShutdownMode = ShutdownMode.OnMainWindowClose;

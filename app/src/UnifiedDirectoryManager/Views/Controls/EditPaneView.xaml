@@ -169,6 +169,9 @@
                                 Visibility="{Binding IsUser, Converter={StaticResource BoolToVis}}" />
                         <Button Content="Unlock" Command="{Binding UnlockCommand}"
                                 Visibility="{Binding IsUser, Converter={StaticResource BoolToVis}}" />
+                        <Button x:Name="RenameButton" Content="Rename…" Command="{Binding RenameCommand}"
+                                Visibility="{Binding IsGroup, Converter={StaticResource BoolToVis}}"
+                                ToolTip="Changes the group's name, pre-Windows 2000 name and display name, and optionally its email address." />
                     </WrapPanel>
                 </DockPanel>
             </Border>

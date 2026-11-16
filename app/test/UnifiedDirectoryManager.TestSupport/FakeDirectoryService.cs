@@ -101,7 +101,41 @@ public sealed class FakeDirectoryService : IDirectoryService
             return parked.Task;
         }
         if (refused is not null) throw refused;
+        if (StoreWrites) Store(distinguishedName, changes);
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// When true, a write that succeeds also changes the stored object in <see cref="Objects"/>, as AD would, so a
+    /// later read sees it. Off by default: most suites check what was sent, not what a read-back would show.
+    /// </summary>
+    public bool StoreWrites { get; set; }
+
+    /// <summary>Applies a write's Set and Clear changes to the stored object; other kinds of change are ignored.</summary>
+    private void Store(string distinguishedName, IReadOnlyList<PendingChange> changes)
+    {
+        if (!Objects.TryGetValue(distinguishedName, out var stored)) return;
+        var attrs = stored.ToList();
+        foreach (var c in changes.Where(c => c.Op is ChangeOp.Set or ChangeOp.Clear))
+        {
+            var existing = attrs.FirstOrDefault(a => string.Equals(a.LdapName, c.LdapName, StringComparison.OrdinalIgnoreCase));
+            if (c.Op == ChangeOp.Clear || c.Values.Count == 0)
+            {
+                if (existing is not null) attrs.Remove(existing);
+                continue;
+            }
+            var target = existing ?? new AdAttribute
+            {
+                LdapName = c.LdapName,
+                FriendlyName = string.IsNullOrEmpty(c.FriendlyName) ? c.LdapName : c.FriendlyName,
+                IsMultiValued = c.Values.Count > 1,
+            };
+            target.RawValues.Clear();
+            target.DisplayValues.Clear();
+            foreach (var v in c.Values) { target.RawValues.Add(v); target.DisplayValues.Add(v); }
+            if (existing is null) attrs.Add(target);
+        }
+        Objects[distinguishedName] = attrs.ToArray();
     }
 
     /// <summary>DNs whose writes fail. See <see cref="ApplyChangesAsync"/>.</summary>
@@ -160,11 +194,106 @@ public sealed class FakeDirectoryService : IDirectoryService
     public Task<string> MoveObjectAsync(string distinguishedName, string newParentDn, CancellationToken cancellationToken = default)
     {
         Moves.Add((distinguishedName, newParentDn));
-        var rdn = distinguishedName.Split(',')[0];
+        var rdn = DirectoryService.FirstRdn(distinguishedName);
         var moved = rdn + "," + newParentDn;
         if (Objects.Remove(distinguishedName, out var attrs)) Objects[moved] = attrs;
+        if (ObjectGuids.Remove(distinguishedName, out var guid)) ObjectGuids[moved] = guid;
+        if (ExistingDns.Remove(distinguishedName)) ExistingDns.Add(moved);
         return Task.FromResult(moved);
     }
+
+    /// <summary>Renames, in order: (old DN, the name asked for, the DN it became).</summary>
+    public List<(string From, string NewName, string To)> Renames { get; } = new();
+
+    /// <summary>DNs whose rename is refused, so the partial-failure path can be exercised.</summary>
+    public HashSet<string> FailRenamesFor { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Renames as AD does: the new DN is built exactly as <see cref="DirectoryService.BuildRenamedDn"/> builds
+    /// it, and the object keeps its attributes, GUID and SID under the new DN.
+    /// </summary>
+    public Task<string> RenameObjectAsync(string distinguishedName, string newName, CancellationToken cancellationToken = default)
+    {
+        if (FailRenamesFor.Contains(distinguishedName))
+            return Task.FromException<string>(new InvalidOperationException($"the directory refused to rename {distinguishedName}"));
+        var renamed = DirectoryService.BuildRenamedDn(distinguishedName, newName);
+        Renames.Add((distinguishedName, newName, renamed));
+        if (Objects.Remove(distinguishedName, out var attrs))
+        {
+            // AD changes cn and name with the DN; a read-back after a rename has to see the new name.
+            foreach (var a in attrs.Where(a => a.LdapName is "cn" or "name"))
+            {
+                a.RawValues.Clear(); a.RawValues.Add(newName.Trim());
+                a.DisplayValues.Clear(); a.DisplayValues.Add(newName.Trim());
+            }
+            Objects[renamed] = attrs;
+        }
+        if (ObjectGuids.Remove(distinguishedName, out var guid)) ObjectGuids[renamed] = guid;
+        foreach (var sid in Sids.Where(kv => string.Equals(kv.Value, distinguishedName, StringComparison.OrdinalIgnoreCase))
+                                .Select(kv => kv.Key).ToList())
+            Sids[sid] = renamed;
+        if (ExistingDns.Remove(distinguishedName)) ExistingDns.Add(renamed);
+        return Task.FromResult(renamed);
+    }
+
+    /// <summary>objectGUID per DN. A rename or move carries the entry to the new DN, as AD keeps the GUID.</summary>
+    public Dictionary<string, string> ObjectGuids { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Every GUID and SID lookup, in order, so a test can see what was resolved and how.</summary>
+    public List<string> IdentityLookups { get; } = new();
+
+    /// <summary>
+    /// While set, every GUID lookup waits for this task before it answers. A test uses it to keep a reference sweep
+    /// running, and holding its lock, for as long as it needs.
+    /// </summary>
+    public Task? HoldGuidLookups { get; set; }
+
+    public async Task<string?> GetObjectGuidAsync(string distinguishedName, CancellationToken cancellationToken = default)
+    {
+        IdentityLookups.Add("dn:" + distinguishedName);
+        if (HoldGuidLookups is { } hold) await hold;
+        return ObjectGuids.TryGetValue(distinguishedName, out var g) ? g : null;
+    }
+
+    public async Task<string?> FindDnByGuidAsync(string objectGuid, CancellationToken cancellationToken = default)
+    {
+        IdentityLookups.Add("guid:" + objectGuid);
+        if (HoldGuidLookups is { } hold) await hold;
+        var hit = ObjectGuids.FirstOrDefault(kv => string.Equals(kv.Value, objectGuid, StringComparison.OrdinalIgnoreCase));
+        return hit.Key;
+    }
+
+    /// <summary>DN per SID, for finding a synced group's on-prem object.</summary>
+    public Dictionary<string, string> Sids { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public Task<string?> FindDnBySidAsync(string sid, CancellationToken cancellationToken = default)
+    {
+        IdentityLookups.Add("sid:" + sid);
+        return Task.FromResult(Sids.TryGetValue(sid, out var dn) ? dn : null);
+    }
+
+    /// <summary>Owners per address (without a prefix), as FindAddressOwnersAsync reports them.</summary>
+    public Dictionary<string, List<string>> AddressOwners { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public Task<IReadOnlyList<string>> FindAddressOwnersAsync(string address, CancellationToken cancellationToken = default)
+    {
+        var bare = address.StartsWith("smtp:", StringComparison.OrdinalIgnoreCase) ? address[5..] : address;
+        return Task.FromResult<IReadOnlyList<string>>(
+            AddressOwners.TryGetValue(bare, out var owners) ? owners.ToList() : new List<string>());
+    }
+
+    /// <summary>DNs that exist besides those in <see cref="Objects"/>, for ExistsAsync.</summary>
+    public HashSet<string> ExistingDns { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public Task<bool> ExistsAsync(string distinguishedName, CancellationToken cancellationToken = default) =>
+        Task.FromResult(ExistingDns.Contains(distinguishedName) || Objects.ContainsKey(distinguishedName));
+
+    /// <summary>sAMAccountNames already taken in the domain, for FindExistingSamAccountNamesAsync.</summary>
+    public HashSet<string> ExistingSams { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public Task<IReadOnlySet<string>> FindExistingSamAccountNamesAsync(IEnumerable<string> samAccountNames, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlySet<string>>(
+            samAccountNames.Where(ExistingSams.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase));
 
     /// <summary>Members returned per group DN by <see cref="GetGroupMembersAsync"/>. Absent means none.</summary>
     public Dictionary<string, IReadOnlyList<GroupMember>> GroupMembers { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -242,8 +371,6 @@ public sealed class FakeDirectoryService : IDirectoryService
     public Task<GroupCreateResult> CreateGroupAsync(string parentDn, string name, string samAccountName, GroupScope scope, GroupCategory category, string? description, string? managedByDn, bool protectFromDeletion, IReadOnlyList<string>? initialMemberDns = null, CancellationToken cancellationToken = default) => throw Unused();
     public Task<(string Dn, string? ProtectionError)> CreateOrganizationalUnitAsync(string parentDn, string name, bool protectFromDeletion, string? description, CancellationToken cancellationToken = default) => throw Unused();
     public Task<IReadOnlyList<AdObjectRow>> SearchByNameAsync(string text, AdObjectType type, CancellationToken cancellationToken = default) => throw Unused();
-    public Task<bool> ExistsAsync(string distinguishedName, CancellationToken cancellationToken = default) => throw Unused();
-    public Task<IReadOnlySet<string>> FindExistingSamAccountNamesAsync(IEnumerable<string> samAccountNames, CancellationToken cancellationToken = default) => throw Unused();
     public Task DeleteObjectAsync(string distinguishedName, CancellationToken cancellationToken = default) => throw Unused();
     public Task ResetPasswordAsync(string distinguishedName, string newPassword, bool mustChangeAtNextLogon, bool unlock, CancellationToken cancellationToken = default) => throw Unused();
     public Task<UserCreateResult> CreateUserAsync(string ouDn, IReadOnlyDictionary<string, string> attributes, IEnumerable<string> groupDns, string? password, bool enabled, bool mustChangePassword, IReadOnlyList<string>? proxyAddresses = null, CancellationToken cancellationToken = default) => throw Unused();

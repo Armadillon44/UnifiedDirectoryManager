@@ -76,6 +76,7 @@ public static class ToolbarCatalogue
         new ToolbarItem("save-template",   "Save as Template…",            "SaveSelectedAsTemplateCommand", ToolbarScope.OnPremOnly),
         new ToolbarItem("add-to-groups",   "Add to Groups…",               "AddSelectedToGroupsCommand", ToolbarScope.OnPremOnly, "\uE716"), // People
         new ToolbarItem("move-to-ou",      "Move to OU…",                  "MoveSelectedToOuCommand",    ToolbarScope.OnPremOnly, "\uE8DE"), // MoveToFolder
+        new ToolbarItem("rename-group",    "Rename Group…",                "RenameSelectedCommand",      ToolbarScope.OnPremOnly, "\uE8AC"), // Rename
         new ToolbarItem("bulk-edit",       "Bulk Edit…",                   "BulkEditCommand",            ToolbarScope.OnPremOnly, "\uE70F"), // Edit
         // Destructive items keep their words, whatever the operator has customised — see UsesTextOnly.
         new ToolbarItem("delete",          "Delete Selected…",             "DeleteSelectedCommand",      ToolbarScope.OnPremOnly, "\uE74D"), // Delete

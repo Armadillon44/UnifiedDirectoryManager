@@ -78,12 +78,57 @@ public partial class CloudObjectDetailViewModel : ObservableObject
     [ObservableProperty] private string _title = string.Empty;
     [ObservableProperty] private string _kindLabel = string.Empty;
     [ObservableProperty] private bool _isUser;
-    [ObservableProperty] private bool _isGroup;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanRename))]
+    private bool _isGroup;
     [ObservableProperty] private bool _isDevice;
     [ObservableProperty] private bool _isMailbox;
 
     /// <summary>True for a distribution list or mail-enabled security group — a group Exchange owns, not Entra.</summary>
-    [ObservableProperty] private bool _isExchangeGroup;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanRename))]
+    private bool _isExchangeGroup;
+
+    /// <summary>Every kind of group can be renamed; the dialog works out which service owns it.</summary>
+    public bool CanRename => AllowRename && (IsGroup || IsExchangeGroup);
+
+    /// <summary>
+    /// False where this pane sits inside an on-prem object's Cloud tab. The group shown there is the synced copy
+    /// of the one open in that pane, whose own header has Rename…; renaming it from here as well would change the
+    /// group without the pane around it knowing, and leave it showing the old names.
+    /// </summary>
+    public bool AllowRename
+    {
+        get => _allowRename;
+        set { if (SetProperty(ref _allowRename, value)) OnPropertyChanged(nameof(CanRename)); }
+    }
+    private bool _allowRename = true;
+
+    /// <summary>Raised with the row's ID after a rename wrote something, so the list reloads and shows the new name.</summary>
+    public event Action<string>? Renamed;
+
+    /// <summary>
+    /// Rename… for the group shown here. Whichever list it came from, the dialog routes it: a synced group is
+    /// renamed in Active Directory, a distribution list through Exchange, the rest through Graph.
+    /// </summary>
+    [RelayCommand]
+    private void Rename()
+    {
+        var row = _currentTarget;
+        if (row is null || row.Kind != CloudObjectKind.Group) return;
+        GroupRenameSource source;
+        if (row.Source == CloudObjectSource.Exchange)
+        {
+            var smtp = row.Get("primarySmtpAddress");
+            var identity = _exchangeGroupGuid ?? (smtp.Length > 0 ? smtp : row.Id);
+            source = new GroupRenameSource(GroupRenameOrigin.ExchangeIdentity, identity, row.DisplayName);
+        }
+        else source = new GroupRenameSource(GroupRenameOrigin.EntraGroupId, row.Id, row.DisplayName);
+
+        var outcome = _dialogs.ShowRenameGroup(source);
+        if (outcome is null) return;
+        Renamed?.Invoke(row.Id);
+    }
 
     /// <summary>Which service describes this object — the header used to say "Entra ID" for everything.</summary>
     [ObservableProperty] private string _sourceLabel = "Entra ID";

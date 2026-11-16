@@ -64,6 +64,9 @@ public class InertGraphService : IGraphService
     public virtual Task RevokeSignInSessionsAsync(string userId, CancellationToken cancellationToken = default) => throw Unused();
     public virtual Task UpdateUserAsync(string userId, IReadOnlyDictionary<string, string?> changes, CancellationToken cancellationToken = default) => throw Unused();
     public virtual Task UpdateGroupAsync(string groupId, IReadOnlyDictionary<string, string?> changes, CancellationToken cancellationToken = default) => throw Unused();
+    public virtual Task<CloudGroupNaming?> GetGroupNamingAsync(string groupId, CancellationToken cancellationToken = default) => throw Unused();
+    public virtual Task<IReadOnlyList<CloudAddressOwner>> FindAddressOwnersAsync(string address, CancellationToken cancellationToken = default) => throw Unused();
+    public virtual Task<IReadOnlyList<string>> FindGroupIdsByDisplayNameAsync(string displayName, CancellationToken cancellationToken = default) => throw Unused();
     public virtual Task AssignLicenseToUserAsync(string userId, Guid skuId, CancellationToken cancellationToken = default) => throw Unused();
     public virtual Task RemoveLicenseFromUserAsync(string userId, Guid skuId, CancellationToken cancellationToken = default) => throw Unused();
     public virtual Task<TemporaryAccessPassResult> CreateTemporaryAccessPassAsync(string userId, int lifetimeMinutes, bool isUsableOnce, CancellationToken cancellationToken = default) => throw Unused();

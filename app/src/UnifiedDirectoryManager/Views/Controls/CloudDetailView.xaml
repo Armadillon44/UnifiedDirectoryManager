@@ -145,6 +145,10 @@
                                     Command="{Binding ManageMembersCommand}"
                                     Visibility="{Binding IsExchangeGroup, Converter={StaticResource BoolToVis}}"
                                     ToolTip="Add or remove the members of this distribution group." />
+                            <Button x:Name="CloudRenameButton" Content="Rename…" Margin="8,0,0,0" Padding="8,1" FontSize="11"
+                                    Command="{Binding RenameCommand}"
+                                    Visibility="{Binding CanRename, Converter={StaticResource BoolToVis}}"
+                                    ToolTip="Changes the group's name and, optionally, its email address. A group synced from Active Directory is renamed there." />
                         </StackPanel>
                     </StackPanel>
                 </DockPanel>

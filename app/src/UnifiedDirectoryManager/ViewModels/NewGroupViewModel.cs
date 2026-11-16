@@ -76,22 +76,8 @@ public partial class NewGroupViewModel : ObservableObject
         SamAccountName = _lastSamSuggestion;
     }
 
-    /// <summary>
-    /// Derives a group's pre-Windows-2000 logon name from its name the way ADUC does: keep the name as typed —
-    /// case, spaces and hyphens are all legal in a group's sAMAccountName — and drop only the characters AD
-    /// forbids. Deliberately NOT <see cref="UserAttributeBuilder.SanitizeSam"/>, which lowercases and strips
-    /// hyphens/spaces to build a PERSON's logon name ("IT-Admins" would become "itadmins").
-    /// </summary>
-    private static string DeriveSam(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name)) return string.Empty;
-        const string forbidden = "\"/\\[]:;|=,+*?<>";
-        var sb = new System.Text.StringBuilder(name.Length);
-        foreach (var c in name)
-            if (forbidden.IndexOf(c) < 0 && !char.IsControl(c)) sb.Append(c);
-        // AD rejects a logon name that ends with a period or is only whitespace.
-        return sb.ToString().Trim().TrimEnd('.').Trim();
-    }
+    /// <summary>The ADUC rule, shared with Rename so both derive the same name: <see cref="GroupNaming.DeriveGroupSam"/>.</summary>
+    private static string DeriveSam(string name) => GroupNaming.DeriveGroupSam(name);
 
     [RelayCommand]
     private void AddMembers()

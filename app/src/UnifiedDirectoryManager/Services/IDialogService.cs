@@ -168,6 +168,12 @@ public interface IDialogService
     /// </summary>
     (string Id, string Name, bool FromExchange)? ShowNewCloudGroup(CloudGroupType? initialType);
 
+    /// <summary>
+    /// The Rename Group dialog, for a group of any kind. Returns the outcome whenever anything was written, even
+    /// partly, so the caller refreshes what it shows; null when nothing was.
+    /// </summary>
+    GroupRenameOutcome? ShowRenameGroup(GroupRenameSource source);
+
     /// <summary>Advanced search builder. Returns the query to run, or null if cancelled.</summary>
     /// <param name="pinning">Supplied by whoever owns the favourites; null hides the Pin button entirely.</param>
     SearchQuery? ShowAdvancedSearch(string defaultBaseDn, SavedSearchPinning? pinning = null);

@@ -712,6 +712,94 @@ public sealed class GraphService : IGraphService
         AppLog.Instance.Info($"Updated cloud group {groupId}: {string.Join(", ", changes.Keys)}.");
     }
 
+    public async Task<CloudGroupNaming?> GetGroupNamingAsync(string groupId, CancellationToken cancellationToken = default)
+    {
+        if (_graph is null) throw new InvalidOperationException("Sign in to Entra ID first.");
+        if (string.IsNullOrWhiteSpace(groupId)) return null;
+        Group? g;
+        try
+        {
+            g = await _graph.Groups[groupId.Trim()].GetAsync(rc => rc.QueryParameters.Select = new[]
+            {
+                "id", "displayName", "mail", "mailNickname", "proxyAddresses", "groupTypes", "securityEnabled",
+                "mailEnabled", "resourceProvisioningOptions", "onPremisesSyncEnabled", "onPremisesSecurityIdentifier",
+                "membershipRule",
+            }, cancellationToken);
+        }
+        catch (ODataError ex) when (ex.ResponseStatusCode == 404) { return null; }
+        if (g is null) return null;
+        var cg = ToCloudGroup(g);
+        return new CloudGroupNaming(
+            g.Id ?? groupId, g.DisplayName ?? string.Empty, g.Mail, g.MailNickname,
+            (IReadOnlyList<string>?)g.ProxyAddresses ?? Array.Empty<string>(),
+            cg.GroupKind, cg.IsTeam, cg.IsSynced, g.OnPremisesSecurityIdentifier);
+    }
+
+    public async Task<IReadOnlyList<CloudAddressOwner>> FindAddressOwnersAsync(string address, CancellationToken cancellationToken = default)
+    {
+        if (_graph is null) throw new InvalidOperationException("Sign in to Entra ID first.");
+        var bare = (address ?? string.Empty).Trim();
+        if (bare.StartsWith("smtp:", StringComparison.OrdinalIgnoreCase)) bare = bare[5..];
+        if (bare.Length == 0) return Array.Empty<CloudAddressOwner>();
+        var esc = EscapeFilter(bare);
+        // Both prefixes: the stored value carries the case of its prefix, and the comparison is not documented
+        // as ignoring it. Asking for both cannot miss a primary or a secondary address.
+        var filter = $"proxyAddresses/any(p:p eq 'SMTP:{esc}') or proxyAddresses/any(p:p eq 'smtp:{esc}')";
+        var owners = new List<CloudAddressOwner>();
+
+        var users = await _graph.Users.GetAsync(rc =>
+        {
+            rc.QueryParameters.Filter = filter;
+            rc.QueryParameters.Select = new[] { "id", "displayName", "onPremisesSecurityIdentifier" };
+            rc.QueryParameters.Top = 10;
+        }, cancellationToken);
+        foreach (var u in users?.Value ?? new List<User>())
+            owners.Add(new CloudAddressOwner(u.Id ?? string.Empty, u.DisplayName ?? "(user)", "User", u.OnPremisesSecurityIdentifier));
+
+        var groups = await _graph.Groups.GetAsync(rc =>
+        {
+            rc.QueryParameters.Filter = filter;
+            rc.QueryParameters.Select = new[] { "id", "displayName", "onPremisesSecurityIdentifier" };
+            rc.QueryParameters.Top = 10;
+        }, cancellationToken);
+        foreach (var g in groups?.Value ?? new List<Group>())
+            owners.Add(new CloudAddressOwner(g.Id ?? string.Empty, g.DisplayName ?? "(group)", "Group", g.OnPremisesSecurityIdentifier));
+
+        // Contacts need a permission this app does not ask for (OrgContact.Read.All), so the read is allowed to be
+        // refused without losing the user and group answers above. Exchange covers contacts when it is connected.
+        try
+        {
+            var contacts = await _graph.Contacts.GetAsync(rc =>
+            {
+                rc.QueryParameters.Filter = filter;
+                rc.QueryParameters.Select = new[] { "id", "displayName" };
+                rc.QueryParameters.Top = 10;
+            }, cancellationToken);
+            foreach (var c in contacts?.Value ?? new List<OrgContact>())
+                owners.Add(new CloudAddressOwner(c.Id ?? string.Empty, c.DisplayName ?? "(contact)", "Contact", null));
+        }
+        catch (ODataError ex) when (ex.ResponseStatusCode is 401 or 403)
+        {
+            AppLog.Instance.Info($"Mail contacts were not checked for {bare}: the app is not allowed to read them.");
+        }
+
+        return owners;
+    }
+
+    public async Task<IReadOnlyList<string>> FindGroupIdsByDisplayNameAsync(string displayName, CancellationToken cancellationToken = default)
+    {
+        if (_graph is null) throw new InvalidOperationException("Sign in to Entra ID first.");
+        var name = (displayName ?? string.Empty).Trim();
+        if (name.Length == 0) return Array.Empty<string>();
+        var resp = await _graph.Groups.GetAsync(rc =>
+        {
+            rc.QueryParameters.Filter = $"displayName eq '{EscapeFilter(name)}'";
+            rc.QueryParameters.Select = new[] { "id" };
+            rc.QueryParameters.Top = 10;
+        }, cancellationToken);
+        return (resp?.Value ?? new List<Group>()).Select(g => g.Id ?? string.Empty).Where(id => id.Length > 0).ToList();
+    }
+
     public async Task AssignLicenseToUserAsync(string userId, Guid skuId, CancellationToken cancellationToken = default)
     {
         if (_graph is null) throw new InvalidOperationException("Sign in to Entra ID first.");
@@ -839,7 +927,8 @@ public sealed class GraphService : IGraphService
         var cg = ToCloudGroup(g);
 
         var isSynced = g.OnPremisesSyncEnabled == true;
-        CloudProperty P(string key, string label, string? value) => CloudPropertyRules.Make(CloudObjectKind.Group, isSynced, key, label, value);
+        CloudProperty P(string key, string label, string? value) =>
+            CloudPropertyRules.Make(CloudObjectKind.Group, isSynced, key, label, value, exchangeManaged: cg.IsExchangeManaged);
 
         return new List<CloudPropertySection>
         {

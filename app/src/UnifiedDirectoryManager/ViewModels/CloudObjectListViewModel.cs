@@ -100,9 +100,18 @@ public partial class CloudObjectListViewModel : ObservableObject
         _settingsStore = settingsStore;
         _settings = settings;
         Detail = new CloudObjectDetailViewModel(graph, exchange, dialogs);
+        // A rename changes what the row shows; read the list again and keep the same group selected.
+        Detail.Renamed += id => _ = ReloadAndReselectAsync(id);
 
         RowsView = CollectionViewSource.GetDefaultView(Rows);
         RowsView.Filter = RowPredicate;
+    }
+
+    private async Task ReloadAndReselectAsync(string id)
+    {
+        await ReloadAsync();
+        if (Rows.FirstOrDefault(r => string.Equals(r.Id, id, StringComparison.OrdinalIgnoreCase)) is { } row)
+            SelectedRow = row;
     }
 
     partial void OnQuickFilterChanged(string value) => RowsView.Refresh();

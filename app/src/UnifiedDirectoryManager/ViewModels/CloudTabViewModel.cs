@@ -31,7 +31,8 @@ public partial class CloudTabViewModel : ObservableObject
     public CloudTabViewModel(IGraphService graph, IExchangeService exchange, IDialogService dialogs)
     {
         _graph = graph;
-        Detail = new CloudObjectDetailViewModel(graph, exchange, dialogs);
+        // The on-prem pane around this tab has its own Rename…, and is the one that has to show the new name.
+        Detail = new CloudObjectDetailViewModel(graph, exchange, dialogs) { AllowRename = false };
         RefreshSignInDisplay();
     }
 

@@ -133,10 +133,17 @@ public partial class TemplateEditorViewModel : ObservableObject
         finally { _loadingForm = false; }
     }
 
+    /// <summary>
+    /// The group GUIDs of the template being edited. The form shows group DNs only, and a save rebuilds the
+    /// template from the form, so these are carried across separately or every save would lose them.
+    /// </summary>
+    private IReadOnlyDictionary<string, string> _loadedGroupGuids = new Dictionary<string, string>();
+
     /// <summary>Populates the editor fields from a template (call inside the <see cref="_loadingForm"/> guard).</summary>
     private void LoadFields(UserTemplate value)
     {
         _originalName = value.Name;
+        _loadedGroupGuids = new Dictionary<string, string>(value.GroupGuids, StringComparer.OrdinalIgnoreCase);
         Name = value.Name;
         Description = value.Description;
         TargetOu = value.TargetOu;
@@ -188,6 +195,7 @@ public partial class TemplateEditorViewModel : ObservableObject
         AttributeRows.Add(new TemplateAttributeRow { LdapName = "sAMAccountName", Value = "{first}.{last}" });
         AttributeRows.Add(new TemplateAttributeRow { LdapName = "displayName", Value = "{first} {last}" });
         Groups.Clear();
+        _loadedGroupGuids = new Dictionary<string, string>(); // nothing carries over from the previous template
         _managerDn = null;
         ManagerDisplay = "(none)";
         SelectedCountry = Services.Countries.NotSet;
@@ -342,6 +350,8 @@ public partial class TemplateEditorViewModel : ObservableObject
             DistributionGroups = Groups.Where(g => g.Channel == GroupChannel.ExchangeOnline)
                                        .Select(g => new DistributionGroupRef { Id = g.CloudId ?? string.Empty, Name = g.Name, Smtp = g.Smtp ?? string.Empty }).ToList(),
         };
+        // Groups added in this session have no GUID yet; the sweep after the editor closes fills them in.
+        template.GroupGuids = GroupLinks.Carry(_loadedGroupGuids, template.GroupDns);
         foreach (var row in AttributeRows)
             if (!string.IsNullOrWhiteSpace(row.LdapName) && !HandledLdap.Contains(row.LdapName.Trim(), StringComparer.OrdinalIgnoreCase))
                 template.AttributeDefaults[row.LdapName.Trim()] = row.Value;

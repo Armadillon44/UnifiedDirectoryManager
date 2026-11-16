@@ -167,22 +167,34 @@ public sealed class ScenarioRunner
             }
 
             case ScenarioActionType.AddToGroups:
-                if (step.GroupDns.Count > 0)
-                    await _directory.ApplyChangesAsync(dn,
-                        new[] { new PendingChange { Op = ChangeOp.AddToGroups, Values = step.GroupDns.ToList() } }, ct);
-                detail = step.GroupDns.Count == 0
-                    ? "Add to on-prem groups (no groups configured)"
-                    : $"Added to {step.GroupDns.Count} on-prem group(s):" + Bullets(step.GroupDns.Select(NameResolver.RdnFallback));
-                break;
-
             case ScenarioActionType.RemoveFromGroups:
-                if (step.GroupDns.Count > 0)
+            {
+                var add = step.Action == ScenarioActionType.AddToGroups;
+                if (step.GroupDns.Count == 0)
+                {
+                    detail = add ? "Add to on-prem groups (no groups configured)" : "Remove from on-prem groups (no groups configured)";
+                    break;
+                }
+                // Resolve on copies: the run must act on where each group is NOW (found by its GUID), and must not
+                // edit the scenario it was handed. Saving the healed references is the stores' job, not the run's.
+                var dns = step.GroupDns.ToList();
+                var guids = new Dictionary<string, string>(step.GroupGuids, StringComparer.OrdinalIgnoreCase);
+                var resolved = await GroupLinks.ResolveAsync(_directory, dns, guids, ct);
+                if (resolved.CurrentDns.Count > 0)
                     await _directory.ApplyChangesAsync(dn,
-                        new[] { new PendingChange { Op = ChangeOp.RemoveFromGroups, Values = step.GroupDns.ToList() } }, ct);
-                detail = step.GroupDns.Count == 0
-                    ? "Remove from on-prem groups (no groups configured)"
-                    : $"Removed from {step.GroupDns.Count} on-prem group(s):" + Bullets(step.GroupDns.Select(NameResolver.RdnFallback));
+                        new[] { new PendingChange { Op = add ? ChangeOp.AddToGroups : ChangeOp.RemoveFromGroups, Values = resolved.CurrentDns.ToList() } }, ct);
+                detail = (add ? $"Added to {resolved.CurrentDns.Count} on-prem group(s):" : $"Removed from {resolved.CurrentDns.Count} on-prem group(s):")
+                         + Bullets(resolved.CurrentDns.Select(NameResolver.RdnFallback));
+                // The groups that were found are done; the step still fails so a missing group cannot pass as
+                // success. A group whose GUID is gone was deleted, and whatever now holds its old DN is a
+                // different group, which is why it is reported rather than used.
+                if (resolved.Missing.Count > 0)
+                    throw new InvalidOperationException(
+                        (resolved.CurrentDns.Count > 0 ? detail + " — but " : string.Empty)
+                        + $"{resolved.Missing.Count} group(s) no longer exist: "
+                        + string.Join(", ", resolved.Missing.Select(NameResolver.RdnFallback)));
                 break;
+            }
 
             case ScenarioActionType.SetAttribute:
             {

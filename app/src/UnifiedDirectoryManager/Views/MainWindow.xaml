@@ -85,6 +85,7 @@
                 <Separator />
                 <MenuItem Header="Add to Gr_oups…" Command="{Binding AddSelectedToGroupsCommand}" />
                 <MenuItem Header="Mo_ve to OU…" Command="{Binding MoveSelectedToOuCommand}" />
+                <MenuItem Header="Ren_ame Group…" Command="{Binding RenameSelectedCommand}" />
                 <MenuItem Header="Bul_k Edit…" Command="{Binding BulkEditCommand}" />
                 <Separator />
                 <!-- These act on the groups you SELECTED, unlike File's list export. -->

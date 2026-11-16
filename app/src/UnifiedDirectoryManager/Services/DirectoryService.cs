@@ -1,5 +1,6 @@
 using System.DirectoryServices;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using UnifiedDirectoryManager.Models;
@@ -597,6 +598,121 @@ public sealed class DirectoryService : IDirectoryService
             return newDn;
         }, cancellationToken);
     }
+
+    public Task<string> RenameObjectAsync(string distinguishedName, string newName, CancellationToken cancellationToken = default)
+    {
+        return Task.Run(() =>
+        {
+            var newDn = BuildRenamedDn(distinguishedName, newName);
+            // A null new parent is a rename in place, which is all this is.
+            using var conn = Required.CreateLdapConnection();
+            conn.SendRequest(new Protocols.ModifyDNRequest(distinguishedName, null, FirstRdn(newDn)));
+            AppLog.Instance.Info($"Renamed {distinguishedName} -> {newDn}.");
+            return newDn;
+        }, cancellationToken);
+    }
+
+    /// <summary>
+    /// The DN an object will have once renamed to <paramref name="newName"/>: same parent, same naming
+    /// attribute, the new value escaped for a raw LDAP DN. Public so the test fake builds DNs the same way.
+    /// </summary>
+    public static string BuildRenamedDn(string distinguishedName, string newName)
+    {
+        // Trimmed rather than escaped: RFC 4514 needs a leading or trailing space escaped, which EscapeDnValue
+        // does not do, and a name that starts or ends with a space is a typing slip anyway.
+        var value = (newName ?? string.Empty).Trim();
+        if (value.Length == 0) throw new ArgumentException("A name is required.", nameof(newName));
+
+        // Keep the naming attribute the object already has (CN for users and groups, OU for an OU).
+        var rdn = FirstRdn(distinguishedName);
+        var eq = rdn.IndexOf('=');
+        if (eq <= 0) throw new InvalidOperationException($"'{distinguishedName}' has no naming attribute to rename.");
+        // EscapeDnValue, not EscapeRdn: this is a raw LDAP DN, and EscapeRdn adds the ADsPath "\/" escape that
+        // only ADSI's Children.Add understands.
+        var newRdn = rdn[..eq] + "=" + EscapeDnValue(value);
+        var parent = ParentDn(distinguishedName);
+        return string.IsNullOrEmpty(parent) ? newRdn : newRdn + "," + parent;
+    }
+
+    public Task<string?> GetObjectGuidAsync(string distinguishedName, CancellationToken cancellationToken = default) =>
+        Task.Run(() =>
+        {
+            if (string.IsNullOrWhiteSpace(distinguishedName)) return null;
+            try
+            {
+                using var entry = Required.CreateEntry(distinguishedName);
+                entry.RefreshCache(new[] { "objectGUID" });
+                return entry.Properties["objectGUID"].Value is byte[] { Length: 16 } bytes
+                    ? new Guid(bytes).ToString()
+                    : null;
+            }
+            catch (COMException ex) when (IsNoSuchObject(ex)) { return null; }
+        }, cancellationToken);
+
+    public Task<string?> FindDnByGuidAsync(string objectGuid, CancellationToken cancellationToken = default) =>
+        Task.Run(() =>
+        {
+            if (!Guid.TryParse(objectGuid, out var guid)) return null;
+            // ADSI binds by GUID through the "<GUID=…>" form, which takes the octet string as AD stores it.
+            // Guid.ToByteArray gives exactly that order, which is not the order of the dashed text.
+            var octets = string.Concat(guid.ToByteArray().Select(b => b.ToString("x2")));
+            return DnOfBoundEntry($"<GUID={octets}>");
+        }, cancellationToken);
+
+    public Task<string?> FindDnBySidAsync(string sid, CancellationToken cancellationToken = default) =>
+        Task.Run(() =>
+        {
+            var text = (sid ?? string.Empty).Trim();
+            if (!text.StartsWith("S-", StringComparison.OrdinalIgnoreCase)) return null;
+            return DnOfBoundEntry($"<SID={text}>");
+        }, cancellationToken);
+
+    /// <summary>
+    /// Binds to an ADSI "&lt;GUID=…&gt;" or "&lt;SID=…&gt;" path and returns the object's DN, or null when
+    /// nothing answers to it.
+    /// </summary>
+    private string? DnOfBoundEntry(string specialPath)
+    {
+        try
+        {
+            using var entry = Required.CreateEntry(specialPath);
+            entry.RefreshCache(new[] { "distinguishedName" });
+            return entry.Properties["distinguishedName"].Value as string;
+        }
+        catch (COMException ex) when (IsNoSuchObject(ex)) { return null; }
+    }
+
+    /// <summary>
+    /// "There is no such object on the server" (0x80072030), as opposed to a refusal or a dead connection,
+    /// which must not be mistaken for an answer of "nothing there".
+    /// </summary>
+    private static bool IsNoSuchObject(COMException ex) => ex.ErrorCode == unchecked((int)0x80072030);
+
+    public Task<IReadOnlyList<string>> FindAddressOwnersAsync(string address, CancellationToken cancellationToken = default) =>
+        Task.Run<IReadOnlyList<string>>(() =>
+        {
+            var bare = (address ?? string.Empty).Trim();
+            if (bare.StartsWith("smtp:", StringComparison.OrdinalIgnoreCase)) bare = bare[5..];
+            if (bare.Length == 0) return Array.Empty<string>();
+            var esc = LdapFilter.EscapeValue(bare);
+            using var root = Required.CreateEntry();
+            // proxyAddresses compares without regard to case, so "smtp:" also finds a primary "SMTP:" entry.
+            using var searcher = new DirectorySearcher(root)
+            {
+                SearchScope = SearchScope.Subtree,
+                Filter = $"(|(mail={esc})(proxyAddresses=smtp:{esc}))",
+                PageSize = 100,
+            };
+            searcher.PropertiesToLoad.Add("distinguishedName");
+            using var results = searcher.FindAll();
+            var owners = new List<string>();
+            foreach (SearchResult r in results)
+            {
+                var dn = GetString(r, "distinguishedName");
+                if (!string.IsNullOrEmpty(dn)) owners.Add(dn);
+            }
+            return owners;
+        }, cancellationToken);
 
     public Task ResetPasswordAsync(
         string distinguishedName, string newPassword, bool mustChangeAtNextLogon, bool unlock,

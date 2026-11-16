@@ -193,7 +193,7 @@ list of what the app can do.
 - **Action** — everything you can do **to what you have selected**, and the only menu you need for
   that. It opens with a **New** submenu (User…, Bulk Create Users…, Group…, OU…), then:
   Properties… | Enable / Disable / Unlock Account(s), **Reset Password…** | Copy User…, Copy Groups
-  to User…, Save as Template… | Add to Groups…, Move to OU…, Bulk Edit… | Export Group Members to
+  to User…, Save as Template… | Add to Groups…, Move to OU…, Rename Group…, Bulk Edit… | Export Group Members to
   CSV…, Append Group Members to CSV…, Run Scenario on Selected | Delete Selected….
   **In the cloud view the same menu shows the cloud vocabulary instead**: New ▸ Cloud Group…,
   Properties…, Enable / Disable Account(s), Revoke Sessions. Items a cloud object cannot have — there
@@ -451,7 +451,7 @@ replaced, because the `DSID` in it is what Microsoft support asks for.
 > A node can still go stale if the OU is deleted **somewhere else** — in ADUC, or by a colleague —
 > while your tree is open. Clicking it then says the above; **F5** refreshes the tree.
 
-## Groups: create, modify, delete
+## Groups: create, rename, modify, delete
 
 **Create** — right-click an OU (or the domain root) in the tree and choose **New Group Here…**, or
 use **Action ▸ New ▸ Group…** and pick the OU with the **Browse…** button. The dialog takes the **group
@@ -470,6 +470,39 @@ happens they are retried one at a time, so the legal ones land and the warning c
 ***Managed by*** picker. Changing Global ↔ Domain local directly is rejected up front with an
 explanation (Active Directory requires an intermediate hop through Universal), rather than being
 sent to the directory to fail.
+
+**Rename** *(2.3.10.)*: select one group and use **Action ▸ Rename Group…**, **Rename…** on the row's
+right-click menu, the **Rename…** button in the edit pane, or the **Rename…** button on a cloud group's
+properties. One dialog renames every kind of group, through whichever service owns it:
+
+- **An Active Directory group**: its **group name** (the name in the tree), its **pre-Windows 2000
+  name** and its **display name**. The last two follow the name as you type, as in ADUC, until you edit
+  one yourself. Members, permissions and the link to Microsoft 365 are unaffected, because none of them
+  depend on the name. A synced group's new name reaches Entra ID, Teams and Exchange Online at the next
+  Entra Connect sync, so when an Entra Connect server is set up the dialog offers **Sync now** afterwards.
+- **A synced group opened from the Entra ID or Exchange Online list** is renamed in Active Directory,
+  since Microsoft 365 refuses changes to a synced group. The dialog says so.
+- **An Entra security group**: its name, through Microsoft Graph.
+- **A Microsoft 365 group or Team**: its name, through Graph. A naming policy for Microsoft 365 groups
+  can add a prefix or suffix, so the dialog shows the name Entra actually set. The Team takes the new
+  name; its SharePoint site address does not change.
+- **A distribution list, mail-enabled security group or room list**: its name and display name together,
+  through Exchange Online, so the address book shows the new name. Your organization's distribution group
+  naming policy applies, and the dialog shows the name Exchange set.
+
+**Also change the email address** (for mail-enabled groups) sets a new primary address, suggested from the
+new name when the old address was made from the old name, and **keeps the old address as a secondary**,
+so mail sent to it still arrives. Before anything is written the dialog checks that the new names and
+address are free: in the OU and the domain for an Active Directory group, in Exchange Online, and in
+Microsoft 365, where an address that clashes with a cloud-only object would otherwise be dropped by sync
+without an error anyone sees. An Active Directory group is renamed in two writes, one for the names and
+one for the name in the tree. If the second is refused the dialog says exactly that, and trying again
+renames only what is left. Every rename is written to the log with the old and new values.
+
+**Templates and scenarios find their groups by GUID** *(2.3.10.)*, so renaming or moving a group, in this
+app or in ADUC, no longer drops it from them. Older templates and scenarios are upgraded when the app
+connects to Active Directory, while their groups can still be found. A group that has since been deleted is
+reported, never replaced by whatever group now has its old name.
 
 **Delete** — select one or more groups in the list and use **Action ▸ Delete Selected…** or the row
 right-click. The confirmation lists exactly what will be removed. Deleting **several** objects at once
@@ -1058,7 +1091,9 @@ Selecting a row fills the detail pane. Its property sections are:
 
 **What you can edit here.** On a **cloud-only** user: display name, first and last name, job title,
 department, company, employee ID and type, office, street, city, state, postal code, country, mobile
-and fax. On a **cloud-only** group: display name, description and mail nickname. **Usage location**
+and fax. On a **cloud-only** group: display name, description and mail nickname. A distribution list
+or mail-enabled security group is the exception *(2.3.10.)*: Graph cannot change those, so in this list
+their rows are read-only and point you to **Rename…** or to the group under Exchange Online. **Usage location**
 is editable even on a synced user, because a licence cannot be assigned until it is set. Everything
 else is read-only, and says which of the two reasons applies: *Synced from on-premises AD — edit it
 in Active Directory and run a directory sync*, or *System-managed — not editable in Entra ID*.
@@ -1163,7 +1198,9 @@ stores — the app phrases it the way an operator thinks about it, not the way t
 Selecting a group loads seven sections: **Identity**, **Description**, **Addresses**, **Visibility**,
 **Ownership and joining**, **Mail flow**, and **Moderation**. Double-clicking a row, or the
 **Members…** button under the group's name in the pane header, opens the **Distribution group
-members** window with **Add members…**, **Paste a list…** and **Remove selected**.
+members** window with **Add members…**, **Paste a list…** and **Remove selected**. The **Rename…**
+button beside it changes the group's name and, optionally, its primary address *(2.3.10.)*; see
+[Groups: create, rename, modify, delete](#groups-create-rename-modify-delete).
 
 Adds and removes run one Exchange call per member — that is what the cmdlets accept — and each is
 reported individually. Both are idempotent, and the list re-reads from the server afterwards rather

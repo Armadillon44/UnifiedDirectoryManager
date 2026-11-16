@@ -21,6 +21,7 @@ public partial class ScenarioStepRow : ObservableObject
         _attribute = string.IsNullOrWhiteSpace(step.Attribute) ? "description" : step.Attribute;
         _value = step.Value;
         _targetOu = step.TargetOu;
+        _groupGuids = new Dictionary<string, string>(step.GroupGuids, StringComparer.OrdinalIgnoreCase);
         foreach (var dn in step.GroupDns)
             Groups.Add(new AdObjectRow { DistinguishedName = dn, Name = NameResolver.RdnFallback(dn), Type = AdObjectType.Group });
         foreach (var g in step.CloudGroups)
@@ -39,6 +40,9 @@ public partial class ScenarioStepRow : ObservableObject
 
     /// <summary>Groups for Add/Remove-from-groups steps (display rows; DNs are what get saved).</summary>
     public ObservableCollection<AdObjectRow> Groups { get; } = new();
+
+    /// <summary>The loaded step's group GUIDs, carried into <see cref="ToStep"/>; see <see cref="GroupLinks"/>.</summary>
+    private readonly IReadOnlyDictionary<string, string> _groupGuids = new Dictionary<string, string>();
 
     /// <summary>Entra ID groups for Cloud Add/Remove-from-groups steps.</summary>
     public ObservableCollection<CloudGroupRef> CloudGroups { get; } = new();
@@ -128,6 +132,9 @@ public partial class ScenarioStepRow : ObservableObject
         Value = ShowValue ? Value : string.Empty,
         TargetOu = ShowOu ? TargetOu.Trim() : string.Empty,
         GroupDns = ShowGroups ? Groups.Select(g => g.DistinguishedName).ToList() : new List<string>(),
+        GroupGuids = ShowGroups
+            ? GroupLinks.Carry(_groupGuids, Groups.Select(g => g.DistinguishedName))
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
         CloudGroups = ShowCloudGroups
             ? CloudGroups.Select(g => new CloudGroupRef { Id = g.Id, Name = g.Name }).ToList()
             : new List<CloudGroupRef>(),

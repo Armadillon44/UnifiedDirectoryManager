@@ -25,6 +25,14 @@ public sealed class UserTemplate
     public List<string> GroupDns { get; set; } = new();
 
     /// <summary>
+    /// The objectGUID of each group in <see cref="GroupDns"/>, keyed by that DN. A DN changes whenever a group is
+    /// renamed or moved, in this app or in ADUC; the GUID never does, so it is how a stored group is found again.
+    /// Kept beside the DN list rather than replacing it so an older version of the app still reads the file.
+    /// See <see cref="Services.GroupLinks"/>.
+    /// </summary>
+    public Dictionary<string, string> GroupGuids { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Entra ID (cloud) security / Microsoft 365 groups the new user is added to after creation (via Microsoft
     /// Graph). Because cloud group membership requires the user to exist in Entra first, selecting any of these
     /// makes a post-create Entra Connect sync mandatory (the new-user wizard runs the sync, waits for the user

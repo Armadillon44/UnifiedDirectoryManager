@@ -136,6 +136,18 @@ public interface IGraphService
     /// <summary>PATCHes the given editable group properties (key→value; empty value clears the property).</summary>
     Task UpdateGroupAsync(string groupId, IReadOnlyDictionary<string, string?> changes, CancellationToken cancellationToken = default);
 
+    /// <summary>A group's names and kind, for renaming it; null when there is no group with that ID.</summary>
+    Task<CloudGroupNaming?> GetGroupNamingAsync(string groupId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Every user, group and contact that holds <paramref name="address"/> as a proxy address (primary or
+    /// secondary), so a new address can be checked before it is given to something else.
+    /// </summary>
+    Task<IReadOnlyList<CloudAddressOwner>> FindAddressOwnersAsync(string address, CancellationToken cancellationToken = default);
+
+    /// <summary>The IDs of the groups whose display name is exactly <paramref name="displayName"/>.</summary>
+    Task<IReadOnlyList<string>> FindGroupIdsByDisplayNameAsync(string displayName, CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Directly assigns a license SKU to a user. Prefer group-based licensing where it exists; this is the
     /// direct-assignment path. Fails if the user has no usageLocation or no units are available.

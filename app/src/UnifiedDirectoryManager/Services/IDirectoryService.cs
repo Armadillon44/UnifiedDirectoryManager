@@ -181,6 +181,33 @@ public interface IDirectoryService
     Task<string> MoveObjectAsync(string distinguishedName, string newParentDn, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Renames an object in place: a modify-DN that gives it a new RDN value under the same parent, which is
+    /// the only way AD lets <c>cn</c> / <c>name</c> change. Returns the object's new DN. Every DN-valued
+    /// reference to the object (<c>member</c>, <c>manager</c>, <c>managedBy</c>) is updated by AD itself.
+    /// </summary>
+    /// <param name="newName">The new RDN value, unescaped ("Sales, East"), not "CN=…".</param>
+    Task<string> RenameObjectAsync(string distinguishedName, string newName, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The object's objectGUID in standard form, or null when no object has that DN. The GUID never changes
+    /// when an object is renamed or moved, which is why stored references keep it.
+    /// </summary>
+    Task<string?> GetObjectGuidAsync(string distinguishedName, CancellationToken cancellationToken = default);
+
+    /// <summary>The current DN of the object with this objectGUID, or null when there is none.</summary>
+    Task<string?> FindDnByGuidAsync(string objectGuid, CancellationToken cancellationToken = default);
+
+    /// <summary>The current DN of the security principal with this SID ("S-1-5-21-…"), or null when there is none.</summary>
+    Task<string?> FindDnBySidAsync(string sid, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The DNs of every object in the domain that holds <paramref name="address"/> as its <c>mail</c> or as any
+    /// of its <c>proxyAddresses</c> (primary or secondary), so an address can be checked before it is given to
+    /// something else. Matching is case-insensitive, as AD's is.
+    /// </summary>
+    Task<IReadOnlyList<string>> FindAddressOwnersAsync(string address, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Sets a new password for a user via ADSI <c>SetPassword</c>, sets <c>pwdLastSet</c> to require (or
     /// not) a change at next logon, and optionally unlocks the account. The password is never logged.
     /// </summary>

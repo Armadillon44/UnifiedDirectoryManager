@@ -845,6 +845,92 @@ public sealed class ExchangeService : IExchangeService, IDisposable
         return unchanged;
     }
 
+    public async Task<DistributionGroupNaming> GetDistributionGroupNamingAsync(string identity, CancellationToken cancellationToken = default)
+    {
+        // A Get- cmdlet given a blank identity returns EVERY group.
+        if (string.IsNullOrWhiteSpace(identity)) throw new ArgumentException("A group is required.", nameof(identity));
+        var data = await RunOpAsync(new { op = "get-dl-naming", identity }, cancellationToken).ConfigureAwait(false);
+        return ToNaming(data, "Exchange Online returned no names for that group.");
+    }
+
+    public async Task<DistributionGroupNaming> RenameDistributionGroupAsync(
+        string identity, string name, string displayName, string? newPrimaryAddress, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(identity)) throw new ArgumentException("A group is required.", nameof(identity));
+        if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("A name is required.", nameof(name));
+        if (string.IsNullOrWhiteSpace(displayName)) throw new ArgumentException("A display name is required.", nameof(displayName));
+        var data = await RunOpAsync(new
+        {
+            op = "rename-dl",
+            identity,
+            name = name.Trim(),
+            displayName = displayName.Trim(),
+            primary = string.IsNullOrWhiteSpace(newPrimaryAddress) ? string.Empty : newPrimaryAddress.Trim(),
+        }, cancellationToken).ConfigureAwait(false);
+        return ToNaming(data, "Exchange Online renamed the group but did not report its names.");
+    }
+
+    public async Task<IReadOnlyList<string>> SetUnifiedGroupPrimaryAddressAsync(
+        string identity, string newPrimaryAddress, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(identity)) throw new ArgumentException("A group is required.", nameof(identity));
+        if (string.IsNullOrWhiteSpace(newPrimaryAddress)) throw new ArgumentException("An address is required.", nameof(newPrimaryAddress));
+        var data = await RunOpAsync(new { op = "set-unified-primary", identity, primary = newPrimaryAddress.Trim() }, cancellationToken)
+            .ConfigureAwait(false);
+        return data is { ValueKind: JsonValueKind.Object } d && d.TryGetProperty("EmailAddresses", out var a)
+            ? Strings(a)
+            : Array.Empty<string>();
+    }
+
+    public async Task<IReadOnlyList<RecipientConflict>> FindRecipientConflictsAsync(
+        string? name, string? address, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(address)) return Array.Empty<RecipientConflict>();
+        var data = await RunOpAsync(new
+        {
+            op = "recipient-conflicts",
+            name = (name ?? string.Empty).Trim(),
+            address = (address ?? string.Empty).Trim(),
+        }, cancellationToken).ConfigureAwait(false);
+        var list = new List<RecipientConflict>();
+        foreach (var e in Elements(data))
+        {
+            string S(string p) => e.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
+            var entraId = S("ExternalDirectoryObjectId");
+            list.Add(new RecipientConflict(S("Identity"), S("DisplayName"), S("Kind"), S("Field"), entraId.Length == 0 ? null : entraId));
+        }
+        return list;
+    }
+
+    /// <summary>Reads a group's names from a host reply.</summary>
+    private static DistributionGroupNaming ToNaming(JsonElement? data, string whenEmpty)
+    {
+        if (data is not { ValueKind: JsonValueKind.Object } d) throw new ExchangeException(whenEmpty);
+        string S(string p) => d.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
+        var id = S("ExternalDirectoryObjectId");
+        return new DistributionGroupNaming(
+            S("Guid"), S("Name"), S("DisplayName"), S("Alias"), S("PrimarySmtpAddress"),
+            d.TryGetProperty("EmailAddresses", out var a) ? Strings(a) : Array.Empty<string>(),
+            S("IsDirSynced") == "Yes", id.Length == 0 ? null : id, S("RecipientTypeDetails"));
+    }
+
+    /// <summary>The strings of a JSON array, or of a lone string (ConvertTo-Json renders a one-item array as its item).</summary>
+    private static IReadOnlyList<string> Strings(JsonElement e) => e.ValueKind switch
+    {
+        JsonValueKind.Array => e.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String)
+                                .Select(x => x.GetString() ?? string.Empty).Where(s => s.Length > 0).ToList(),
+        JsonValueKind.String when !string.IsNullOrEmpty(e.GetString()) => new[] { e.GetString()! },
+        _ => Array.Empty<string>(),
+    };
+
+    /// <summary>The objects of a host reply that may be an array, a single object, or nothing.</summary>
+    private static IEnumerable<JsonElement> Elements(JsonElement? data) => data switch
+    {
+        { ValueKind: JsonValueKind.Array } arr => arr.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.Object).ToList(),
+        { ValueKind: JsonValueKind.Object } one => new[] { one },
+        _ => Array.Empty<JsonElement>(),
+    };
+
     // The tooltip names the object type: a mailbox and a distribution group send the operator to different
     // places, so a group row explaining where mailbox settings are changed is the wrong explanation.
     private const string MailboxRowTip =
@@ -1391,6 +1477,27 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                 [string]$obj.Name
             )
             foreach ($id in $ids) { if ($id -and $id.Trim('{', '}') -eq $w) { return $true } }
+            return $false
+        }
+
+        # A distribution group's names, as the rename ops read and report them.
+        function __naming($g) {
+            @{
+                Guid = [string]$g.Guid
+                Name = [string]$g.Name
+                DisplayName = [string]$g.DisplayName
+                Alias = [string]$g.Alias
+                PrimarySmtpAddress = [string]$g.PrimarySmtpAddress
+                EmailAddresses = @($g.EmailAddresses | ForEach-Object { [string]$_ })
+                IsDirSynced = (__yn $g.IsDirSynced)
+                ExternalDirectoryObjectId = [string]$g.ExternalDirectoryObjectId
+                RecipientTypeDetails = [string]$g.RecipientTypeDetails
+            }
+        }
+
+        # True when $list (EmailAddresses, with prefixes) holds $address as any kind of SMTP address.
+        function __holdsAddress($list, $address) {
+            foreach ($a in @($list)) { if ((([string]$a) -replace '^smtp:', '') -eq $address) { return $true } }
             return $false
         }
 
@@ -2081,6 +2188,102 @@ public sealed class ExchangeService : IExchangeService, IDisposable
                                 $wsp['ErrorAction'] = 'Stop'
                                 Set-DistributionGroup @wsp
                                 __emit @{ ok = $true }
+                            }
+                            'get-dl-naming' {
+                                $wantN = ([string]$r.identity).Trim()
+                                if ([string]::IsNullOrWhiteSpace($wantN)) { throw 'A group is required.' }
+                                # A non-existent -Identity returns EVERY group; __isWanted is what stops the
+                                # first unrelated one being described as this one.
+                                $ng = Get-DistributionGroup -Identity $r.identity -ErrorAction Stop | Select-Object -First 1
+                                if ($null -eq $ng) { throw "No group was returned for '$wantN'." }
+                                if (-not (__isWanted $ng $wantN)) { throw "Exchange did not return the group '$wantN'." }
+                                __emit @{ ok = $true; data = (__naming $ng) }
+                            }
+                            'rename-dl' {
+                                $wantR = ([string]$r.identity).Trim()
+                                if ([string]::IsNullOrWhiteSpace($wantR)) { throw 'A group is required.' }
+                                $rg = Get-DistributionGroup -Identity $r.identity -ErrorAction Stop | Select-Object -First 1
+                                if ($null -eq $rg) { throw "No group was returned for '$wantR'." }
+                                if (-not (__isWanted $rg $wantR)) { throw "Exchange did not return the group '$wantR'." }
+                                if ([string]$rg.IsDirSynced -eq 'True') {
+                                    throw "'$([string]$rg.DisplayName)' is synchronized from on-premises Active Directory. Rename it in Active Directory."
+                                }
+                                $rName = ([string]$r.name).Trim()
+                                $rDisplay = ([string]$r.displayName).Trim()
+                                $rPrimary = ([string]$r.primary).Trim()
+                                if ([string]::IsNullOrWhiteSpace($rName) -or [string]::IsNullOrWhiteSpace($rDisplay)) {
+                                    throw 'A name and a display name are both required.'
+                                }
+                                $rGuid = [string]$rg.Guid
+                                $rOld = [string]$rg.PrimarySmtpAddress
+                                # Name and DisplayName together: Microsoft's own rename sets both, and warns that
+                                # without DisplayName the address book keeps showing the old name. No
+                                # -IgnoreNamingPolicy: the organization's naming policy applies, and the names
+                                # read back below are what it produced.
+                                $rp = @{ Identity = $rGuid; Name = $rName; DisplayName = $rDisplay
+                                         BypassSecurityGroupManagerCheck = $true; ErrorAction = 'Stop' }
+                                if ($rPrimary) { $rp['PrimarySmtpAddress'] = $rPrimary }
+                                Set-DistributionGroup @rp
+                                # The old primary must keep delivering. Exchange normally demotes it to a
+                                # secondary on its own; this makes sure, rather than trusting that it did.
+                                if ($rPrimary -and $rOld -and ($rOld -ne $rPrimary)) {
+                                    $rAfter = Get-DistributionGroup -Identity $rGuid -ErrorAction Stop | Select-Object -First 1
+                                    if (-not (__holdsAddress $rAfter.EmailAddresses $rOld)) {
+                                        Set-DistributionGroup -Identity $rGuid -EmailAddresses @{ Add = "smtp:$rOld" } -BypassSecurityGroupManagerCheck -ErrorAction Stop
+                                    }
+                                }
+                                $rDone = Get-DistributionGroup -Identity $rGuid -ErrorAction Stop | Select-Object -First 1
+                                __emit @{ ok = $true; data = (__naming $rDone) }
+                            }
+                            'set-unified-primary' {
+                                $wantU = ([string]$r.identity).Trim()
+                                $uPrimary = ([string]$r.primary).Trim()
+                                if ([string]::IsNullOrWhiteSpace($wantU) -or [string]::IsNullOrWhiteSpace($uPrimary)) {
+                                    throw 'A group and an address are both required.'
+                                }
+                                $ug = Get-UnifiedGroup -Identity $r.identity -ErrorAction Stop | Select-Object -First 1
+                                if ($null -eq $ug) { throw "No Microsoft 365 group was returned for '$wantU'." }
+                                if (-not (__isWanted $ug $wantU)) { throw "Exchange did not return the Microsoft 365 group '$wantU'." }
+                                $uGuid = [string]$ug.Guid
+                                $uOld = [string]$ug.PrimarySmtpAddress
+                                Set-UnifiedGroup -Identity $uGuid -PrimarySmtpAddress $uPrimary -ErrorAction Stop
+                                if ($uOld -and ($uOld -ne $uPrimary)) {
+                                    $uAfter = Get-UnifiedGroup -Identity $uGuid -ErrorAction Stop | Select-Object -First 1
+                                    if (-not (__holdsAddress $uAfter.EmailAddresses $uOld)) {
+                                        Set-UnifiedGroup -Identity $uGuid -EmailAddresses @{ Add = "smtp:$uOld" } -ErrorAction Stop
+                                    }
+                                }
+                                $uDone = Get-UnifiedGroup -Identity $uGuid -ErrorAction Stop | Select-Object -First 1
+                                __emit @{ ok = $true; data = @{
+                                    PrimarySmtpAddress = [string]$uDone.PrimarySmtpAddress
+                                    EmailAddresses = @($uDone.EmailAddresses | ForEach-Object { [string]$_ })
+                                } }
+                            }
+                            'recipient-conflicts' {
+                                # Who already holds a name or an address. -Filter, not -Identity, so the
+                                # returns-everything trap does not apply: a filter that matches nothing returns nothing.
+                                $cName = ([string]$r.name).Trim()
+                                $cAddr = ([string]$r.address).Trim()
+                                $cOut = @()
+                                if ($cName) {
+                                    $cEsc = $cName.Replace("'", "''")
+                                    foreach ($cr in @(Get-Recipient -ResultSize 10 -Filter "Name -eq '$cEsc'" -ErrorAction SilentlyContinue)) {
+                                        $cOut += @{ Identity = [string]$cr.Guid; DisplayName = [string]$cr.DisplayName
+                                                    Kind = [string]$cr.RecipientTypeDetails; Field = 'Name'
+                                                    ExternalDirectoryObjectId = [string]$cr.ExternalDirectoryObjectId }
+                                    }
+                                }
+                                if ($cAddr) {
+                                    $aEsc = $cAddr.Replace("'", "''")
+                                    # With and without the prefix: either finds a primary or a secondary address.
+                                    $aFilter = "EmailAddresses -eq 'smtp:$aEsc' -or EmailAddresses -eq '$aEsc'"
+                                    foreach ($cr in @(Get-Recipient -ResultSize 10 -Filter $aFilter -ErrorAction SilentlyContinue)) {
+                                        $cOut += @{ Identity = [string]$cr.Guid; DisplayName = [string]$cr.DisplayName
+                                                    Kind = [string]$cr.RecipientTypeDetails; Field = 'Address'
+                                                    ExternalDirectoryObjectId = [string]$cr.ExternalDirectoryObjectId }
+                                    }
+                                }
+                                __emit @{ ok = $true; data = $cOut }
                             }
                             'resolve-recipients' {
                                 # Resolves a BATCH of pasted terms in one round trip. One op per term would be

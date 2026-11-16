@@ -95,6 +95,13 @@ public sealed class ScenarioStep
     /// <summary>Group DNs for AddToGroups / RemoveFromGroups.</summary>
     public List<string> GroupDns { get; set; } = new();
 
+    /// <summary>
+    /// The objectGUID of each group in <see cref="GroupDns"/>, keyed by that DN, so a renamed or moved group is
+    /// still found, and a different group that later takes the old name is never mistaken for it. See
+    /// <see cref="Services.GroupLinks"/>.
+    /// </summary>
+    public Dictionary<string, string> GroupGuids { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Entra ID groups for CloudAddToGroups / CloudRemoveFromGroups.</summary>
     public List<CloudGroupRef> CloudGroups { get; set; } = new();
 

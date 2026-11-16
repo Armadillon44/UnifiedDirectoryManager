@@ -43,14 +43,31 @@ public static class CloudPropertyRules
         _ => null,
     };
 
+    /// <summary>
+    /// Why a cloud-only distribution list or mail-enabled security group shows its directory rows read-only in the
+    /// Entra view. Graph refuses every write to these groups, so offering the edit was offering a guaranteed failure.
+    /// </summary>
+    public const string ExchangeManagedTip =
+        "Distribution lists and mail-enabled security groups are managed by Exchange Online, and Microsoft Graph "
+        + "cannot change them. Use Rename… for the name, or open the group under Exchange Online for its other settings.";
+
     /// <summary>Builds a classified row: editable rows keep the raw value (blank when empty); others show "—".</summary>
-    public static CloudProperty Make(CloudObjectKind kind, bool isSynced, string key, string label, string? value)
+    /// <param name="exchangeManaged">True for a distribution list or mail-enabled security group, which Graph
+    /// cannot write; its otherwise-editable rows are shown read-only with <see cref="ExchangeManagedTip"/>.</param>
+    public static CloudProperty Make(CloudObjectKind kind, bool isSynced, string key, string label, string? value,
+                                     bool exchangeManaged = false)
     {
         var editability = Classify(kind, key, isSynced);
+        var tooltip = Tooltip(editability);
+        if (exchangeManaged && editability == CloudPropertyEditability.Editable)
+        {
+            editability = CloudPropertyEditability.SystemReadOnly;
+            tooltip = ExchangeManagedTip;
+        }
         var display = string.IsNullOrWhiteSpace(value)
             ? (editability == CloudPropertyEditability.Editable ? string.Empty : "—")
             : value!;
-        return new CloudProperty(key, label, display, editability, Tooltip(editability),
+        return new CloudProperty(key, label, display, editability, tooltip,
                                  help: CloudPropertyHelp.For(key));
     }
 

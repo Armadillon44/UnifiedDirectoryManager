@@ -74,6 +74,8 @@
                     <MenuItem Header="Save as template…" Command="{Binding SaveSelectedAsTemplateCommand}"
                               Visibility="{Binding SelectionHasUsers, Converter={StaticResource BoolToVis}}" />
                     <MenuItem Header="Move to OU…" Command="{Binding MoveSelectedToOuCommand}" />
+                    <MenuItem Header="Rename…" Command="{Binding RenameSelectedCommand}"
+                              Visibility="{Binding SelectionIsOneGroup, Converter={StaticResource BoolToVis}}" />
                     <MenuItem Header="Bulk edit…" Command="{Binding BulkEditCommand}" />
                     <MenuItem Header="Export members to CSV…" Command="{Binding ExportGroupMembersCommand}"
                               Visibility="{Binding SelectionHasGroups, Converter={StaticResource BoolToVis}}" />

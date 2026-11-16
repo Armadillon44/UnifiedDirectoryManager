@@ -119,6 +119,12 @@ public partial class EditPaneViewModel : ObservableObject
     /// <summary>Raised after a successful write so the host can refresh the list view.</summary>
     public event Action? ObjectChanged;
 
+    /// <summary>
+    /// Raised with (old DN, new DN) after this pane moves or renames a group, so the host can point the templates
+    /// and scenarios that use the group at where it is now.
+    /// </summary>
+    public event Action<string, string>? GroupDnChanged;
+
     private readonly List<AdAttribute> _editableFields = new();
     private string? _pendingManagerDn; // null = unchanged, "" = clear, otherwise new DN
     private string? _pendingManagedByDn; // groups: null = unchanged, "" = clear, otherwise new DN
@@ -1248,7 +1254,9 @@ public partial class EditPaneViewModel : ObservableObject
         IsBusy = true;
         try
         {
-            _dn = await _directory.MoveObjectAsync(_dn!, target); // DN changes after a move
+            var oldDn = _dn!;
+            _dn = await _directory.MoveObjectAsync(oldDn, target); // DN changes after a move
+            if (IsGroup) GroupDnChanged?.Invoke(oldDn, _dn);
             Location = DirectoryService.ParentDn(_dn);
             BusyMessage = "Refreshing…";
             if (HasUnsavedChanges()) await RefreshReadOnlyAsync();
@@ -1257,6 +1265,26 @@ public partial class EditPaneViewModel : ObservableObject
         }
         catch (Exception ex) { _onError(DirectoryService.Friendly(ex)); }
         finally { IsBusy = false; }
+    }
+
+    /// <summary>
+    /// Rename… for the group open in this pane. The dialog writes some of the same names this pane edits, so
+    /// unsaved edits are dealt with first (Save / Discard / Cancel), and the group is read again afterwards.
+    /// </summary>
+    [RelayCommand]
+    private async Task RenameAsync()
+    {
+        if (_dn is null || !IsGroup) return;
+        var hadEdits = HasUnsavedChanges();
+        if (!await ConfirmLeaveAsync()) return;
+
+        var oldDn = _dn;
+        var outcome = _dialogs.ShowRenameGroup(new GroupRenameSource(GroupRenameOrigin.OnPremDn, oldDn, Title));
+        // Read again when something was written, and also after a Discard that was followed by a cancelled
+        // dialog: the operator chose to drop those edits, and leaving them on screen would undo that choice.
+        if (outcome is null && !hadEdits) return;
+        await LoadAsync(outcome?.Identity ?? oldDn, AdObjectType.Group);
+        if (outcome is not null) ObjectChanged?.Invoke();
     }
 
     [RelayCommand]

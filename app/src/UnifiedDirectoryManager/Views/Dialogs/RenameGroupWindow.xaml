@@ -1,0 +1,108 @@
+<Window x:Class="UnifiedDirectoryManager.Views.Dialogs.RenameGroupWindow"
+        x:Name="Root"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="{Binding Title}" Height="560" Width="600" MinHeight="420" MinWidth="480"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <DockPanel Margin="14">
+        <!-- Buttons dock first so they always keep their width; a long status wraps into what is left. -->
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Bottom">
+                <Button x:Name="SyncNowButton" Content="Sync now" MinWidth="90" Margin="0,0,8,0"
+                        Command="{Binding SyncNowCommand}"
+                        Visibility="{Binding ShowSyncNow, Converter={StaticResource BoolToVis}}"
+                        ToolTip="Starts an Entra Connect delta sync, so the new name reaches Entra ID, Teams and Exchange Online now rather than at the next scheduled cycle." />
+                <Button x:Name="RenameButton" Content="Rename" IsDefault="True" MinWidth="90" Command="{Binding RenameCommand}"
+                        Visibility="{Binding ShowRenameButton, Converter={StaticResource BoolToVis}}" />
+                <Button x:Name="CloseButton" Content="{Binding CloseLabel}" IsCancel="True" MinWidth="90" Margin="8,0,0,0" />
+            </StackPanel>
+            <TextBlock x:Name="StatusText" Text="{Binding Status}" Foreground="#666" VerticalAlignment="Center"
+                       TextWrapping="Wrap" Margin="0,0,8,0" />
+        </DockPanel>
+
+        <TextBlock DockPanel.Dock="Top" Text="Reading the group…" Foreground="#666" Margin="0,0,0,8"
+                   Visibility="{Binding IsLoading, Converter={StaticResource BoolToVis}}" />
+
+        <ScrollViewer VerticalScrollBarVisibility="Auto"
+                      Visibility="{Binding ShowForm, Converter={StaticResource BoolToVis}}">
+            <StackPanel>
+                <TextBlock x:Name="KindText" Text="{Binding KindLabel}" FontWeight="SemiBold" Margin="0,0,0,10" />
+
+                <Grid x:Name="FormGrid" IsEnabled="{Binding IsEditable}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <!-- On-prem and Exchange groups: the name, separate from the display name. -->
+                    <TextBlock Grid.Row="0" Text="{Binding NameLabel}" Foreground="#666" Margin="0,0,10,8" VerticalAlignment="Center"
+                               Visibility="{Binding ShowName, Converter={StaticResource BoolToVis}}" />
+                    <TextBox x:Name="NameBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,8"
+                             Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
+                             Visibility="{Binding ShowName, Converter={StaticResource BoolToVis}}"
+                             IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" />
+
+                    <TextBlock Grid.Row="1" Text="Pre-Windows 2000 name" Foreground="#666" Margin="0,0,10,8" VerticalAlignment="Center"
+                               Visibility="{Binding ShowSam, Converter={StaticResource BoolToVis}}" />
+                    <TextBox x:Name="SamBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,8"
+                             Text="{Binding SamAccountName, UpdateSourceTrigger=PropertyChanged}"
+                             Visibility="{Binding ShowSam, Converter={StaticResource BoolToVis}}"
+                             IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}"
+                             ToolTip="sAMAccountName. Follows the group name until you edit it, as in ADUC. Must be unique in the domain." />
+
+                    <TextBlock Grid.Row="2" Text="Display name" Foreground="#666" Margin="0,0,10,8" VerticalAlignment="Center" />
+                    <TextBox x:Name="DisplayNameBox" Grid.Row="2" Grid.Column="1" Margin="0,0,0,8"
+                             Text="{Binding DisplayName, UpdateSourceTrigger=PropertyChanged}"
+                             IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}"
+                             ToolTip="What the address book, Teams and Entra ID show." />
+
+                    <CheckBox x:Name="ChangeAddressBox" Grid.Row="3" Grid.Column="1" Margin="0,4,0,6"
+                              IsChecked="{Binding ChangeAddress}"
+                              Visibility="{Binding CanChangeAddress, Converter={StaticResource BoolToVis}}"
+                              IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}">
+                        <TextBlock TextWrapping="Wrap">
+                            <Run Text="Also change the email address. Now: " /><Run Text="{Binding CurrentAddress, Mode=OneWay}" FontWeight="SemiBold" />
+                        </TextBlock>
+                    </CheckBox>
+                    <TextBlock Grid.Row="4" Text="New address" Foreground="#666" Margin="0,0,10,8" VerticalAlignment="Center"
+                               Visibility="{Binding ChangeAddress, Converter={StaticResource BoolToVis}}" />
+                    <StackPanel Grid.Row="4" Grid.Column="1" Margin="0,0,0,8"
+                                Visibility="{Binding ChangeAddress, Converter={StaticResource BoolToVis}}">
+                        <TextBox x:Name="AddressBox" Text="{Binding NewAddress, UpdateSourceTrigger=PropertyChanged}"
+                                 IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" />
+                        <TextBlock Text="The old address is kept as a secondary address, so mail sent to it still arrives."
+                                   Foreground="#666" FontSize="11" TextWrapping="Wrap" Margin="0,3,0,0" />
+                    </StackPanel>
+                </Grid>
+
+                <ItemsControl x:Name="NotesList" ItemsSource="{Binding Notes}" Margin="0,6,0,0"
+                              Visibility="{Binding ShowNotes, Converter={StaticResource BoolToVis}}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding}" Foreground="#555" TextWrapping="Wrap" Margin="0,0,0,4" />
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <!-- What the rename did, read back from the group. -->
+                <Border x:Name="ResultPanel" Margin="0,10,0,0" Padding="8" Background="#F3F8F3" BorderBrush="#CFE3CF" BorderThickness="1"
+                        Visibility="{Binding HasResult, Converter={StaticResource BoolToVis}}">
+                    <ItemsControl ItemsSource="{Binding ResultLines}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,0,0,3" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+    </DockPanel>
+</Window>
